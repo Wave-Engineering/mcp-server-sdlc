@@ -3,12 +3,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import type { HandlerDef } from './types.js';
-
-const modules = import.meta.glob('./handlers/*.ts', { eager: true }) as Record<string, { default: HandlerDef }>;
-const handlers: HandlerDef[] = Object.values(modules)
-  .map(m => m.default)
-  .filter(Boolean);
+import { handlers } from './handlers/_registry';
 
 const server = new Server(
   { name: 'sdlc-server', version: '1.0.0' },

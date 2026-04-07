@@ -5,6 +5,12 @@
 #   With a target argument (used by release CI matrix): builds that target only.
 set -euo pipefail
 
+cd "$(dirname "$0")/../.."
+
+# Generate the handler registry before bundling. The registry is git-ignored
+# and must be fresh on every build (Bun does not support import.meta.glob).
+./scripts/ci/codegen-handlers.sh
+
 mkdir -p dist
 
 TARGETS=("${1:-}")
