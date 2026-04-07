@@ -36,8 +36,16 @@ DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${TAG}/${BINARY_NAME}
 echo "Installing ${BINARY_NAME} ${TAG} for ${PLATFORM}..."
 
 mkdir -p "${INSTALL_DIR}"
-curl -fsSL --progress-bar "${DOWNLOAD_URL}" -o "${INSTALL_DIR}/${BINARY_NAME}"
-chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
+# Download to a temp file and rename into place.
+# Direct -o on the final path would fail with ETXTBSY if the binary is
+# currently running (e.g. Claude Code has it open as an MCP subprocess).
+# rename(2) unlinks the old inode but keeps it alive for running processes.
+TMP="${INSTALL_DIR}/${BINARY_NAME}.tmp.$$"
+trap 'rm -f "${TMP}"' EXIT
+curl -fsSL --progress-bar "${DOWNLOAD_URL}" -o "${TMP}"
+chmod +x "${TMP}"
+mv -f "${TMP}" "${INSTALL_DIR}/${BINARY_NAME}"
+trap - EXIT
 
 echo "Installed to ${INSTALL_DIR}/${BINARY_NAME}"
 
