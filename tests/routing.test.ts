@@ -87,3 +87,59 @@ describe('routing — ibm registration', () => {
     expect(handlers[0].name).toBe('ibm');
   });
 });
+
+describe('routing — work_item registration', () => {
+  test('work_item handler exports a valid HandlerDef with correct name', async () => {
+    const mod = await import('../handlers/work_item.ts');
+    const handler = mod.default as HandlerDef;
+    expect(handler).toBeDefined();
+    expect(handler.name).toBe('work_item');
+    expect(typeof handler.description).toBe('string');
+    expect(handler.description.length).toBeGreaterThan(0);
+    expect(handler.inputSchema).toBeDefined();
+    expect(typeof handler.execute).toBe('function');
+  });
+
+  test('work_item inputSchema accepts valid issue input', async () => {
+    const mod = await import('../handlers/work_item.ts');
+    const handler = mod.default as HandlerDef;
+    const result = handler.inputSchema.safeParse({ type: 'story', title: 'Test story' });
+    expect(result.success).toBe(true);
+  });
+
+  test('work_item inputSchema accepts valid pr input', async () => {
+    const mod = await import('../handlers/work_item.ts');
+    const handler = mod.default as HandlerDef;
+    const result = handler.inputSchema.safeParse({
+      type: 'pr',
+      title: 'My PR',
+      head_branch: 'feature/1-foo',
+      base_branch: 'main',
+      draft: false,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test('work_item inputSchema rejects unknown type', async () => {
+    const mod = await import('../handlers/work_item.ts');
+    const handler = mod.default as HandlerDef;
+    const result = handler.inputSchema.safeParse({ type: 'task', title: 'Bad type' });
+    expect(result.success).toBe(false);
+  });
+
+  test('work_item glob simulation — appears in handler registry', () => {
+    // Simulate what index.ts does with import.meta.glob
+    const mockHandler: HandlerDef = {
+      name: 'work_item',
+      description: 'Create a work item',
+      inputSchema: {} as HandlerDef['inputSchema'],
+      execute: async () => ({ content: [{ type: 'text' as const, text: '{}' }] }),
+    };
+    const modules: Record<string, { default: HandlerDef }> = {
+      './handlers/work_item.ts': { default: mockHandler },
+    };
+    const handlers = Object.values(modules).map(m => m.default).filter(Boolean);
+    expect(handlers.length).toBe(1);
+    expect(handlers[0].name).toBe('work_item');
+  });
+});
