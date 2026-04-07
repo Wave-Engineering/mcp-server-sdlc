@@ -1,0 +1,28 @@
+{
+  "name": "mcp-server-sdlc",
+  "version": "1.0.0",
+  "description": "SDLC workflow MCP server for Claude Code agents",
+  "type": "module",
+  "scripts": {
+    "start": "bun index.ts",
+    "lint": "bunx tsc --noEmit",
+    "test": "bun test",
+    "build": "./scripts/ci/build.sh",
+    "ci": "./scripts/ci/validate.sh"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Wave-Engineering/mcp-server-sdlc.git"
+  },
+  "license": "MIT",
+  "author": "Wave Engineering",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "zod": "^3.23.8",
+    "zod-to-json-schema": "^3.23.5"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.7.0"
+  }
+}
