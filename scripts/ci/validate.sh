@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
-# Full CI validation: TypeScript lint + shellcheck + tests.
+# Full CI validation: codegen + TypeScript lint + shellcheck + tests + runtime smoke.
 set -euo pipefail
 
+cd "$(dirname "$0")/../.."
+
 echo "=== SDLC MCP CI Validation ==="
+
+echo "--- codegen ---"
+./scripts/ci/codegen-handlers.sh
 
 echo "--- TypeScript lint ---"
 bun run lint
@@ -21,5 +26,8 @@ fi
 
 echo "--- tests ---"
 bun test
+
+echo "--- runtime smoke test ---"
+./scripts/ci/smoke.sh
 
 echo "=== Validation complete ==="

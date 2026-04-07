@@ -135,3 +135,6 @@ dist
 # Vite logs files
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# Generated handler registry (codegen output, fresh on every build)
+handlers/_registry.ts

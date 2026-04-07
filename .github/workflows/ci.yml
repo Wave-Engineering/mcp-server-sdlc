@@ -5,6 +5,7 @@ on:
     branches: ["main", "feature/*", "fix/*", "chore/*"]
   pull_request:
     branches: ["main"]
+  merge_group:
 
 jobs:
   validate:
