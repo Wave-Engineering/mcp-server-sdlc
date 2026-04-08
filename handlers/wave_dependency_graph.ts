@@ -1,8 +1,9 @@
-import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { parseIssueRef, parseSections, type IssueRef } from '../lib/spec_parser';
 import { buildGraph, type DepNode } from '../lib/dependency_graph';
+import { detectPlatform, parseRepoSlug, gitlabApiIssue } from '../lib/glab.js';
+import { execSync } from 'child_process';
 
 const inputSchema = z
   .object({
@@ -14,26 +15,6 @@ const inputSchema = z
     'provide exactly one of issue_refs or epic_ref',
   );
 
-function detectPlatform(): 'github' | 'gitlab' {
-  try {
-    const url = execSync('git remote get-url origin', { encoding: 'utf8' }).trim();
-    return url.includes('gitlab') ? 'gitlab' : 'github';
-  } catch {
-    return 'github';
-  }
-}
-
-function currentRepoSlug(): string | null {
-  try {
-    const url = execSync('git remote get-url origin', { encoding: 'utf8' }).trim();
-    const m = /[/:]([^/]+)\/([^/.]+?)(\.git)?$/.exec(url);
-    if (m) return `${m[1]}/${m[2]}`;
-    return null;
-  } catch {
-    return null;
-  }
-}
-
 function fetchIssue(ref: IssueRef): { body: string; title: string } {
   const platform = detectPlatform();
   if (platform === 'github') {
@@ -43,13 +24,8 @@ function fetchIssue(ref: IssueRef): { body: string; title: string } {
     const parsed = JSON.parse(raw) as { body?: string; title: string };
     return { body: parsed.body ?? '', title: parsed.title };
   }
-  const cmd =
-    ref.owner && ref.repo
-      ? `glab issue view ${ref.number} --repo ${ref.owner}/${ref.repo} --output json`
-      : `glab issue view ${ref.number} --output json`;
-  const raw = execSync(cmd, { encoding: 'utf8' });
-  const parsed = JSON.parse(raw) as { description?: string; title: string };
-  return { body: parsed.description ?? '', title: parsed.title };
+  const result = gitlabApiIssue(ref.number, ref.owner && ref.repo ? { owner: ref.owner, repo: ref.repo } : undefined);
+  return { body: result.description ?? '', title: result.title };
 }
 
 function normalizeRef(ref: string, currentSlug: string | null): string {
@@ -125,7 +101,7 @@ const waveDependencyGraphHandler: HandlerDef = {
     }
 
     try {
-      const slug = currentRepoSlug();
+      const slug = parseRepoSlug();
       const refs = resolveIssueList(args.issue_refs, args.epic_ref, slug);
       if (refs.length === 0) {
         return {
@@ -136,6 +112,7 @@ const waveDependencyGraphHandler: HandlerDef = {
                 ok: true,
                 nodes: [],
                 edges: [],
+                fetched_count: 0,
               }),
             },
           ],
@@ -143,6 +120,9 @@ const waveDependencyGraphHandler: HandlerDef = {
       }
 
       const nodes: DepNode[] = [];
+      const failures: string[] = [];
+      let fetchedCount = 0;
+
       for (const ref of refs) {
         const parsed = parseIssueRef(ref);
         if (!parsed) continue;
@@ -154,17 +134,54 @@ const waveDependencyGraphHandler: HandlerDef = {
             title: data.title,
             depends_on: parseDependencies(sections.dependencies ?? '', slug),
           });
-        } catch {
-          nodes.push({ ref, depends_on: [] });
+          fetchedCount++;
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : String(err);
+          failures.push(`failed to fetch ${ref}: ${errorMsg}`);
         }
       }
 
+      // If ALL fetches failed, return ok: false
+      if (fetchedCount === 0 && refs.length > 0) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error: `all ${refs.length} spec fetches failed: ${failures[0] ?? 'unknown error'}`,
+                issue_count: refs.length,
+                fetched_count: 0,
+              }),
+            },
+          ],
+        };
+      }
+
       const graph = buildGraph(nodes);
+      const response: {
+        ok: true;
+        nodes: typeof graph.nodes;
+        edges: typeof graph.edges;
+        fetched_count: number;
+        warnings?: string[];
+      } = {
+        ok: true,
+        nodes: graph.nodes,
+        edges: graph.edges,
+        fetched_count: fetchedCount,
+      };
+
+      // Add warnings if SOME fetches failed
+      if (failures.length > 0) {
+        response.warnings = failures;
+      }
+
       return {
         content: [
           {
             type: 'text' as const,
-            text: JSON.stringify({ ok: true, ...graph }),
+            text: JSON.stringify(response),
           },
         ],
       };
