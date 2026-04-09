@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { parseIssueRef, parseSections, type IssueRef } from '../lib/spec_parser';
-import { buildGraph, type DepNode } from '../lib/dependency_graph';
+import { buildGraph, computeWaves, type DepNode } from '../lib/dependency_graph';
 import { detectPlatform, parseRepoSlug, gitlabApiIssue } from '../lib/glab.js';
 import { execSync } from 'child_process';
 
@@ -159,16 +159,19 @@ const waveDependencyGraphHandler: HandlerDef = {
       }
 
       const graph = buildGraph(nodes);
+      const waveResult = computeWaves(nodes);
       const response: {
         ok: true;
         nodes: typeof graph.nodes;
         edges: typeof graph.edges;
+        reason: string;
         fetched_count: number;
         warnings?: string[];
       } = {
         ok: true,
         nodes: graph.nodes,
         edges: graph.edges,
+        reason: waveResult.reason,
         fetched_count: fetchedCount,
       };
 

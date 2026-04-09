@@ -112,6 +112,7 @@ const waveTopologyHandler: HandlerDef = {
               text: JSON.stringify({
                 ok: true,
                 topology: 'serial',
+                reason: 'no issues',
                 wave_count: 0,
                 max_parallelism: 0,
                 issue_count: 0,
@@ -180,6 +181,7 @@ const waveTopologyHandler: HandlerDef = {
       const response: {
         ok: true;
         topology: string;
+        reason: string;
         wave_count: number;
         max_parallelism: number;
         issue_count: number;
@@ -188,6 +190,7 @@ const waveTopologyHandler: HandlerDef = {
       } = {
         ok: true,
         topology: result.topology,
+        reason: result.reason,
         wave_count: result.waves.length,
         max_parallelism: maxParallelism,
         issue_count: refs.length,

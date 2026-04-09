@@ -19,6 +19,13 @@ export interface WavePartition {
 export interface ComputeResult {
   waves: WavePartition[];
   topology: 'serial' | 'parallel' | 'mixed';
+  reason:
+    | 'no issues'
+    | 'single issue (trivial)'
+    | 'no dependencies'
+    | 'dependency chain forces ordering'
+    | 'mixed parallelism and serial chains'
+    | 'circular dependency detected';
   total_issues: number;
   error?: string;
 }
@@ -68,6 +75,7 @@ export function computeWaves(nodes: DepNode[]): ComputeResult {
       return {
         waves,
         topology: 'serial',
+        reason: 'circular dependency detected',
         total_issues: nodes.length,
         error: `circular dependency detected among: ${remainingRefs.join(', ')}`,
       };
@@ -83,13 +91,29 @@ export function computeWaves(nodes: DepNode[]): ComputeResult {
   const hasParallel = waves.some(w => w.issues.length > 1);
   const hasSerial = waves.some(w => w.issues.length === 1);
   let topology: 'serial' | 'parallel' | 'mixed';
-  if (hasParallel && hasSerial) topology = 'mixed';
-  else if (hasParallel) topology = 'parallel';
-  else topology = 'serial';
+  let reason: ComputeResult['reason'];
+
+  if (nodes.length === 0) {
+    topology = 'serial';
+    reason = 'no issues';
+  } else if (nodes.length === 1) {
+    topology = 'serial';
+    reason = 'single issue (trivial)';
+  } else if (hasParallel && hasSerial) {
+    topology = 'mixed';
+    reason = 'mixed parallelism and serial chains';
+  } else if (hasParallel) {
+    topology = 'parallel';
+    reason = 'no dependencies';
+  } else {
+    topology = 'serial';
+    reason = 'dependency chain forces ordering';
+  }
 
   return {
     waves,
     topology,
+    reason,
     total_issues: nodes.length,
   };
 }

@@ -237,6 +237,7 @@ const waveComputeHandler: HandlerDef = {
         epic_ref: string;
         waves: typeof result.waves;
         topology: string;
+        reason: string;
         total_issues: number;
         fetched_count: number;
         warnings?: string[];
@@ -245,6 +246,7 @@ const waveComputeHandler: HandlerDef = {
         epic_ref: args.epic_ref,
         waves: result.waves,
         topology: result.topology,
+        reason: result.reason,
         total_issues: result.total_issues,
         fetched_count: fetchedCount,
       };
