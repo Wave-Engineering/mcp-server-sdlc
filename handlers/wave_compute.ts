@@ -1,32 +1,13 @@
-import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { parseIssueRef, parseSections, type IssueRef } from '../lib/spec_parser';
 import { computeWaves, type DepNode } from '../lib/dependency_graph';
+import { detectPlatform, parseRepoSlug, gitlabApiIssue } from '../lib/glab.js';
+import { execSync } from 'child_process';
 
 const inputSchema = z.object({
   epic_ref: z.string().min(1, 'epic_ref must be a non-empty string'),
 });
-
-function detectPlatform(): 'github' | 'gitlab' {
-  try {
-    const url = execSync('git remote get-url origin', { encoding: 'utf8' }).trim();
-    return url.includes('gitlab') ? 'gitlab' : 'github';
-  } catch {
-    return 'github';
-  }
-}
-
-function currentRepoSlug(): string | null {
-  try {
-    const url = execSync('git remote get-url origin', { encoding: 'utf8' }).trim();
-    const m = /[/:]([^/]+)\/([^/.]+?)(\.git)?$/.exec(url);
-    if (m) return `${m[1]}/${m[2]}`;
-    return null;
-  } catch {
-    return null;
-  }
-}
 
 function fetchIssue(ref: IssueRef): { body: string; title: string } {
   const platform = detectPlatform();
@@ -37,13 +18,8 @@ function fetchIssue(ref: IssueRef): { body: string; title: string } {
     const parsed = JSON.parse(raw) as { body?: string; title: string };
     return { body: parsed.body ?? '', title: parsed.title };
   }
-  const cmd =
-    ref.owner && ref.repo
-      ? `glab issue view ${ref.number} --repo ${ref.owner}/${ref.repo} --output json`
-      : `glab issue view ${ref.number} --output json`;
-  const raw = execSync(cmd, { encoding: 'utf8' });
-  const parsed = JSON.parse(raw) as { description?: string; title: string };
-  return { body: parsed.description ?? '', title: parsed.title };
+  const result = gitlabApiIssue(ref.number, ref.owner && ref.repo ? { owner: ref.owner, repo: ref.repo } : undefined);
+  return { body: result.description ?? '', title: result.title };
 }
 
 function normalizeRef(ref: string, currentSlug: string | null): string {
@@ -174,7 +150,7 @@ const waveComputeHandler: HandlerDef = {
     }
 
     try {
-      const slug = currentRepoSlug();
+      const slug = parseRepoSlug();
       const epicData = fetchIssue(ref);
       const epicSections = parseSections(epicData.body).sections;
       const subIssuesSection =
@@ -200,6 +176,9 @@ const waveComputeHandler: HandlerDef = {
 
       // Fetch dependencies for each sub-issue.
       const nodes: DepNode[] = [];
+      const failures: string[] = [];
+      let fetchedCount = 0;
+
       for (const sub of dedupedSubs) {
         const subRefParsed = parseIssueRef(sub.ref);
         if (!subRefParsed) continue;
@@ -212,9 +191,28 @@ const waveComputeHandler: HandlerDef = {
             title: sub.title ?? subData.title,
             depends_on: deps,
           });
-        } catch {
-          nodes.push({ ref: sub.ref, title: sub.title, depends_on: [] });
+          fetchedCount++;
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : String(err);
+          failures.push(`failed to fetch ${sub.ref}: ${errorMsg}`);
         }
+      }
+
+      // If ALL fetches failed, return ok: false
+      if (fetchedCount === 0 && dedupedSubs.length > 0) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error: `all ${dedupedSubs.length} spec fetches failed: ${failures[0] ?? 'unknown error'}`,
+                issue_count: dedupedSubs.length,
+                fetched_count: 0,
+              }),
+            },
+          ],
+        };
       }
 
       const result = computeWaves(nodes);
@@ -234,17 +232,33 @@ const waveComputeHandler: HandlerDef = {
         };
       }
 
+      const response: {
+        ok: true;
+        epic_ref: string;
+        waves: typeof result.waves;
+        topology: string;
+        total_issues: number;
+        fetched_count: number;
+        warnings?: string[];
+      } = {
+        ok: true,
+        epic_ref: args.epic_ref,
+        waves: result.waves,
+        topology: result.topology,
+        total_issues: result.total_issues,
+        fetched_count: fetchedCount,
+      };
+
+      // Add warnings if SOME fetches failed
+      if (failures.length > 0) {
+        response.warnings = failures;
+      }
+
       return {
         content: [
           {
             type: 'text' as const,
-            text: JSON.stringify({
-              ok: true,
-              epic_ref: args.epic_ref,
-              waves: result.waves,
-              topology: result.topology,
-              total_issues: result.total_issues,
-            }),
+            text: JSON.stringify(response),
           },
         ],
       };
