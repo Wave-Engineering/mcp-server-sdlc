@@ -67,6 +67,31 @@ interface NormalizedPr {
   state: 'open';
   head: string;
   base: string;
+  created: boolean;
+}
+
+function lookupGithubPr(head: string, cwd: string): NormalizedPr | null {
+  const list = run(
+    ['gh', 'pr', 'list', '--head', head, '--state', 'open', '--json', 'number,url,state,headRefName,baseRefName', '--limit', '1'],
+    cwd,
+  );
+  if (list.exitCode !== 0) return null;
+  const prs = JSON.parse(list.stdout) as Array<{
+    number: number;
+    url: string;
+    state: string;
+    headRefName: string;
+    baseRefName: string;
+  }>;
+  if (prs.length === 0) return null;
+  return {
+    number: prs[0].number,
+    url: prs[0].url,
+    state: 'open',
+    head: prs[0].headRefName,
+    base: prs[0].baseRefName,
+    created: false,
+  };
 }
 
 function createGithubPr(args: Input, head: string, cwd: string): NormalizedPr {
@@ -85,13 +110,21 @@ function createGithubPr(args: Input, head: string, cwd: string): NormalizedPr {
   ];
   if (args.draft) createCmd.push('--draft');
 
-  const created = run(createCmd, cwd);
-  if (created.exitCode !== 0) {
-    throw new Error(`gh pr create failed: ${created.stderr.trim() || created.stdout.trim()}`);
+  const result = run(createCmd, cwd);
+  if (result.exitCode !== 0) {
+    const errText = (result.stderr + result.stdout).toLowerCase();
+    // gh says "a pull request for branch ... already exists" on duplicate
+    if (errText.includes('already exists')) {
+      const existing = lookupGithubPr(head, cwd);
+      if (existing) return existing;
+      // Lookup failed (PR may have been closed between create and lookup)
+      throw new Error(`gh pr create: PR already exists for branch '${head}' but could not be found via lookup`);
+    }
+    throw new Error(`gh pr create failed: ${result.stderr.trim() || result.stdout.trim()}`);
   }
 
   // gh pr create prints the PR URL on stdout. Parse the number from the URL.
-  const url = created.stdout.trim().split('\n').pop() ?? '';
+  const url = result.stdout.trim().split('\n').pop() ?? '';
   const numMatch = /\/pull\/(\d+)/.exec(url);
   if (!numMatch) {
     throw new Error(`gh pr create: could not parse PR number from output: ${url}`);
@@ -119,7 +152,33 @@ function createGithubPr(args: Input, head: string, cwd: string): NormalizedPr {
     state: 'open',
     head: parsed.headRefName,
     base: parsed.baseRefName,
+    created: true,
   };
+}
+
+function lookupGitlabMr(head: string, cwd: string): NormalizedPr | null {
+  const view = run(['glab', 'mr', 'view', head, '-F', 'json'], cwd);
+  if (view.exitCode !== 0) return null;
+  try {
+    const parsed = JSON.parse(view.stdout) as {
+      iid: number;
+      web_url: string;
+      state: string;
+      source_branch: string;
+      target_branch: string;
+    };
+    if (parsed.state !== 'opened') return null;
+    return {
+      number: parsed.iid,
+      url: parsed.web_url,
+      state: 'open',
+      head: parsed.source_branch,
+      base: parsed.target_branch,
+      created: false,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function createGitlabMr(args: Input, head: string, cwd: string): NormalizedPr {
@@ -139,9 +198,17 @@ function createGitlabMr(args: Input, head: string, cwd: string): NormalizedPr {
   ];
   if (args.draft) createCmd.push('--draft');
 
-  const created = run(createCmd, cwd);
-  if (created.exitCode !== 0) {
-    throw new Error(`glab mr create failed: ${created.stderr.trim() || created.stdout.trim()}`);
+  const result = run(createCmd, cwd);
+  if (result.exitCode !== 0) {
+    const errText = (result.stderr + result.stdout).toLowerCase();
+    // glab says "Another open merge request already exists" on duplicate
+    if (errText.includes('already exists')) {
+      const existing = lookupGitlabMr(head, cwd);
+      if (existing) return existing;
+      // Lookup failed (MR may have been closed between create and lookup)
+      throw new Error(`glab mr create: MR already exists for branch '${head}' but could not be found via lookup`);
+    }
+    throw new Error(`glab mr create failed: ${result.stderr.trim() || result.stdout.trim()}`);
   }
 
   // Normalize by fetching the MR we just created via `glab mr view <head> -F json`.
@@ -162,6 +229,7 @@ function createGitlabMr(args: Input, head: string, cwd: string): NormalizedPr {
     state: 'open',
     head: parsed.source_branch,
     base: parsed.target_branch,
+    created: true,
   };
 }
 

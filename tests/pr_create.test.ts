@@ -128,6 +128,7 @@ echo "unhandled gh: $*" >&2; exit 1
     expect(data.state).toBe('open');
     expect(data.head).toBe('feature/76-pr-create');
     expect(data.base).toBe('main');
+    expect(data.created).toBe(true);
   });
 
   test('gitlab_happy_path — creates MR and returns normalized response', async () => {
@@ -182,6 +183,7 @@ echo "unhandled glab: $*" >&2; exit 1
     expect(data.state).toBe('open');
     expect(data.head).toBe('feature/76-pr-create');
     expect(data.base).toBe('main');
+    expect(data.created).toBe(true);
   });
 
   test('draft_flag_github — passes --draft to gh pr create', async () => {
@@ -409,6 +411,108 @@ exit 1
     expect(data.ok).toBe(false);
     expect(String(data.error)).toContain('gh pr create failed');
     expect(String(data.error)).toContain('authentication error');
+  });
+
+  test('github_idempotent — duplicate PR returns existing with created=false', async () => {
+    const { fixture, stubBin } = await makeFixture({ '.keep': '' });
+    fixtureDir = fixture;
+    stubBinDir = stubBin;
+
+    await writeStub(
+      stubBin,
+      'git',
+      `
+case "$1 $2" in
+  "branch --show-current") echo "feature/76-pr-create" ;;
+  "remote -v") echo "origin\tgit@github.com:org/repo.git (fetch)" ;;
+  *) exit 1 ;;
+esac
+`,
+    );
+
+    // gh pr create fails with "already exists"; gh pr list returns the existing PR.
+    await writeStub(
+      stubBin,
+      'gh',
+      `
+if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
+  echo "a pull request for branch \"feature/76-pr-create\" into branch \"main\" already exists" >&2
+  exit 1
+fi
+if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
+  cat <<'EOF'
+[{"number":42,"url":"https://github.com/org/repo/pull/42","state":"OPEN","headRefName":"feature/76-pr-create","baseRefName":"main"}]
+EOF
+  exit 0
+fi
+echo "unhandled gh: $*" >&2; exit 1
+`,
+    );
+
+    activate(fixture, stubBin);
+
+    const result = await handler.execute({
+      title: 'feat: add pr_create',
+      body: 'Implements the pr_create handler.',
+      base: 'main',
+    });
+    const data = parseResult(result);
+
+    expect(data.ok).toBe(true);
+    expect(data.number).toBe(42);
+    expect(data.url).toBe('https://github.com/org/repo/pull/42');
+    expect(data.created).toBe(false);
+  });
+
+  test('gitlab_idempotent — duplicate MR returns existing with created=false', async () => {
+    const { fixture, stubBin } = await makeFixture({ '.keep': '' });
+    fixtureDir = fixture;
+    stubBinDir = stubBin;
+
+    await writeStub(
+      stubBin,
+      'git',
+      `
+case "$1 $2" in
+  "branch --show-current") echo "feature/76-pr-create" ;;
+  "remote -v") echo "origin\tgit@gitlab.com:org/repo.git (fetch)" ;;
+  *) exit 1 ;;
+esac
+`,
+    );
+
+    // glab mr create fails with "already exists"; glab mr view returns the existing MR.
+    await writeStub(
+      stubBin,
+      'glab',
+      `
+if [ "$1" = "mr" ] && [ "$2" = "create" ]; then
+  echo "Another open merge request already exists for this source branch" >&2
+  exit 1
+fi
+if [ "$1" = "mr" ] && [ "$2" = "view" ]; then
+  cat <<'EOF'
+{"iid":7,"web_url":"https://gitlab.com/org/repo/-/merge_requests/7","state":"opened","source_branch":"feature/76-pr-create","target_branch":"main"}
+EOF
+  exit 0
+fi
+echo "unhandled glab: $*" >&2; exit 1
+`,
+    );
+
+    activate(fixture, stubBin);
+
+    const result = await handler.execute({
+      title: 'feat: add pr_create',
+      body: 'Implements the pr_create handler.',
+      base: 'main',
+    });
+    const data = parseResult(result);
+
+    expect(data.ok).toBe(true);
+    expect(data.number).toBe(7);
+    expect(data.url).toBe('https://gitlab.com/org/repo/-/merge_requests/7');
+    expect(data.created).toBe(false);
   });
 
   test('fallback_platform_detection — no .claude-project.md, uses git remote', async () => {
