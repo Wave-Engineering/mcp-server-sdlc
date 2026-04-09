@@ -108,9 +108,16 @@ describe('pr_merge handler', () => {
     onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git\n');
     onExec('glab mr merge 17 --squash --remove-source-branch --yes', '');
     onExec(
-      'glab mr view 17 --output json',
+      'glab api projects/org%2Frepo/merge_requests/17',
       JSON.stringify({
+        iid: 17,
+        title: 'Test MR',
+        description: '',
+        state: 'merged',
+        source_branch: 'feature/test',
+        target_branch: 'main',
         web_url: 'https://gitlab.com/org/repo/-/merge_requests/17',
+        labels: [],
         merge_commit_sha: 'deadbeef1234',
       }),
     );
@@ -276,9 +283,16 @@ describe('pr_merge handler', () => {
     onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git\n');
     onExec('glab mr merge 14 --squash --remove-source-branch --yes', '');
     onExec(
-      'glab mr view 14 --output json',
+      'glab api projects/org%2Frepo/merge_requests/14',
       JSON.stringify({
+        iid: 14,
+        title: 'Test MR',
+        description: '',
+        state: 'merged',
+        source_branch: 'feature/fix',
+        target_branch: 'main',
         web_url: 'https://gitlab.com/org/repo/-/merge_requests/14',
+        labels: [],
         merge_commit_sha: 'f00dbabe',
       }),
     );
