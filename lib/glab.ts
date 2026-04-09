@@ -18,6 +18,7 @@
  */
 
 import { execSync } from 'child_process';
+import type { IssueRef } from './spec_parser.js';
 
 // ---------------------------------------------------------------------------
 // Helpers — platform detection and repo slug parsing
@@ -30,10 +31,10 @@ import { execSync } from 'child_process';
  * and any self-hosted `gitlab.<company>.com`), otherwise `'github'`. Falls
  * back to `'github'` if the origin cannot be read.
  *
- * This function is the canonical source of platform detection. Handlers must
- * import this rather than rolling their own (a local copy in `pr_list.ts`
- * previously inverted the check — `url.includes('github')` — which gives the
- * wrong answer for self-hosted enterprise deployments).
+ * This function is the canonical source of cwd-based platform detection.
+ * Handlers must import this rather than rolling their own (a local copy in
+ * `pr_list.ts` previously inverted the check — `url.includes('github')` —
+ * which gives the wrong answer for self-hosted enterprise deployments).
  */
 export function detectPlatform(): 'github' | 'gitlab' {
   try {
@@ -42,6 +43,24 @@ export function detectPlatform(): 'github' | 'gitlab' {
   } catch {
     return 'github';
   }
+}
+
+/**
+ * Detect platform for a qualified issue ref (`owner/repo#N`).
+ *
+ * When a ref includes an owner path, we can infer the platform:
+ * - If the owner has multiple segments (e.g. `org/sub/group`), it MUST be
+ *   GitLab — GitHub only supports single-segment owners.
+ * - Otherwise, fall back to cwd-based detection (ambiguous).
+ *
+ * When a ref is local (no owner/repo), falls back to cwd-based detection.
+ */
+export function detectPlatformForRef(ref: IssueRef): 'github' | 'gitlab' {
+  if (ref.owner && ref.owner.includes('/')) {
+    // Multi-segment owner path → must be GitLab (nested groups)
+    return 'gitlab';
+  }
+  return detectPlatform();
 }
 
 /**

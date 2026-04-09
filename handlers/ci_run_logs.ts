@@ -5,6 +5,7 @@
 import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
+import { detectPlatform } from '../lib/glab.js';
 
 const HARD_MAX_LINES = 10000;
 const DEFAULT_MAX_LINES = 2000;
@@ -26,15 +27,6 @@ interface FetchResult {
 
 function exec(cmd: string): string {
   return execSync(cmd, { encoding: 'utf8', maxBuffer: 1024 * 1024 * 64 });
-}
-
-function detectPlatform(): 'github' | 'gitlab' {
-  try {
-    const url = execSync('git remote get-url origin', { encoding: 'utf8' }).trim();
-    return url.includes('gitlab') ? 'gitlab' : 'github';
-  } catch {
-    return 'github';
-  }
 }
 
 function parseRepoSlug(): string | null {

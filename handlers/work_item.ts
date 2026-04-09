@@ -2,6 +2,7 @@ import { execSync } from 'child_process';
 import { writeFileSync } from 'fs';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
+import { detectPlatform } from '../lib/glab.js';
 
 const inputSchema = z.object({
   type: z.enum(['epic', 'story', 'bug', 'chore', 'docs', 'pr', 'mr']),
@@ -24,15 +25,6 @@ const TYPE_LABELS: Record<string, string | null> = {
   pr: null,
   mr: null,
 };
-
-function detectPlatform(): 'github' | 'gitlab' {
-  try {
-    const url = execSync('git remote get-url origin', { encoding: 'utf8' }).trim();
-    return url.includes('github') ? 'github' : 'gitlab';
-  } catch {
-    return 'github';
-  }
-}
 
 function buildLabels(type: string, extra: string[] = []): string[] {
   const auto = TYPE_LABELS[type];
