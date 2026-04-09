@@ -1,6 +1,7 @@
 import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
+import { detectPlatform, gitlabApiIssue, gitlabApiMrList } from '../lib/glab';
 
 const inputSchema = z.object({
   branch: z.string().optional(),
@@ -19,15 +20,6 @@ function getCurrentBranch(): string {
   return exec('git branch --show-current');
 }
 
-function detectPlatform(): 'github' | 'gitlab' {
-  try {
-    const url = exec('git remote get-url origin');
-    return url.includes('github') ? 'github' : 'gitlab';
-  } catch {
-    return 'github';
-  }
-}
-
 interface IssueInfo {
   state: string;
   title: string;
@@ -41,8 +33,7 @@ function getGithubIssue(issueNumber: number): IssueInfo {
 }
 
 function getGitlabIssue(issueNumber: number): IssueInfo {
-  const raw = exec(`glab issue view ${issueNumber} --output json`);
-  const parsed = JSON.parse(raw) as { state: string; title: string; web_url: string };
+  const parsed = gitlabApiIssue(issueNumber);
   // GitLab uses 'opened'/'closed', normalize to 'OPEN'/'CLOSED'
   const state = parsed.state === 'opened' ? 'OPEN' : parsed.state.toUpperCase();
   return {
@@ -64,9 +55,8 @@ function getGithubPrUrl(branch: string): string | null {
 
 function getGitlabMrUrl(branch: string): string | null {
   try {
-    const raw = exec(`glab mr list --source-branch "${branch}" --output json`);
-    const mrs = JSON.parse(raw) as Array<{ web_url?: string; iid?: number }>;
-    return mrs.length > 0 ? (mrs[0].web_url ?? null) : null;
+    const mrs = gitlabApiMrList({ head: branch });
+    return mrs.length > 0 ? mrs[0].web_url : null;
   } catch {
     return null;
   }

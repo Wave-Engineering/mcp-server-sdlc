@@ -65,7 +65,7 @@ function glabPipeline(overrides: Record<string, unknown> = {}) {
     ref: 'feature/1-demo',
     sha: '1234567890abcdef1234567890abcdef12345678',
     web_url: 'https://gitlab.com/org/repo/-/pipelines/999',
-    name: 'CI',
+    source: 'push',
     created_at: '2026-04-07T12:00:00Z',
     ...overrides,
   };
@@ -291,7 +291,7 @@ describe('ci_wait_run handler', () => {
   // --- GitLab platform: success ---
   test('gitlab_success — glab pipeline completes with success', async () => {
     execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
-    execRegistry['glab ci list'] = [
+    execRegistry['glab api projects/org%2Frepo/pipelines?ref='] = [
       JSON.stringify([glabPipeline({ status: 'running' })]),
       JSON.stringify([glabPipeline({ status: 'success' })]),
     ];
@@ -306,7 +306,7 @@ describe('ci_wait_run handler', () => {
   // --- GitLab platform: failure ---
   test('gitlab_failure — glab pipeline status=failed maps to failure', async () => {
     execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
-    execRegistry['glab ci list'] = JSON.stringify([
+    execRegistry['glab api projects/org%2Frepo/pipelines?ref='] = JSON.stringify([
       glabPipeline({ status: 'failed' }),
     ]);
 
@@ -319,7 +319,7 @@ describe('ci_wait_run handler', () => {
   // --- GitLab platform: canceled (American spelling from glab) ---
   test('gitlab_canceled — glab pipeline status=canceled maps to cancelled', async () => {
     execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
-    execRegistry['glab ci list'] = JSON.stringify([
+    execRegistry['glab api projects/org%2Frepo/pipelines?ref='] = JSON.stringify([
       glabPipeline({ status: 'canceled' }),
     ]);
 

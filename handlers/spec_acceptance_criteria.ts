@@ -2,6 +2,7 @@ import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { parseIssueRef, parseSections, type IssueRef } from '../lib/spec_parser';
+import { detectPlatform, gitlabApiIssue } from '../lib/glab';
 
 const inputSchema = z.object({
   issue_ref: z.string().min(1, 'issue_ref must be a non-empty string'),
@@ -13,15 +14,6 @@ interface ChecklistItem {
   position: number;
 }
 
-function detectPlatform(): 'github' | 'gitlab' {
-  try {
-    const url = execSync('git remote get-url origin', { encoding: 'utf8' }).trim();
-    return url.includes('gitlab') ? 'gitlab' : 'github';
-  } catch {
-    return 'github';
-  }
-}
-
 function fetchBody(ref: IssueRef): string {
   const platform = detectPlatform();
   if (platform === 'github') {
@@ -30,12 +22,8 @@ function fetchBody(ref: IssueRef): string {
     const raw = execSync(cmd, { encoding: 'utf8' });
     return (JSON.parse(raw) as { body: string }).body ?? '';
   }
-  const cmd =
-    ref.owner && ref.repo
-      ? `glab issue view ${ref.number} --repo ${ref.owner}/${ref.repo} --output json`
-      : `glab issue view ${ref.number} --output json`;
-  const raw = execSync(cmd, { encoding: 'utf8' });
-  return (JSON.parse(raw) as { description?: string }).description ?? '';
+  const result = gitlabApiIssue(ref.number, ref.owner && ref.repo ? { owner: ref.owner, repo: ref.repo } : undefined);
+  return result.description ?? '';
 }
 
 /**

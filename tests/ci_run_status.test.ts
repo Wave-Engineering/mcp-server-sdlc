@@ -177,10 +177,10 @@ describe('ci_run_status handler', () => {
   });
 
   // --- GitLab: branch ref ---
-  test('gitlab_branch_ref — uses glab with --branch and normalizes status', async () => {
+  test('gitlab_branch_ref — queries pipelines by ref and normalizes status', async () => {
     execRegistry['git remote get-url origin'] =
       'https://gitlab.com/org/repo.git';
-    execRegistry['glab ci list --branch'] = JSON.stringify([
+    execRegistry['glab api projects/org%2Frepo/pipelines?ref='] = JSON.stringify([
       {
         id: 555,
         status: 'success',
@@ -190,7 +190,6 @@ describe('ci_run_status handler', () => {
         created_at: '2025-04-04T12:00:00Z',
         updated_at: '2025-04-04T12:05:00Z',
         finished_at: '2025-04-04T12:05:00Z',
-        name: 'pipeline',
         source: 'push',
       },
     ]);
@@ -205,10 +204,6 @@ describe('ci_run_status handler', () => {
     expect(run.conclusion).toBe('success');
     expect(run.url).toBe('https://gitlab.com/org/repo/-/pipelines/555');
     expect(run.ref).toBe('feature/5-gl');
-
-    const listCall = execCalls.find((c) => c.includes('glab ci list')) ?? '';
-    expect(listCall).toContain('--branch');
-    expect(listCall).not.toContain('--sha');
   });
 
   // --- GitLab: SHA ref ---
@@ -216,7 +211,7 @@ describe('ci_run_status handler', () => {
     const sha = '11223344556677889900aabbccddeeff00112233';
     execRegistry['git remote get-url origin'] =
       'https://gitlab.com/org/repo.git';
-    execRegistry['glab ci list --sha'] = JSON.stringify([
+    execRegistry['glab api projects/org%2Frepo/pipelines?ref='] = JSON.stringify([
       {
         id: 42,
         status: 'failed',
@@ -241,16 +236,14 @@ describe('ci_run_status handler', () => {
     expect(run.conclusion).toBe('failure');
     expect(run.sha).toBe(sha);
 
-    const listCall = execCalls.find((c) => c.includes('glab ci list')) ?? '';
-    expect(listCall).toContain('--sha');
-    expect(listCall).not.toContain('--branch');
   });
 
   // --- GitLab: workflow_name filters client-side ---
   test('gitlab_workflow_filter — filters pipelines by name client-side', async () => {
     execRegistry['git remote get-url origin'] =
       'https://gitlab.com/org/repo.git';
-    execRegistry['glab ci list --branch'] = JSON.stringify([
+    // When workflow_name is provided, handler requests more records (limit 20)
+    execRegistry['glab api projects/org%2Frepo/pipelines?ref=main&per_page=20'] = JSON.stringify([
       {
         id: 1,
         status: 'success',
@@ -260,7 +253,6 @@ describe('ci_run_status handler', () => {
         created_at: '2025-06-06T00:00:00Z',
         updated_at: '2025-06-06T00:01:00Z',
         finished_at: '2025-06-06T00:01:00Z',
-        name: 'other',
         source: 'push',
       },
       {
@@ -272,28 +264,28 @@ describe('ci_run_status handler', () => {
         created_at: '2025-06-06T00:02:00Z',
         updated_at: '2025-06-06T00:03:00Z',
         finished_at: '2025-06-06T00:03:00Z',
-        name: 'nightly',
         source: 'schedule',
       },
     ]);
 
     const result = await ciRunStatusHandler.execute({
       ref: 'main',
-      workflow_name: 'nightly',
+      workflow_name: 'schedule',
     });
     const data = parseResult(result.content);
 
     expect(data.ok).toBe(true);
     const run = data.data as Record<string, unknown>;
     expect(run.run_id).toBe(2);
-    expect(run.workflow_name).toBe('nightly');
+    expect(run.workflow_name).toBe('schedule');
   });
 
   // --- GitLab: no runs matching filter yields structured error ---
   test('gitlab_no_runs — no matching pipeline returns no_runs_found error', async () => {
     execRegistry['git remote get-url origin'] =
       'https://gitlab.com/org/repo.git';
-    execRegistry['glab ci list --branch'] = JSON.stringify([
+    // workflow_name provided, so uses per_page=20
+    execRegistry['glab api projects/org%2Frepo/pipelines?ref=main&per_page=20'] = JSON.stringify([
       {
         id: 10,
         status: 'success',
@@ -302,7 +294,6 @@ describe('ci_run_status handler', () => {
         sha: 'cc33dd44ee55ff66778899001122334455aabbcc',
         created_at: '2025-07-07T00:00:00Z',
         updated_at: '2025-07-07T00:01:00Z',
-        name: 'build',
         source: 'push',
       },
     ]);

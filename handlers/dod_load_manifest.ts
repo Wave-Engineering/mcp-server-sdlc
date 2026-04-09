@@ -1,6 +1,7 @@
 import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
+import { detectPlatform, gitlabApiIssue } from '../lib/glab';
 
 const inputSchema = z.object({
   path: z.string().min(1, 'path must be a non-empty string'),
@@ -21,15 +22,6 @@ function isIssueRef(path: string): boolean {
   return ISSUE_REF.test(path) || SHORT_REF.test(path);
 }
 
-function detectPlatform(): 'github' | 'gitlab' {
-  try {
-    const url = execSync('git remote get-url origin', { encoding: 'utf8' }).trim();
-    return url.includes('github') ? 'github' : 'gitlab';
-  } catch {
-    return 'github';
-  }
-}
-
 function fetchIssueBody(ref: string): string {
   const platform = detectPlatform();
   if (platform === 'github') {
@@ -48,8 +40,8 @@ function fetchIssueBody(ref: string): string {
   } else {
     const m2 = SHORT_REF.exec(ref);
     if (m2) {
-      const raw = execSync(`glab issue view ${m2[1]} --output json`, { encoding: 'utf8' });
-      return (JSON.parse(raw) as { description: string }).description;
+      const result = gitlabApiIssue(Number(m2[1]));
+      return result.description ?? '';
     }
   }
   throw new Error(`unsupported issue ref format: ${ref}`);

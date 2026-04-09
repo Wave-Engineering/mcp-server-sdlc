@@ -1,6 +1,11 @@
+// Origin Operations family handler.
+// See docs/handlers/origin-operations-guide.md for the canonical pattern,
+// gh ↔ glab field mappings, and normalized response schemas.
+
 import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
+import { detectPlatform, gitlabApiCiList } from '../lib/glab.js';
 
 const inputSchema = z.object({
   branch: z.string().min(1, 'branch must be a non-empty string'),
@@ -18,15 +23,6 @@ interface RunRecord {
   sha: string;
   url: string;
   created_at: string;
-}
-
-function detectPlatform(): 'github' | 'gitlab' {
-  try {
-    const url = execSync('git remote get-url origin', { encoding: 'utf8' }).trim();
-    return url.includes('gitlab') ? 'gitlab' : 'github';
-  } catch {
-    return 'github';
-  }
 }
 
 // Map the caller's normalized status filter to the flag value each CLI expects.
@@ -88,39 +84,32 @@ function fetchGithubRuns(branch: string, limit: number, status: Input['status'])
   }));
 }
 
-interface GitlabPipeline {
-  id: number;
-  name?: string;
-  ref?: string;
-  status: string;
-  sha: string;
-  web_url?: string;
-  created_at: string;
-  source?: string;
-}
-
 function fetchGitlabRuns(branch: string, limit: number, status: Input['status']): RunRecord[] {
-  const statusFlag = gitlabStatusFlag(status);
-  const statusArg = statusFlag ? ` --status ${statusFlag}` : '';
-  const cmd =
-    `glab ci list --branch ${JSON.stringify(branch)} --per-page ${limit}${statusArg}` +
-    ` --output json`;
-  const raw = execSync(cmd, { encoding: 'utf8' });
-  const pipelines = JSON.parse(raw) as GitlabPipeline[];
-  return pipelines.map(p => {
+  // GitLab API doesn't support status filtering, so we fetch more and filter client-side.
+  const fetchLimit = status === 'all' ? limit : limit * 3;
+  const pipelines = gitlabApiCiList({ ref: branch, limit: fetchLimit });
+
+  const targetStatus = gitlabStatusFlag(status);
+  const filtered = targetStatus
+    ? pipelines.filter(p => p.status === targetStatus)
+    : pipelines;
+
+  const results = filtered.slice(0, limit).map(p => {
     // GitLab pipelines don't expose a separate status/conclusion; derive conclusion from
     // the terminal state so consumers get a consistent shape across platforms.
     const terminal = p.status === 'success' || p.status === 'failed' || p.status === 'canceled';
     return {
       run_id: p.id,
-      workflow_name: p.name ?? p.source ?? 'pipeline',
+      workflow_name: p.source ?? 'pipeline',
       status: p.status,
       conclusion: terminal ? p.status : null,
       sha: p.sha,
-      url: p.web_url ?? '',
-      created_at: p.created_at,
+      url: p.web_url,
+      created_at: p.created_at ?? '',
     };
   });
+
+  return results;
 }
 
 const ciRunsForBranchHandler: HandlerDef = {

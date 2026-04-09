@@ -2,19 +2,11 @@ import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { parseIssueRef, parseSections, type IssueRef } from '../lib/spec_parser';
+import { detectPlatform, gitlabApiIssue } from '../lib/glab';
 
 const inputSchema = z.object({
   issue_ref: z.string().min(1, 'issue_ref must be a non-empty string'),
 });
-
-function detectPlatform(): 'github' | 'gitlab' {
-  try {
-    const url = execSync('git remote get-url origin', { encoding: 'utf8' }).trim();
-    return url.includes('gitlab') ? 'gitlab' : 'github';
-  } catch {
-    return 'github';
-  }
-}
 
 interface IssueInfo {
   number: number;
@@ -45,26 +37,14 @@ function fetchGithub(ref: IssueRef): IssueInfo {
 }
 
 function fetchGitlab(ref: IssueRef): IssueInfo {
-  const cmd =
-    ref.owner && ref.repo
-      ? `glab issue view ${ref.number} --repo ${ref.owner}/${ref.repo} --output json`
-      : `glab issue view ${ref.number} --output json`;
-  const raw = execSync(cmd, { encoding: 'utf8' });
-  const parsed = JSON.parse(raw) as {
-    iid?: number;
-    id?: number;
-    title: string;
-    description?: string;
-    state: string;
-    labels?: string[];
-  };
+  const parsed = gitlabApiIssue(ref.number, ref.owner && ref.repo ? { owner: ref.owner, repo: ref.repo } : undefined);
   const state = parsed.state === 'opened' ? 'OPEN' : parsed.state.toUpperCase();
   return {
-    number: parsed.iid ?? parsed.id ?? ref.number,
+    number: parsed.iid,
     title: parsed.title,
     body: parsed.description ?? '',
     state,
-    labels: parsed.labels ?? [],
+    labels: parsed.labels,
   };
 }
 

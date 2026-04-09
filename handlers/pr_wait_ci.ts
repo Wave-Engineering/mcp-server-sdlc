@@ -1,6 +1,11 @@
+// Origin Operations family handler.
+// See docs/handlers/origin-operations-guide.md for the canonical pattern,
+// gh ↔ glab field mappings, and normalized response schemas.
+
 import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
+import { detectPlatform, gitlabApiMr } from '../lib/glab';
 
 const inputSchema = z
   .object({
@@ -29,15 +34,6 @@ const POLL_FLOOR_SEC = 5;
 
 function exec(cmd: string): string {
   return execSync(cmd, { encoding: 'utf8' }).trim();
-}
-
-function detectPlatform(): 'github' | 'gitlab' {
-  try {
-    const url = exec('git remote get-url origin');
-    return url.includes('gitlab') ? 'gitlab' : 'github';
-  } catch {
-    return 'github';
-  }
 }
 
 interface GithubCheck {
@@ -92,8 +88,7 @@ interface GitlabMr {
 }
 
 function snapshotGitlab(number: number): ChecksSnapshot {
-  const raw = exec(`glab mr view ${number} --output json`);
-  const mr = JSON.parse(raw) as GitlabMr;
+  const mr = gitlabApiMr(number);
   const status = (
     mr.head_pipeline?.status ??
     mr.pipeline?.status ??

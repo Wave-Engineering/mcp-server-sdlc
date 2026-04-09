@@ -1,6 +1,7 @@
 import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
+import { detectPlatform, parseRepoSlug, gitlabApiRepo } from '../lib/glab';
 
 const inputSchema = z.object({}).strict();
 
@@ -20,29 +21,6 @@ function projectRoot(): string {
     return execSync('git rev-parse --show-toplevel', { encoding: 'utf8' }).trim();
   } catch {
     return process.cwd();
-  }
-}
-
-function detectPlatform(): 'github' | 'gitlab' | 'unknown' {
-  try {
-    const url = execSync('git remote get-url origin', { encoding: 'utf8' }).trim();
-    if (url.includes('github')) return 'github';
-    if (url.includes('gitlab')) return 'gitlab';
-    return 'unknown';
-  } catch {
-    return 'unknown';
-  }
-}
-
-function parseRepoSlug(): string | null {
-  try {
-    const url = execSync('git remote get-url origin', { encoding: 'utf8' }).trim();
-    // Match https or ssh origin URLs.
-    const httpsMatch = /github\.com[/:]([^/]+)\/([^/.]+)/.exec(url);
-    if (httpsMatch) return `${httpsMatch[1]}/${httpsMatch[2]}`;
-    return null;
-  } catch {
-    return null;
   }
 }
 
@@ -113,20 +91,18 @@ function checkGithubTrust(): TrustResult {
 }
 
 function checkGitlabTrust(): TrustResult {
-  // Detect project via glab repo view --output json
+  // Detect project via glab api
   try {
-    const raw = execSync('glab repo view --output json', { encoding: 'utf8' });
-    const info = JSON.parse(raw) as {
-      merge_pipelines_enabled?: boolean;
-      merge_trains_enabled?: boolean;
-    };
-    if (info.merge_pipelines_enabled && info.merge_trains_enabled) {
+    const info = gitlabApiRepo();
+    // Only merge trains provide pre-merge authority
+    if (info.merge_trains_enabled === true) {
       return {
         level: 'pre_merge_authoritative',
-        reason: 'gitlab merge pipelines + merge trains enabled',
+        reason: 'gitlab merge trains enabled',
         cache_ttl_seconds: 3600,
       };
     }
+    // Merge pipelines alone are not sufficient - they still allow merge before CI completes
     return {
       level: 'post_merge_required',
       reason: 'gitlab without merge trains',

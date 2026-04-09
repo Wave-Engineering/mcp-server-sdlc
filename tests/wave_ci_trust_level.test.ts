@@ -87,8 +87,13 @@ describe('wave_ci_trust_level handler', () => {
     execMockFn = (cmd: string) => {
       if (cmd.startsWith('git rev-parse')) return '/tmp/repo4\n';
       if (cmd.startsWith('git remote')) return 'https://gitlab.com/org/repo.git\n';
-      if (cmd.startsWith('glab repo view')) {
+      if (cmd.includes('glab api projects/org%2Frepo')) {
         return JSON.stringify({
+          id: 123,
+          name: 'repo',
+          path: 'repo',
+          path_with_namespace: 'org/repo',
+          web_url: 'https://gitlab.com/org/repo',
           merge_pipelines_enabled: true,
           merge_trains_enabled: true,
         });
@@ -105,8 +110,13 @@ describe('wave_ci_trust_level handler', () => {
     execMockFn = (cmd: string) => {
       if (cmd.startsWith('git rev-parse')) return '/tmp/repo5\n';
       if (cmd.startsWith('git remote')) return 'https://gitlab.com/org/repo.git\n';
-      if (cmd.startsWith('glab repo view')) {
+      if (cmd.includes('glab api projects/org%2Frepo')) {
         return JSON.stringify({
+          id: 123,
+          name: 'repo',
+          path: 'repo',
+          path_with_namespace: 'org/repo',
+          web_url: 'https://gitlab.com/org/repo',
           merge_pipelines_enabled: true,
           merge_trains_enabled: false,
         });

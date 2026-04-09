@@ -1,6 +1,11 @@
+// Origin Operations family handler.
+// See docs/handlers/origin-operations-guide.md for the canonical pattern,
+// gh ↔ glab field mappings, and normalized response schemas.
+
 import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
+import { detectPlatform, gitlabApiMr } from '../lib/glab';
 
 const inputSchema = z.object({
   number: z.number().int().positive('number must be a positive integer'),
@@ -23,15 +28,6 @@ function projectDir(): string {
 
 function exec(cmd: string): string {
   return execSync(cmd, { cwd: projectDir(), encoding: 'utf8' });
-}
-
-function detectPlatform(): 'github' | 'gitlab' {
-  try {
-    const url = exec('git remote get-url origin').trim();
-    return url.includes('github') ? 'github' : 'gitlab';
-  } catch {
-    return 'github';
-  }
 }
 
 function mapGithubChangeType(changeType: string): FileStatus {
@@ -109,9 +105,8 @@ function mapGitlabStatus(change: GitlabChange): FileStatus {
 }
 
 function getGitlabFiles(number: number): FileEntry[] {
-  const raw = exec(`glab mr view ${number} --output json`);
-  const parsed = JSON.parse(raw) as { changes?: GitlabChange[] };
-  const changes = parsed.changes ?? [];
+  const mr = gitlabApiMr(number) as unknown as { changes?: GitlabChange[] };
+  const changes = mr.changes ?? [];
   return changes.map(c => {
     const path = c.new_path ?? c.old_path ?? '';
     const status = mapGitlabStatus(c);

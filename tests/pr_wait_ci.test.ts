@@ -245,10 +245,17 @@ describe('pr_wait_ci handler', () => {
     execMockFn = (cmd: string) => {
       if (cmd.startsWith('git remote'))
         return 'https://gitlab.com/org/repo.git\n';
-      if (cmd.startsWith('glab mr view'))
+      if (cmd.includes('glab api projects/org%2Frepo/merge_requests/3'))
         return JSON.stringify({
+          iid: 3,
           web_url: 'https://gitlab.com/org/repo/-/merge_requests/3',
           head_pipeline: { status: 'success' },
+          title: 'Test MR',
+          description: '',
+          state: 'opened',
+          source_branch: 'feature/test',
+          target_branch: 'main',
+          labels: [],
         });
       throw new Error(`unexpected exec: ${cmd}`);
     };
