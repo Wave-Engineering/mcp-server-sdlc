@@ -50,4 +50,46 @@ if ! echo "$RESPONSE" | grep -q '"name"'; then
     exit 1
 fi
 
-echo "smoke: tools/list returned a non-empty tool array"
+TOOL_COUNT=$(echo "$RESPONSE" | jq -r '.result.tools | length')
+echo "smoke: tools/list returned $TOOL_COUNT tools"
+
+# Per-tool presence assertions (Option B: derived from handlers/*.ts at runtime)
+echo ""
+echo "Per-tool presence assertions:"
+
+MISSING_COUNT=0
+PASSED_COUNT=0
+
+# Derive expected tool names from handlers directory (exclude files starting with _)
+for handler_file in handlers/*.ts; do
+    # Skip if no files match
+    [[ -e "$handler_file" ]] || continue
+
+    # Extract basename without extension
+    tool_name=$(basename "$handler_file" .ts)
+
+    # Skip underscore-prefixed files
+    if [[ "$tool_name" == _* ]]; then
+        continue
+    fi
+
+    # Check if tool_name appears in the tools/list response
+    if echo "$RESPONSE" | jq -e ".result.tools[] | select(.name == \"$tool_name\")" >/dev/null 2>&1; then
+        echo "  [+] $tool_name"
+        PASSED_COUNT=$((PASSED_COUNT + 1))
+    else
+        echo "  [✗] $tool_name MISSING"
+        MISSING_COUNT=$((MISSING_COUNT + 1))
+    fi
+done
+
+echo ""
+TOTAL_COUNT=$((PASSED_COUNT + MISSING_COUNT))
+echo "=== Per-tool assertions: $PASSED_COUNT/$TOTAL_COUNT passed ==="
+
+if [[ $MISSING_COUNT -gt 0 ]]; then
+    echo "SMOKE FAILED: $MISSING_COUNT tool(s) missing from tools/list response"
+    exit 1
+fi
+
+echo "=== Validation complete ==="
