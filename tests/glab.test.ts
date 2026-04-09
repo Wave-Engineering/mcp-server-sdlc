@@ -152,6 +152,26 @@ describe('glab adapter', () => {
       expect(parseRepoSlug()).toBe('my-org/my-repo');
     });
 
+    test('parses SSH URL with nested GitLab groups', () => {
+      execMockFn = (cmd: string) => {
+        if (cmd === 'git remote get-url origin') {
+          return 'git@gitlab.com:analogicdev/internal/tools/perkollate.git';
+        }
+        return '';
+      };
+      expect(parseRepoSlug()).toBe('analogicdev/internal/tools/perkollate');
+    });
+
+    test('parses HTTPS URL with nested GitLab groups', () => {
+      execMockFn = (cmd: string) => {
+        if (cmd === 'git remote get-url origin') {
+          return 'https://gitlab.com/org/sub/group/repo.git';
+        }
+        return '';
+      };
+      expect(parseRepoSlug()).toBe('org/sub/group/repo');
+    });
+
     test('returns null when git remote fails', () => {
       execMockFn = () => {
         throw new Error('fatal: not a git repository');

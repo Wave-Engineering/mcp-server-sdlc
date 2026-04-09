@@ -45,20 +45,22 @@ export function detectPlatform(): 'github' | 'gitlab' {
 }
 
 /**
- * Parse the `owner/repo` slug from the current repo's origin URL.
+ * Parse the project slug from the current repo's origin URL.
  *
- * Handles both SSH (`git@host:owner/repo.git`) and HTTPS
- * (`https://host/owner/repo(.git)?`) remote formats. Returns `null` if the
+ * Handles both SSH (`git@host:path.git`) and HTTPS
+ * (`https://host/path(.git)?`) remote formats, including deeply nested
+ * GitLab group paths (e.g. `org/sub/group/repo`). Returns `null` if the
  * origin cannot be read or the URL does not match the expected pattern.
  *
- * This function is the canonical source of slug parsing. It matches the
- * existing working copy in `handlers/ci_run_logs.ts:36-45`.
+ * This function is the canonical source of slug parsing.
  */
 export function parseRepoSlug(): string | null {
   try {
     const url = execSync('git remote get-url origin', { encoding: 'utf8' }).trim();
-    const m = /[/:]([^/]+)\/([^/.]+?)(\.git)?$/.exec(url);
-    if (m) return `${m[1]}/${m[2]}`;
+    // SSH: git@host:path/to/repo.git → capture everything after ':'
+    // HTTPS: https://host/path/to/repo.git → capture everything after host '/'
+    const m = /(?:git@[^:]+:|https?:\/\/[^/]+\/)(.+?)(?:\.git)?$/.exec(url);
+    if (m) return m[1];
     return null;
   } catch {
     return null;

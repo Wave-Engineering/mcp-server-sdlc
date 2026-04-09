@@ -67,8 +67,12 @@ export function parseSections(markdown: string): ParsedSections {
 }
 
 /**
- * Resolve an issue_ref (`#N` or `org/repo#N`) into an (owner, repo, number)
+ * Resolve an issue_ref (`#N` or `path/to/repo#N`) into an (owner, repo, number)
  * triple. Returns `null` on parse failure.
+ *
+ * For nested GitLab groups (e.g. `org/sub/group/repo#42`), `owner` captures
+ * everything before the last `/` and `repo` is the final segment. This keeps
+ * `projectPath({ owner, repo })` producing the correct full slug.
  */
 export interface IssueRef {
   owner: string | null;
@@ -77,7 +81,8 @@ export interface IssueRef {
 }
 
 export function parseIssueRef(ref: string): IssueRef | null {
-  const full = /^([^/\s]+)\/([^/\s#]+)#(\d+)$/.exec(ref);
+  // Qualified ref: owner/repo#N or org/sub/group/repo#N
+  const full = /^(.+)\/([^/\s#]+)#(\d+)$/.exec(ref);
   if (full) {
     return { owner: full[1], repo: full[2], number: parseInt(full[3], 10) };
   }
