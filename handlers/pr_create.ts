@@ -43,16 +43,10 @@ function run(cmd: string[], cwd: string): RunResult {
   };
 }
 
-// Per-handler platform detection — inline by design. Read .claude-project.md
-// if present, fallback to `git remote -v`. Do NOT extract to a shared lib
-// (would block parallel handler development).
+// Platform detection from the project's git remote. The .claude-project.md
+// approach was too fragile — a mention of "GitLab CI" in a GitHub project
+// would misroute to glab. Use the git remote URL as the source of truth.
 async function detectPlatform(cwd: string): Promise<'github' | 'gitlab'> {
-  const cfgPath = `${cwd}/.claude-project.md`;
-  if (await Bun.file(cfgPath).exists()) {
-    const content = await Bun.file(cfgPath).text();
-    if (/gitlab/i.test(content)) return 'gitlab';
-    if (/github/i.test(content)) return 'github';
-  }
   const remote = run(['git', 'remote', '-v'], cwd);
   const firstLine = remote.stdout.split('\n')[0] ?? '';
   if (/gitlab/i.test(firstLine)) return 'gitlab';

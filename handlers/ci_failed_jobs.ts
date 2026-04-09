@@ -5,6 +5,7 @@
 import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
+import { detectPlatform } from '../lib/glab.js';
 
 const inputSchema = z
   .object({
@@ -26,15 +27,6 @@ interface FailedJob {
 
 function exec(cmd: string): string {
   return execSync(cmd, { encoding: 'utf8' });
-}
-
-function detectPlatform(): 'github' | 'gitlab' {
-  try {
-    const url = exec('git remote get-url origin').trim();
-    return url.includes('github') ? 'github' : 'gitlab';
-  } catch {
-    return 'github';
-  }
 }
 
 // GitHub job shape from `gh run view <id> --json jobs`.

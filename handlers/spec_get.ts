@@ -2,7 +2,7 @@ import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { parseIssueRef, parseSections, type IssueRef } from '../lib/spec_parser';
-import { detectPlatform, gitlabApiIssue } from '../lib/glab';
+import { detectPlatformForRef, gitlabApiIssue } from '../lib/glab';
 
 const inputSchema = z.object({
   issue_ref: z.string().min(1, 'issue_ref must be a non-empty string'),
@@ -79,7 +79,7 @@ const specGetHandler: HandlerDef = {
     }
 
     try {
-      const platform = detectPlatform();
+      const platform = detectPlatformForRef(ref);
       const info = platform === 'github' ? fetchGithub(ref) : fetchGitlab(ref);
       const { sections, order } = parseSections(info.body);
 
