@@ -74,6 +74,7 @@ describe('wave_compute handler', () => {
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
     expect(parsed.topology).toBe('serial');
+    expect(parsed.reason).toBe('dependency chain forces ordering');
     expect(parsed.waves.length).toBe(3);
     expect(parsed.waves[0].issues.length).toBe(1);
     expect(parsed.waves[2].issues[0].ref).toBe('org/repo#7');
@@ -96,6 +97,7 @@ describe('wave_compute handler', () => {
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
     expect(parsed.topology).toBe('parallel');
+    expect(parsed.reason).toBe('no dependencies');
     expect(parsed.waves.length).toBe(1);
     expect(parsed.waves[0].issues.length).toBe(3);
   });

@@ -48,6 +48,7 @@ describe('wave_topology handler', () => {
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
     expect(parsed.topology).toBe('serial');
+    expect(parsed.reason).toBe('dependency chain forces ordering');
     expect(parsed.wave_count).toBe(3);
     expect(parsed.max_parallelism).toBe(1);
   });
@@ -61,6 +62,7 @@ describe('wave_topology handler', () => {
     const result = await handler.execute({ issue_refs: ['#5', '#6', '#7'] });
     const parsed = parseResult(result);
     expect(parsed.topology).toBe('parallel');
+    expect(parsed.reason).toBe('no dependencies');
     expect(parsed.wave_count).toBe(1);
     expect(parsed.max_parallelism).toBe(3);
   });
@@ -74,6 +76,7 @@ describe('wave_topology handler', () => {
     const result = await handler.execute({ issue_refs: ['#5', '#6', '#7'] });
     const parsed = parseResult(result);
     expect(parsed.topology).toBe('mixed');
+    expect(parsed.reason).toBe('mixed parallelism and serial chains');
     expect(parsed.wave_count).toBe(2);
     expect(parsed.max_parallelism).toBe(2);
   });
@@ -86,6 +89,7 @@ describe('wave_topology handler', () => {
     expect(parsed.wave_count).toBe(1);
     expect(parsed.max_parallelism).toBe(1);
     expect(parsed.topology).toBe('serial');
+    expect(parsed.reason).toBe('single issue (trivial)');
   });
 
   test('accepts_epic_ref_alternative', async () => {

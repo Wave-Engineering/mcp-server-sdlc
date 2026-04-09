@@ -55,6 +55,7 @@ describe('wave_dependency_graph handler', () => {
     const result = await handler.execute({ issue_refs: ['#5', '#6'] });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
+    expect(parsed.reason).toBe('dependency chain forces ordering');
     expect(parsed.nodes.length).toBe(2);
     expect(parsed.edges.length).toBe(1);
     expect(parsed.edges[0].from).toBe('org/repo#5');
