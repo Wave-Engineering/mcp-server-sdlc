@@ -198,7 +198,7 @@ describe('pr_diff handler', () => {
     register('git remote get-url origin', 'https://gitlab.com/org/repo.git');
     register('glab mr diff 11', TWO_FILE_DIFF);
     register(
-      'glab mr view 11',
+      'glab api projects/org%2Frepo/merge_requests/11',
       JSON.stringify({ web_url: 'https://gitlab.com/org/repo/-/merge_requests/11' })
     );
 
@@ -218,7 +218,7 @@ describe('pr_diff handler', () => {
     register('git remote get-url origin', 'https://gitlab.com/org/repo.git');
     register('glab mr diff 22', '');
     register(
-      'glab mr view 22',
+      'glab api projects/org%2Frepo/merge_requests/22',
       JSON.stringify({ web_url: 'https://gitlab.com/org/repo/-/merge_requests/22' })
     );
 

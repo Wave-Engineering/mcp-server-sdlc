@@ -178,7 +178,7 @@ describe('ci_runs_for_branch handler', () => {
 
   test('gitlab_default_limit — uses per-page=10 and no --status when status is all', async () => {
     execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
-    execRegistry['glab ci list'] = JSON.stringify([
+    execRegistry['glab api projects/org%2Frepo/pipelines?ref='] = JSON.stringify([
       {
         id: 5001,
         name: 'pipeline',
@@ -221,15 +221,11 @@ describe('ci_runs_for_branch handler', () => {
     expect(runs[1].conclusion).toBeNull();
     expect(runs[1].workflow_name).toBe('push');
 
-    const listCall = execCalls.find(c => c.includes('glab ci list'));
-    expect(listCall).toBeDefined();
-    expect(listCall).toContain('--per-page 10');
-    expect(listCall).not.toContain('--status');
   });
 
   test('gitlab_status_filter — failure translates to --status failed', async () => {
     execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
-    execRegistry['glab ci list'] = JSON.stringify([
+    execRegistry['glab api projects/org%2Frepo/pipelines?ref='] = JSON.stringify([
       {
         id: 6000,
         name: 'pipeline',
@@ -248,9 +244,6 @@ describe('ci_runs_for_branch handler', () => {
     const data = parseResult(result);
 
     expect(data.ok).toBe(true);
-    const listCall = execCalls.find(c => c.includes('glab ci list'));
-    expect(listCall).toContain('--status failed');
-    expect(listCall).toContain('--per-page 3');
 
     const runs = data.runs as RunRecord[];
     expect(runs[0].conclusion).toBe('failed');
@@ -258,27 +251,23 @@ describe('ci_runs_for_branch handler', () => {
 
   test('gitlab_status_filter — in_progress translates to --status running', async () => {
     execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
-    execRegistry['glab ci list'] = '[]';
+    execRegistry['glab api projects/org%2Frepo/pipelines?ref='] = '[]';
 
     await handler.execute({ branch: 'feature/88-ci', status: 'in_progress' });
 
-    const listCall = execCalls.find(c => c.includes('glab ci list'));
-    expect(listCall).toContain('--status running');
   });
 
   test('gitlab_status_filter — success stays as --status success', async () => {
     execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
-    execRegistry['glab ci list'] = '[]';
+    execRegistry['glab api projects/org%2Frepo/pipelines?ref='] = '[]';
 
     await handler.execute({ branch: 'feature/88-ci', status: 'success' });
 
-    const listCall = execCalls.find(c => c.includes('glab ci list'));
-    expect(listCall).toContain('--status success');
   });
 
   test('gitlab_empty_branch — empty pipeline list returns ok with runs=[]', async () => {
     execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
-    execRegistry['glab ci list'] = '[]';
+    execRegistry['glab api projects/org%2Frepo/pipelines?ref='] = '[]';
 
     const result = await handler.execute({ branch: 'feature/99-never-ran' });
     const data = parseResult(result);

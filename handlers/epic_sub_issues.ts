@@ -2,6 +2,7 @@ import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { parseIssueRef, parseSections, type IssueRef } from '../lib/spec_parser';
+import { detectPlatform, parseRepoSlug, gitlabApiIssue } from '../lib/glab';
 
 const inputSchema = z.object({
   epic_ref: z.string().min(1, 'epic_ref must be a non-empty string'),
@@ -13,26 +14,6 @@ interface SubIssue {
   order?: number;
 }
 
-function detectPlatform(): 'github' | 'gitlab' {
-  try {
-    const url = execSync('git remote get-url origin', { encoding: 'utf8' }).trim();
-    return url.includes('gitlab') ? 'gitlab' : 'github';
-  } catch {
-    return 'github';
-  }
-}
-
-function currentRepoSlug(): string | null {
-  try {
-    const url = execSync('git remote get-url origin', { encoding: 'utf8' }).trim();
-    const m = /[/:]([^/]+)\/([^/.]+?)(\.git)?$/.exec(url);
-    if (m) return `${m[1]}/${m[2]}`;
-    return null;
-  } catch {
-    return null;
-  }
-}
-
 function fetchBody(ref: IssueRef): string {
   const platform = detectPlatform();
   if (platform === 'github') {
@@ -41,12 +22,8 @@ function fetchBody(ref: IssueRef): string {
     const raw = execSync(cmd, { encoding: 'utf8' });
     return (JSON.parse(raw) as { body: string }).body ?? '';
   }
-  const cmd =
-    ref.owner && ref.repo
-      ? `glab issue view ${ref.number} --repo ${ref.owner}/${ref.repo} --output json`
-      : `glab issue view ${ref.number} --output json`;
-  const raw = execSync(cmd, { encoding: 'utf8' });
-  return (JSON.parse(raw) as { description?: string }).description ?? '';
+  const result = gitlabApiIssue(ref.number, ref.owner && ref.repo ? { owner: ref.owner, repo: ref.repo } : undefined);
+  return result.description ?? '';
 }
 
 function normalizeRef(ref: string, currentSlug: string | null): string {
@@ -197,7 +174,7 @@ const epicSubIssuesHandler: HandlerDef = {
         };
       }
 
-      const slug = currentRepoSlug();
+      const slug = parseRepoSlug();
       // Try table format first; if it yields nothing, fall back to checklist/bullets.
       let subs = parseTableRows(section, slug);
       if (subs.length === 0) {

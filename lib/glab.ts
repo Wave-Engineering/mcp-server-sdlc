@@ -132,10 +132,13 @@ export interface GitlabMr {
   assignees?: GitlabAssignee[];
   author?: GitlabAssignee;
   merge_status?: string;
+  detailed_merge_status?: string;
   has_conflicts?: boolean;
   draft?: boolean;
   work_in_progress?: boolean;
   head_pipeline?: GitlabPipeline | null;
+  pipeline?: GitlabPipeline | null; // Alias for head_pipeline in some contexts
+  merge_commit_sha?: string | null;
   created_at?: string;
   updated_at?: string;
 }
@@ -163,6 +166,8 @@ export interface GitlabRepo {
   web_url: string;
   default_branch?: string;
   visibility?: string;
+  merge_pipelines_enabled?: boolean;
+  merge_trains_enabled?: boolean;
 }
 
 // ---------------------------------------------------------------------------

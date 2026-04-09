@@ -2,6 +2,7 @@ import { execSync } from 'child_process';
 import { join } from 'path';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
+import { detectPlatform, gitlabApiIssue } from '../lib/glab';
 
 const inputSchema = z.object({}).strict();
 
@@ -21,15 +22,6 @@ async function statusDir(root: string): Promise<string> {
   const sdlc = join(root, '.sdlc');
   if (await fileExists(sdlc)) return join(sdlc, 'waves');
   return join(root, '.claude', 'status');
-}
-
-function detectPlatform(): 'github' | 'gitlab' {
-  try {
-    const url = execSync('git remote get-url origin', { encoding: 'utf8' }).trim();
-    return url.includes('github') ? 'github' : 'gitlab';
-  } catch {
-    return 'github';
-  }
 }
 
 interface PlanIssue {
@@ -104,8 +96,7 @@ function fetchGithubIssueState(n: number): GhIssueState {
 }
 
 function fetchGitlabIssueState(n: number): GhIssueState {
-  const raw = execSync(`glab issue view ${n} --output json`, { encoding: 'utf8' });
-  const parsed = JSON.parse(raw) as { state: string };
+  const parsed = gitlabApiIssue(n);
   const state = parsed.state === 'opened' ? 'OPEN' : parsed.state.toUpperCase();
   return { state };
 }

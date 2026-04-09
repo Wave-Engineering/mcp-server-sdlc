@@ -176,12 +176,16 @@ describe('ibm handler', () => {
     const branch = 'feature/5-gitlab-test';
     execRegistry['git branch --show-current'] = branch;
     execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
-    execRegistry['glab issue view 5'] = JSON.stringify({
+    // New API-based calls via lib/glab
+    execRegistry['glab api projects/org%2Frepo/issues/5'] = JSON.stringify({
+      iid: 5,
       state: 'opened',
       title: 'GitLab Test',
       web_url: 'https://gitlab.com/org/repo/-/issues/5',
+      description: '',
+      labels: [],
     });
-    execRegistry['glab mr list'] = JSON.stringify([]);
+    execRegistry['glab api projects/org%2Frepo/merge_requests?source_branch='] = JSON.stringify([]);
 
     const result = await ibmHandler.execute({});
     const data = parseResult(result.content);

@@ -1,6 +1,11 @@
+// Origin Operations family handler.
+// See docs/handlers/origin-operations-guide.md for the canonical pattern,
+// gh ↔ glab field mappings, and normalized response schemas.
+
 import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
+import { detectPlatform, gitlabApiCiList, type GitlabPipeline } from '../lib/glab.js';
 
 const inputSchema = z
   .object({
@@ -15,15 +20,6 @@ const SHA_PATTERN = /^[0-9a-f]{40}$/i;
 
 function exec(cmd: string): string {
   return execSync(cmd, { encoding: 'utf8' }).trim();
-}
-
-function detectPlatform(): 'github' | 'gitlab' {
-  try {
-    const url = exec('git remote get-url origin');
-    return url.includes('github') ? 'github' : 'gitlab';
-  } catch {
-    return 'github';
-  }
 }
 
 function isSha(ref: string): boolean {
@@ -66,20 +62,6 @@ interface GhRun {
   headSha: string;
   createdAt: string;
   updatedAt: string;
-}
-
-interface GlRun {
-  id: number;
-  status: string;
-  web_url: string;
-  ref: string;
-  sha: string;
-  created_at: string;
-  updated_at: string;
-  finished_at?: string | null;
-  name?: string | null;
-  // glab sometimes exposes source/name in different forms across versions.
-  source?: string | null;
 }
 
 function normalizeGhStatus(status: string): 'queued' | 'in_progress' | 'completed' {
@@ -189,22 +171,16 @@ function ghQueryRuns(
 function glQueryRuns(
   ref: string,
   workflowName: string | undefined
-): GlRun[] {
+): GitlabPipeline[] {
   // GitLab pipelines don't carry a workflow "name" the way GitHub does; we
   // list without filter and then apply workflow_name client-side against the
-  // "name"/"source" fields for best-effort matching.
-  const selector = isSha(ref)
-    ? `--sha ${shellQuote(ref)}`
-    : `--branch ${shellQuote(ref)}`;
-  const pageSize = workflowName ? '20' : '1';
-  const cmd = `glab ci list ${selector} --per-page ${pageSize} --output json`;
-  const raw = exec(cmd);
-  if (!raw) return [];
-  const runs = JSON.parse(raw) as GlRun[];
+  // "source" field for best-effort matching.
+  const limit = workflowName ? 20 : 1;
+  const runs = gitlabApiCiList({ ref, limit });
   if (!workflowName) return runs;
   return runs.filter((r) => {
-    const name = r.name ?? r.source ?? '';
-    return name === workflowName;
+    const source = r.source ?? '';
+    return source === workflowName;
   });
 }
 
@@ -224,19 +200,19 @@ function normalizeGh(run: GhRun): NormalizedRun {
   };
 }
 
-function normalizeGl(run: GlRun): NormalizedRun {
+function normalizeGl(run: GitlabPipeline): NormalizedRun {
   const status = normalizeGlStatus(run.status);
   const conclusion = normalizeGlConclusion(run.status);
   return {
     run_id: run.id,
-    workflow_name: run.name ?? run.source ?? '',
+    workflow_name: run.source ?? '',
     status,
     conclusion,
     url: run.web_url,
     ref: run.ref,
     sha: run.sha,
-    created_at: run.created_at,
-    finished_at: run.finished_at ?? (status === 'completed' ? run.updated_at : null),
+    created_at: run.created_at ?? '',
+    finished_at: run.finished_at ?? (status === 'completed' ? run.updated_at ?? null : null),
   };
 }
 

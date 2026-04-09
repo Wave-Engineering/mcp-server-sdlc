@@ -1,6 +1,11 @@
+// Origin Operations family handler.
+// See docs/handlers/origin-operations-guide.md for the canonical pattern,
+// gh ↔ glab field mappings, and normalized response schemas.
+
 import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
+import { detectPlatform, gitlabApiMr } from '../lib/glab';
 
 const inputSchema = z.object({
   number: z.number().int().positive(),
@@ -31,15 +36,6 @@ interface PrStatusResponse {
 
 function exec(cmd: string): string {
   return execSync(cmd, { encoding: 'utf8' }).trim();
-}
-
-function detectPlatform(): 'github' | 'gitlab' {
-  try {
-    const url = exec('git remote get-url origin');
-    return url.includes('github') ? 'github' : 'gitlab';
-  } catch {
-    return 'github';
-  }
 }
 
 // --- GitHub normalization ---
@@ -198,16 +194,7 @@ function aggregateGitlabPipeline(
 }
 
 function getGitlabMrStatus(num: number): PrStatusResponse {
-  const raw = exec(`glab mr view ${num} --output json`);
-  const mr = JSON.parse(raw) as {
-    iid?: number;
-    state: string;
-    merge_status?: string;
-    detailed_merge_status?: string;
-    web_url: string;
-    pipeline?: { status?: string } | null;
-    head_pipeline?: { status?: string } | null;
-  };
+  const mr = gitlabApiMr(num);
 
   const state = normalizeGitlabState(mr.state);
   const merge_state = normalizeGitlabMergeState(mr.detailed_merge_status, mr.merge_status);

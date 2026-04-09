@@ -189,7 +189,7 @@ describe('pr_files handler — GitHub', () => {
 describe('pr_files handler — GitLab', () => {
   test('added_only_mr — new file computes additions from diff hunks', async () => {
     execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
-    execRegistry['glab mr view 3'] = JSON.stringify({
+    execRegistry['glab api projects/org%2Frepo/merge_requests/3'] = JSON.stringify({
       changes: [
         {
           new_path: 'src/brand-new.ts',
@@ -219,7 +219,7 @@ describe('pr_files handler — GitLab', () => {
 
   test('mixed_changes_mr — added/modified/removed/renamed with computed stats', async () => {
     execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
-    execRegistry['glab mr view 11'] = JSON.stringify({
+    execRegistry['glab api projects/org%2Frepo/merge_requests/11'] = JSON.stringify({
       changes: [
         {
           new_path: 'added.ts',
@@ -294,7 +294,7 @@ describe('pr_files handler — GitLab', () => {
 
   test('rename_with_modifications_mr — renamed file with diff still counts stats', async () => {
     execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
-    execRegistry['glab mr view 15'] = JSON.stringify({
+    execRegistry['glab api projects/org%2Frepo/merge_requests/15'] = JSON.stringify({
       changes: [
         {
           new_path: 'b.ts',
@@ -320,7 +320,7 @@ describe('pr_files handler — GitLab', () => {
 
   test('empty_changes_mr — missing changes field returns empty list', async () => {
     execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
-    execRegistry['glab mr view 50'] = JSON.stringify({});
+    execRegistry['glab api projects/org%2Frepo/merge_requests/50'] = JSON.stringify({});
 
     const result = await prFilesHandler.execute({ number: 50 });
     const data = parseResult(result.content);

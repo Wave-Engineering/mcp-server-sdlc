@@ -1,6 +1,11 @@
+// Origin Operations family handler.
+// See docs/handlers/origin-operations-guide.md for the canonical pattern,
+// gh ↔ glab field mappings, and normalized response schemas.
+
 import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
+import { detectPlatform, gitlabApiCiList, type GitlabPipeline } from '../lib/glab.js';
 
 const inputSchema = z
   .object({
@@ -39,16 +44,6 @@ export function __resetSleep(): void {
 
 function exec(cmd: string): string {
   return execSync(cmd, { encoding: 'utf8' }).trim();
-}
-
-function detectPlatform(): 'github' | 'gitlab' {
-  try {
-    const url = exec('git remote get-url origin');
-    if (url.includes('gitlab')) return 'gitlab';
-    return 'github';
-  } catch {
-    return 'github';
-  }
 }
 
 function isSha(ref: string): boolean {
@@ -167,49 +162,15 @@ function githubSnapshot(run: GithubRun): RunSnapshot {
 
 // --- GitLab polling ---
 
-function gitlabListCmd(ref: string): string {
-  const quotedRef = shellQuote(ref);
-  // glab ci list flags vary across versions; --sha is for commits, --branch for branches.
-  const refFlag = isSha(ref) ? `--sha "${quotedRef}"` : `--branch "${quotedRef}"`;
-  return `glab ci list ${refFlag} --output json`;
-}
-
-interface GitlabPipeline {
-  id: number;
-  status: string;
-  ref?: string;
-  sha?: string;
-  web_url?: string;
-  name?: string;
-  // Some glab versions return snake_case, some camelCase. Accept both for safety.
-  created_at?: string;
-  createdAt?: string;
-}
-
 function fetchGitlabPipelines(ref: string): GitlabPipeline[] {
-  const cmd = gitlabListCmd(ref);
-  let raw: string;
   try {
-    raw = exec(cmd);
+    return gitlabApiCiList({ ref, limit: 20 });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(
-      `glab ci list failed for ref '${ref}': ${msg}. Is 'glab' authenticated and is the ref pushed to origin?`
+      `GitLab API pipelines list failed for ref '${ref}': ${msg}. Is 'glab' authenticated and is the ref pushed to origin?`
     );
   }
-  if (!raw) return [];
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new Error(`glab ci list returned non-JSON output: ${raw.slice(0, 200)}`);
-  }
-  if (!Array.isArray(parsed)) {
-    throw new Error(
-      `glab ci list returned unexpected shape (expected array): ${String(parsed).slice(0, 200)}`
-    );
-  }
-  return parsed as GitlabPipeline[];
 }
 
 function pickGitlabPipeline(
@@ -217,15 +178,15 @@ function pickGitlabPipeline(
   workflowName: string | undefined
 ): GitlabPipeline | null {
   if (pipelines.length === 0) return null;
-  // GitLab doesn't really have "workflow names" the way GH Actions does; filter by `name`
+  // GitLab doesn't really have "workflow names" the way GH Actions does; filter by `source`
   // if the caller asked, otherwise take the newest.
   const filtered = workflowName
-    ? pipelines.filter((p) => p.name === workflowName)
+    ? pipelines.filter((p) => p.source === workflowName)
     : pipelines;
   if (filtered.length === 0) return null;
   const sorted = [...filtered].sort((a, b) => {
-    const at = a.created_at ?? a.createdAt;
-    const bt = b.created_at ?? b.createdAt;
+    const at = a.created_at;
+    const bt = b.created_at;
     const ap = at ? Date.parse(at) : 0;
     const bp = bt ? Date.parse(bt) : 0;
     return bp - ap;
@@ -268,11 +229,11 @@ function gitlabSnapshot(pipeline: GitlabPipeline): RunSnapshot {
   const normalized = normalizeGitlabStatus(pipeline.status);
   return {
     run_id: pipeline.id,
-    workflow_name: pipeline.name ?? '(gitlab pipeline)',
+    workflow_name: pipeline.source ?? '(gitlab pipeline)',
     status: normalized.status,
     conclusion: normalized.conclusion,
-    url: pipeline.web_url ?? '',
-    sha: pipeline.sha ?? '',
+    url: pipeline.web_url,
+    sha: pipeline.sha,
   };
 }
 

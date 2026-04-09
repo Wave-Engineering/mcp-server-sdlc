@@ -1,3 +1,7 @@
+// Origin Operations family handler.
+// See docs/handlers/origin-operations-guide.md for the canonical pattern,
+// gh ↔ glab field mappings, and normalized response schemas.
+
 import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';

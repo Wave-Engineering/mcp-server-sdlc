@@ -1,6 +1,11 @@
+// Origin Operations family handler.
+// See docs/handlers/origin-operations-guide.md for the canonical pattern,
+// gh ↔ glab field mappings, and normalized response schemas.
+
 import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
+import { detectPlatform, gitlabApiMrList } from '../lib/glab';
 
 const inputSchema = z.object({
   head: z.string().optional(),
@@ -23,15 +28,6 @@ interface NormalizedPr {
 
 function exec(cmd: string): string {
   return execSync(cmd, { encoding: 'utf8' }).trim();
-}
-
-function detectPlatform(): 'github' | 'gitlab' {
-  try {
-    const url = exec('git remote get-url origin');
-    return url.includes('github') ? 'github' : 'gitlab';
-  } catch {
-    return 'github';
-  }
 }
 
 function quoteArg(s: string): string {
@@ -70,27 +66,14 @@ function listGithubPrs(args: Input): NormalizedPr[] {
   }));
 }
 
-interface GitlabMr {
-  iid: number;
-  title: string;
-  state: string;
-  source_branch: string;
-  target_branch: string;
-  web_url: string;
-}
-
 function listGitlabMrs(args: Input): NormalizedPr[] {
-  const flags: string[] = [];
-  if (args.head !== undefined) flags.push(`--source-branch ${quoteArg(args.head)}`);
-  if (args.base !== undefined) flags.push(`--target-branch ${quoteArg(args.base)}`);
-  flags.push(`--state ${quoteArg(args.state)}`);
-  if (args.author !== undefined) flags.push(`--author ${quoteArg(args.author)}`);
-  flags.push(`--per-page ${args.limit}`);
-  flags.push('--output json');
-
-  const cmd = `glab mr list ${flags.join(' ')}`;
-  const raw = exec(cmd);
-  const parsed = JSON.parse(raw) as GitlabMr[];
+  const parsed = gitlabApiMrList({
+    head: args.head,
+    base: args.base,
+    state: args.state,
+    author: args.author,
+    limit: args.limit,
+  });
   return parsed.map((mr) => ({
     number: mr.iid,
     title: mr.title,

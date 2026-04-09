@@ -172,9 +172,10 @@ describe('pr_list handler', () => {
   });
 
   // --- gitlab: head filter ---
-  test('gitlab head_filter — uses --source-branch on glab mr list', async () => {
+  test('gitlab head_filter — filters by source_branch via API', async () => {
     execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
-    execRegistry['glab mr list'] = JSON.stringify([
+    // Default state is 'open' -> 'opened' in GitLab API
+    execRegistry['glab api projects/org%2Frepo/merge_requests?state=opened&source_branch='] = JSON.stringify([
       {
         iid: 5,
         title: 'Some MR',
@@ -182,6 +183,7 @@ describe('pr_list handler', () => {
         source_branch: 'feature/5-thing',
         target_branch: 'main',
         web_url: 'https://gitlab.com/org/repo/-/merge_requests/5',
+        labels: [],
       },
     ]);
 
@@ -195,40 +197,37 @@ describe('pr_list handler', () => {
     expect(prs[0].head).toBe('feature/5-thing');
     expect(prs[0].base).toBe('main');
     expect(prs[0].url).toBe('https://gitlab.com/org/repo/-/merge_requests/5');
-
-    const glabCall = execCalls.find((c) => c.startsWith('glab mr list')) ?? '';
-    expect(glabCall).toContain("--source-branch 'feature/5-thing'");
   });
 
   // --- gitlab: state filter ---
-  test('gitlab state_filter — passes --state flag and default is open', async () => {
+  test('gitlab state_filter — filters by state via API (merged, default opened)', async () => {
     execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
-    execRegistry['glab mr list'] = JSON.stringify([]);
+    execRegistry['glab api projects/org%2Frepo/merge_requests?state='] = JSON.stringify([]);
 
     await prListHandler.execute({ state: 'merged' });
-    let glabCall = execCalls.find((c) => c.startsWith('glab mr list')) ?? '';
-    expect(glabCall).toContain("--state 'merged'");
+    let glabCall = execCalls.find((c) => c.includes('glab api projects/')) ?? '';
+    expect(glabCall).toContain('state=merged');
 
     execCalls = [];
     await prListHandler.execute({});
-    glabCall = execCalls.find((c) => c.startsWith('glab mr list')) ?? '';
-    expect(glabCall).toContain("--state 'open'");
+    glabCall = execCalls.find((c) => c.includes('glab api projects/')) ?? '';
+    expect(glabCall).toContain('state=opened');
   });
 
   // --- gitlab: author filter ---
-  test('gitlab author_filter — passes --author flag when provided', async () => {
+  test('gitlab author_filter — filters by author_username via API', async () => {
     execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
-    execRegistry['glab mr list'] = JSON.stringify([]);
+    execRegistry['glab api projects/org%2Frepo/merge_requests?author_username='] = JSON.stringify([]);
 
     await prListHandler.execute({ author: 'alice' });
-    const glabCall = execCalls.find((c) => c.startsWith('glab mr list')) ?? '';
-    expect(glabCall).toContain("--author 'alice'");
+    const glabCall = execCalls.find((c) => c.includes('glab api projects/')) ?? '';
+    expect(glabCall).toContain('author_username=alice');
   });
 
   // --- gitlab: empty result ---
   test('gitlab empty_result — returns {prs: []} not an error', async () => {
     execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
-    execRegistry['glab mr list'] = JSON.stringify([]);
+    execRegistry['glab api projects/org%2Frepo/merge_requests?state=opened&source_branch='] = JSON.stringify([]);
 
     const result = await prListHandler.execute({ head: 'feature/99-none' });
     const data = parseResult(result.content);
@@ -237,20 +236,20 @@ describe('pr_list handler', () => {
     expect(data.prs).toEqual([]);
   });
 
-  // --- gitlab: default limit via --per-page ---
-  test('gitlab default_limit — uses --per-page 20 by default', async () => {
+  // --- gitlab: default limit via per_page query param ---
+  test('gitlab default_limit — uses per_page=20 by default', async () => {
     execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
-    execRegistry['glab mr list'] = JSON.stringify([]);
+    execRegistry['glab api projects/org%2Frepo/merge_requests?state=opened&per_page=20'] = JSON.stringify([]);
 
     await prListHandler.execute({});
-    const glabCall = execCalls.find((c) => c.startsWith('glab mr list')) ?? '';
-    expect(glabCall).toContain('--per-page 20');
+    const glabCall = execCalls.find((c) => c.includes('glab api projects/')) ?? '';
+    expect(glabCall).toContain('per_page=20');
   });
 
   // --- gitlab: normalizes field names ---
   test('gitlab normalize — maps source_branch/target_branch to head/base and iid to number', async () => {
     execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
-    execRegistry['glab mr list'] = JSON.stringify([
+    execRegistry['glab api projects/org%2Frepo/merge_requests?state=opened&per_page=20'] = JSON.stringify([
       {
         iid: 21,
         title: 'Docs update',
@@ -258,6 +257,7 @@ describe('pr_list handler', () => {
         source_branch: 'docs/21-update',
         target_branch: 'main',
         web_url: 'https://gitlab.com/org/repo/-/merge_requests/21',
+        labels: [],
       },
     ]);
 

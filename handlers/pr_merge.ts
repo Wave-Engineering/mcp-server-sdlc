@@ -1,7 +1,12 @@
+// Origin Operations family handler.
+// See docs/handlers/origin-operations-guide.md for the canonical pattern,
+// gh ↔ glab field mappings, and normalized response schemas.
+
 import { execSync } from 'child_process';
 import { writeFileSync } from 'fs';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
+import { detectPlatform, gitlabApiMr } from '../lib/glab.js';
 
 // Codebase convention: child_process.execSync (29/36 handlers). Tests mock it
 // via `mock.module('child_process', ...)` — see tests/pr_merge.test.ts.
@@ -72,15 +77,6 @@ function exec(cmd: string): string {
   return execSync(cmd, { encoding: 'utf8' });
 }
 
-function detectPlatform(): 'github' | 'gitlab' {
-  try {
-    const url = exec('git remote get-url origin').trim();
-    return url.includes('gitlab') ? 'gitlab' : 'github';
-  } catch {
-    return 'github';
-  }
-}
-
 /**
  * Escape a value for safe inclusion inside a single-quoted shell argument.
  * Used only for single-line squash messages; multi-line messages go via file.
@@ -90,9 +86,8 @@ function shellEscape(value: string): string {
 }
 
 function writeTempMessageFile(message: string): string {
-  // /tmp is cleaned by the OS; we intentionally do not delete the file so
-  // we can stay within the fs-module surface already mocked by sibling tests
-  // (writeFileSync only).
+  // /tmp is cleaned by the OS; we intentionally do not delete the file to avoid
+  // complicating the fs-module surface already mocked by tests (writeFileSync only).
   const path = `/tmp/pr-merge-msg-${Date.now()}-${Math.floor(Math.random() * 1e6)}.txt`;
   writeFileSync(path, message);
   return path;
@@ -155,17 +150,11 @@ function fetchGithubPrUrl(number: number): string {
   return parsed.url ?? '';
 }
 
-interface GitlabMrViewResponse {
-  web_url?: string;
-  merge_commit_sha?: string;
-}
-
 function fetchGitlabMrMergeInfo(number: number): { url: string; merge_commit_sha?: string } {
-  const raw = exec(`glab mr view ${number} --output json`);
-  const parsed = JSON.parse(raw) as GitlabMrViewResponse;
+  const mr = gitlabApiMr(number);
   return {
-    url: parsed.web_url ?? '',
-    merge_commit_sha: parsed.merge_commit_sha,
+    url: mr.web_url ?? '',
+    merge_commit_sha: mr.merge_commit_sha ?? undefined,
   };
 }
 

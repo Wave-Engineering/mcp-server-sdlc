@@ -233,7 +233,7 @@ describe('pr_status handler', () => {
   test('gitlab_open_clean_pipeline_success', async () => {
     registerGitlabRemote();
     register(
-      'glab mr view 5 --output json',
+      'glab api projects/group%2Fexample/merge_requests/5',
       JSON.stringify({
         iid: 5,
         state: 'opened',
@@ -261,7 +261,7 @@ describe('pr_status handler', () => {
   test('gitlab_open_failed_pipeline', async () => {
     registerGitlabRemote();
     register(
-      'glab mr view 6 --output json',
+      'glab api projects/group%2Fexample/merge_requests/6',
       JSON.stringify({
         iid: 6,
         state: 'opened',
@@ -284,7 +284,7 @@ describe('pr_status handler', () => {
   test('gitlab_open_pending_pipeline', async () => {
     registerGitlabRemote();
     register(
-      'glab mr view 8 --output json',
+      'glab api projects/group%2Fexample/merge_requests/8',
       JSON.stringify({
         iid: 8,
         state: 'opened',
@@ -307,7 +307,7 @@ describe('pr_status handler', () => {
   test('gitlab_merged', async () => {
     registerGitlabRemote();
     register(
-      'glab mr view 12 --output json',
+      'glab api projects/group%2Fexample/merge_requests/12',
       JSON.stringify({
         iid: 12,
         state: 'merged',
@@ -330,7 +330,7 @@ describe('pr_status handler', () => {
   test('gitlab_closed', async () => {
     registerGitlabRemote();
     register(
-      'glab mr view 33 --output json',
+      'glab api projects/group%2Fexample/merge_requests/33',
       JSON.stringify({
         iid: 33,
         state: 'closed',
@@ -351,7 +351,7 @@ describe('pr_status handler', () => {
   test('gitlab_legacy_merge_status_fallback', async () => {
     registerGitlabRemote();
     register(
-      'glab mr view 44 --output json',
+      'glab api projects/group%2Fexample/merge_requests/44',
       JSON.stringify({
         iid: 44,
         state: 'opened',
