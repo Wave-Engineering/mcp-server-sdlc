@@ -310,11 +310,33 @@ describe('commutativity_verify handler', () => {
     expect(execCalls).toHaveLength(1);
     const cmd = execCalls[0];
     expect(cmd).toContain('commutativity-probe analyze');
-    expect(cmd).toContain('--repo /my/repo');
-    expect(cmd).toContain('--base v1.0.0');
+    expect(cmd).toContain("--repo '/my/repo'");
+    expect(cmd).toContain("--base 'v1.0.0'");
     expect(cmd).toContain('--json');
-    expect(cmd).toContain('feature/alpha');
-    expect(cmd).toContain('feature/beta');
+    expect(cmd).toContain("'feature/alpha'");
+    expect(cmd).toContain("'feature/beta'");
+  });
+
+  // --- shell escaping: spaces in repo path ---
+  test('shell-escapes repo path with spaces', async () => {
+    onExec('commutativity-probe', probeJson('STRONG', [{
+      a: 'feature/a',
+      b: 'feature/b',
+      verdict: 'STRONG',
+      reason: 'Disjoint',
+    }]));
+
+    await handler.execute({
+      repo_path: '/my repo/with spaces',
+      base_ref: 'main',
+      changesets: [
+        { id: 'mr-1', head_ref: 'feature/a' },
+        { id: 'mr-2', head_ref: 'feature/b' },
+      ],
+    });
+
+    const cmd = execCalls[0];
+    expect(cmd).toContain("--repo '/my repo/with spaces'");
   });
 
   // --- three changesets produce correct pair count ---

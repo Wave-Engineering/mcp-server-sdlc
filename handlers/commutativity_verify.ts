@@ -37,14 +37,23 @@ function isValidVerdict(v: string): v is (typeof VALID_VERDICTS)[number] {
   return (VALID_VERDICTS as readonly string[]).includes(v);
 }
 
-/** Build the commutativity-probe CLI command. */
+/**
+ * Shell-escape a value for safe inclusion in a single-quoted shell argument.
+ * Prevents injection when user-provided values (repo paths, refs) contain
+ * spaces, quotes, or metacharacters.
+ */
+function shellEscape(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/** Build the commutativity-probe CLI command with shell-escaped arguments. */
 function buildCommand(args: Input): string {
-  const branches = args.changesets.map(c => c.head_ref);
+  const branches = args.changesets.map(c => shellEscape(c.head_ref));
   return [
     'commutativity-probe',
     'analyze',
-    '--repo', args.repo_path,
-    '--base', args.base_ref,
+    '--repo', shellEscape(args.repo_path),
+    '--base', shellEscape(args.base_ref),
     '--json',
     ...branches,
   ].join(' ');
