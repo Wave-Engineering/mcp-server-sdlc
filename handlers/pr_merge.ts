@@ -20,6 +20,7 @@ const inputSchema = z.object({
   number: z.number().int().positive('number must be a positive integer'),
   squash_message: z.string().optional(),
   use_merge_queue: z.boolean().optional(),
+  skip_train: z.boolean().optional(),
 });
 
 type Input = z.infer<typeof inputSchema>;
@@ -196,7 +197,7 @@ function mergeGithub(args: Input): MergeSuccess | MergeFailure {
     };
   }
 
-  // Default: direct-squash first, fall back to --auto on merge-queue rejection.
+  // Direct-squash merge (no merge-queue enrollment).
   const directCmd = buildGithubMergeCommand(args.number, false, args.squash_message);
   try {
     exec(directCmd);
@@ -211,6 +212,14 @@ function mergeGithub(args: Input): MergeSuccess | MergeFailure {
     };
   } catch (err) {
     const fail = extractFailure(err);
+    // When skip_train is set, commutativity analysis has proven the merge is safe.
+    // Do not fall back to the merge queue — surface the error directly.
+    if (args.skip_train === true) {
+      return {
+        ok: false,
+        error: `gh pr merge failed (skip_train): ${fail.message}`,
+      };
+    }
     if (!stderrIndicatesMergeQueue(fail.stderr) && !stderrIndicatesMergeQueue(fail.message)) {
       return {
         ok: false,
@@ -219,7 +228,7 @@ function mergeGithub(args: Input): MergeSuccess | MergeFailure {
     }
   }
 
-  // Merge-queue fallback.
+  // Merge-queue fallback (only reached when skip_train is not set).
   const autoCmd = buildGithubMergeCommand(args.number, true, args.squash_message);
   try {
     exec(autoCmd);
@@ -265,7 +274,9 @@ function mergeGitlab(args: Input): MergeSuccess | MergeFailure {
 const prMergeHandler: HandlerDef = {
   name: 'pr_merge',
   description:
-    'Merge a PR/MR with squash + delete source branch. Auto-detects merge-queue enforcement on GitHub and falls back to --auto mode. Supports custom multi-line squash messages.',
+    'Merge a PR/MR with squash + delete source branch. Auto-detects merge-queue enforcement on GitHub and falls back to --auto mode. ' +
+    'Set skip_train=true to bypass merge queue enrollment when commutativity analysis (commutativity_verify) has proven the merge is safe. ' +
+    'Supports custom multi-line squash messages.',
   inputSchema,
   async execute(rawArgs: unknown) {
     let args: Input;

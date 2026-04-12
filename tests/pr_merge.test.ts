@@ -345,4 +345,98 @@ describe('pr_merge handler', () => {
     expect(data.ok).toBe(false);
     expect((data.error as string)).toContain('glab mr merge failed');
   });
+
+  // --- skip_train: true ---
+  test('github skip_train — direct merge succeeds without merge-queue fallback', async () => {
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git\n');
+    onExec('gh pr merge 60 --squash --delete-branch', '');
+    onExec(
+      'gh pr view 60 --json mergeCommit,url',
+      JSON.stringify({
+        mergeCommit: { oid: 'skip123' },
+        url: 'https://github.com/org/repo/pull/60',
+      }),
+    );
+
+    const result = await prMergeHandler.execute({ number: 60, skip_train: true });
+    const data = parseResult(result);
+
+    expect(data.ok).toBe(true);
+    expect(data.merge_method).toBe('direct_squash');
+    expect(data.merge_commit_sha).toBe('skip123');
+    // No --auto call should have been made.
+    const autoCall = execCalls.find(
+      c => c.includes('gh pr merge 60') && c.includes('--auto'),
+    );
+    expect(autoCall).toBeUndefined();
+  });
+
+  test('github skip_train — merge-queue rejection surfaces as error (no fallback)', async () => {
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git\n');
+    onExec('gh pr merge 61 --squash --delete-branch', () => {
+      throw mergeQueueError();
+    });
+
+    const result = await prMergeHandler.execute({ number: 61, skip_train: true });
+    const data = parseResult(result);
+
+    expect(data.ok).toBe(false);
+    expect((data.error as string)).toContain('skip_train');
+    // Confirm no --auto fallback was attempted.
+    const autoCall = execCalls.find(
+      c => c.includes('gh pr merge 61') && c.includes('--auto'),
+    );
+    expect(autoCall).toBeUndefined();
+  });
+
+  test('github skip_train=false — preserves normal merge-queue fallback behavior', async () => {
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git\n');
+
+    let directCalled = false;
+    onExec('gh pr merge 62 --squash --delete-branch', () => {
+      if (!directCalled) {
+        directCalled = true;
+        throw mergeQueueError();
+      }
+      return '';
+    });
+    onExec(
+      'gh pr view 62 --json url',
+      JSON.stringify({ url: 'https://github.com/org/repo/pull/62' }),
+    );
+
+    const result = await prMergeHandler.execute({ number: 62, skip_train: false });
+    const data = parseResult(result);
+
+    expect(data.ok).toBe(true);
+    expect(data.merge_method).toBe('merge_queue');
+    // --auto fallback WAS attempted.
+    const autoCall = execCalls.find(
+      c => c.includes('gh pr merge 62') && c.includes('--auto'),
+    );
+    expect(autoCall).toBeDefined();
+  });
+
+  test('github skip_train omitted — preserves normal merge-queue fallback behavior', async () => {
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git\n');
+
+    let directCalled = false;
+    onExec('gh pr merge 63 --squash --delete-branch', () => {
+      if (!directCalled) {
+        directCalled = true;
+        throw mergeQueueError();
+      }
+      return '';
+    });
+    onExec(
+      'gh pr view 63 --json url',
+      JSON.stringify({ url: 'https://github.com/org/repo/pull/63' }),
+    );
+
+    const result = await prMergeHandler.execute({ number: 63 });
+    const data = parseResult(result);
+
+    expect(data.ok).toBe(true);
+    expect(data.merge_method).toBe('merge_queue');
+  });
 });
