@@ -14,7 +14,8 @@ const inputSchema = z.object({
 
 const flightOverlapHandler: HandlerDef = {
   name: 'flight_overlap',
-  description: 'Compute file-overlap conflicts between a set of issue target manifests',
+  description:
+    'Compute file-overlap conflicts between issue target manifests. Each conflict includes an overlap_type (manifest_only | source | mixed) so callers can discount DEPENDENCY_MANIFEST-only overlaps.',
   inputSchema,
   async execute(rawArgs: unknown) {
     let args: z.infer<typeof inputSchema>;

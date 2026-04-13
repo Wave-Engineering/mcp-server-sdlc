@@ -80,6 +80,45 @@ describe('flight_partition handler', () => {
     expect(parsed.flights[0].issues).toEqual(['#10', '#3', '#7']);
   });
 
+  test('manifest_only_overlap_single_flight — Cargo.toml overlap discounted', async () => {
+    const result = await handler.execute({
+      manifests: [
+        { issue_ref: '#1', files_to_modify: ['Cargo.toml', 'Cargo.lock', 'src/a.rs'] },
+        { issue_ref: '#2', files_to_modify: ['Cargo.toml', 'Cargo.lock', 'src/b.rs'] },
+      ],
+    });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    // Manifest-only overlap is discounted → single flight
+    expect(parsed.flights.length).toBe(1);
+    expect(parsed.flights[0].issues).toEqual(['#1', '#2']);
+  });
+
+  test('source_overlap_multiple_flights — source file overlap NOT discounted', async () => {
+    const result = await handler.execute({
+      manifests: [
+        { issue_ref: '#1', files_to_modify: ['package.json', 'src/shared.ts'] },
+        { issue_ref: '#2', files_to_modify: ['package.json', 'src/shared.ts'] },
+      ],
+    });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    // Mixed overlap (source + manifest) → separate flights
+    expect(parsed.flights.length).toBe(2);
+  });
+
+  test('file_classifications_param_accepted', async () => {
+    const result = await handler.execute({
+      manifests: [
+        { issue_ref: '#1', files_to_modify: ['a.ts'] },
+      ],
+      file_classifications: { 'a.ts': 'ANALYZABLE' },
+    });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.flights.length).toBe(1);
+  });
+
   test('aggressive_strategy — currently equivalent to safe (v1)', async () => {
     const result = await handler.execute({
       manifests: [
