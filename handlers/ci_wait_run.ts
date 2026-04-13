@@ -6,6 +6,7 @@ import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { detectPlatform, gitlabApiCiList, type GitlabPipeline } from '../lib/glab.js';
+import { log } from '../logger.js';
 
 const inputSchema = z
   .object({
@@ -55,9 +56,7 @@ function shortRef(ref: string): string {
 }
 
 function logPoll(ref: string, elapsedSec: number, status: string): void {
-  process.stderr.write(
-    `[ci_wait_run] ref=${shortRef(ref)} t=${elapsedSec}s status=${status}\n`
-  );
+  log.debug('poll', { tool: 'ci_wait_run', ref: shortRef(ref), elapsed_sec: elapsedSec, status });
 }
 
 // --- normalized poll result ---

@@ -6,6 +6,7 @@ import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { detectPlatform, gitlabApiMr } from '../lib/glab';
+import { log } from '../logger.js';
 
 const inputSchema = z
   .object({
@@ -141,10 +142,14 @@ function decide(snap: ChecksSnapshot): FinalState | null {
 }
 
 function logCycle(number: number, elapsedSec: number, snap: ChecksSnapshot) {
-  // stderr only — never stdout (would corrupt MCP protocol).
-  process.stderr.write(
-    `[pr_wait_ci] #${number} t=${elapsedSec}s pending=${snap.pending}/${snap.total}\n`,
-  );
+  log.debug('poll', {
+    tool: 'pr_wait_ci',
+    number,
+    elapsed_sec: elapsedSec,
+    pending: snap.pending,
+    total: snap.total,
+    summary: snap.summary,
+  });
 }
 
 // Injection seam for tests — swap sleep + snapshot without touching real time/net.
