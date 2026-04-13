@@ -1,6 +1,7 @@
 import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
+import { log } from '../logger.js';
 
 const changesetSchema = z.object({
   id: z.string().min(1),
@@ -99,17 +100,21 @@ const commutativityVerifyHandler: HandlerDef = {
 
     const cmd = buildCommand(args);
     let raw: string;
+    const subStart = Date.now();
     try {
       raw = execSync(cmd, {
         encoding: 'utf8',
         timeout: SUBPROCESS_TIMEOUT_MS,
         cwd: args.repo_path,
       });
+      log.info('subprocess', { cmd: 'commutativity-probe', exit_code: 0, ms: Date.now() - subStart });
     } catch (err) {
+      const subMs = Date.now() - subStart;
       // Fail safe: any subprocess error → ORACLE_REQUIRED verdict with warning.
       const message = err instanceof Error ? err.message : String(err);
       const timedOut = message.includes('ETIMEDOUT') || message.includes('timed out');
       if (timedOut) {
+        log.warn('subprocess', { cmd: 'commutativity-probe', exit_code: -1, ms: subMs }, 'Subprocess timed out');
         return {
           content: [{
             type: 'text' as const,
@@ -122,6 +127,7 @@ const commutativityVerifyHandler: HandlerDef = {
           }],
         };
       }
+      log.error('subprocess', { cmd: 'commutativity-probe', exit_code: -1, ms: subMs, stderr: message.slice(0, 200) });
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: `commutativity-probe failed: ${message}` }) }],
       };
