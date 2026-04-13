@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      - run: npm install -g bun@1.3.11
       - run: sudo apt-get install -y shellcheck
       - run: bun install
       - run: scripts/ci/validate.sh
