@@ -13,6 +13,12 @@ const manifestSchema = z.object({
   files_to_modify: z.array(z.string()).optional(),
 });
 
+const predictedVerdictSchema = z.object({
+  a: z.string().min(1),
+  b: z.string().min(1),
+  verdict: z.enum(['STRONG', 'MEDIUM', 'WEAK', 'ORACLE_REQUIRED']),
+});
+
 const inputSchema = z.object({
   manifests: z.array(manifestSchema),
   strategy: z.enum(['safe', 'aggressive']).optional().default('safe'),
@@ -20,6 +26,10 @@ const inputSchema = z.object({
    *  built-in `classifyFile()` for the specified paths. Useful when the
    *  caller already has classification data from commutativity-probe. */
   file_classifications: z.record(z.string(), z.string()).optional(),
+  /** Optional predicted verdicts from commutativity_predict. When present,
+   *  pairs with STRONG/MEDIUM verdicts are allowed in the same flight even
+   *  if they have file-level conflicts. */
+  predicted_verdicts: z.array(predictedVerdictSchema).optional(),
 });
 
 interface Flight {
@@ -63,7 +73,7 @@ const flightPartitionHandler: HandlerDef = {
       }
 
       const conflicts = computePairConflicts(manifests);
-      const groups = conflictFreeGroups(manifests, conflicts);
+      const groups = conflictFreeGroups(manifests, conflicts, args.predicted_verdicts);
 
       const flights: Flight[] = groups.map((issues, idx) => {
         let reason: string;

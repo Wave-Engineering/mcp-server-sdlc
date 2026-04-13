@@ -119,6 +119,56 @@ describe('flight_partition handler', () => {
     expect(parsed.flights.length).toBe(1);
   });
 
+  test('predicted_verdicts_STRONG_discounts_source_overlap', async () => {
+    const result = await handler.execute({
+      manifests: [
+        { issue_ref: '#1', files_to_modify: ['src/shared.ts'] },
+        { issue_ref: '#2', files_to_modify: ['src/shared.ts'] },
+      ],
+      predicted_verdicts: [
+        { a: '#1', b: '#2', verdict: 'STRONG' },
+      ],
+    });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    // Source overlap normally creates 2 flights, but predicted verdict
+    // STRONG discounts the conflict → single flight
+    expect(parsed.flights.length).toBe(1);
+    expect(parsed.flights[0].issues).toEqual(['#1', '#2']);
+  });
+
+  test('predicted_verdicts_WEAK_preserves_serialization', async () => {
+    const result = await handler.execute({
+      manifests: [
+        { issue_ref: '#1', files_to_modify: ['src/shared.ts'] },
+        { issue_ref: '#2', files_to_modify: ['src/shared.ts'] },
+      ],
+      predicted_verdicts: [
+        { a: '#1', b: '#2', verdict: 'WEAK' },
+      ],
+    });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    // WEAK verdict does NOT discount → separate flights
+    expect(parsed.flights.length).toBe(2);
+  });
+
+  test('predicted_verdicts_MEDIUM_discounts_conflict', async () => {
+    const result = await handler.execute({
+      manifests: [
+        { issue_ref: '#1', files_to_modify: ['src/shared.ts'] },
+        { issue_ref: '#2', files_to_modify: ['src/shared.ts'] },
+      ],
+      predicted_verdicts: [
+        { a: '#1', b: '#2', verdict: 'MEDIUM' },
+      ],
+    });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    // MEDIUM verdict discounts → single flight
+    expect(parsed.flights.length).toBe(1);
+  });
+
   test('aggressive_strategy — currently equivalent to safe (v1)', async () => {
     const result = await handler.execute({
       manifests: [
