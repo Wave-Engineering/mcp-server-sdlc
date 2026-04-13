@@ -1,7 +1,53 @@
 /**
  * Shared file-overlap computation for flight_overlap (#37) and
  * flight_partition (#38). Lives in lib/ so the handler codegen ignores it.
+ *
+ * Extended in #169 to discount DEPENDENCY_MANIFEST overlaps — two issues
+ * that only share manifest/lockfile paths are safe to run in the same
+ * flight because those edits are commutative (adding different deps).
  */
+
+// ---------------------------------------------------------------------------
+// FileClass — mirrors commutativity-probe's classification
+// ---------------------------------------------------------------------------
+
+export type FileClass =
+  | 'DEPENDENCY_MANIFEST'
+  | 'CI_INFRA'
+  | 'DATA_FORMAT'
+  | 'ANALYZABLE'
+  | 'OPAQUE';
+
+/** Basename patterns that identify dependency manifests and their lockfiles. */
+const MANIFEST_BASENAMES = new Set([
+  'Cargo.toml',
+  'Cargo.lock',
+  'package.json',
+  'package-lock.json',
+  'yarn.lock',
+  'pnpm-lock.yaml',
+  'go.mod',
+  'go.sum',
+  'pyproject.toml',
+  'poetry.lock',
+  'requirements.txt',
+  'Gemfile',
+  'Gemfile.lock',
+]);
+
+/**
+ * Classify a file path by its basename.  Only DEPENDENCY_MANIFEST is
+ * positively identified; everything else returns `'ANALYZABLE'` (the
+ * safe default that preserves existing serialization behavior).
+ */
+export function classifyFile(path: string): FileClass {
+  const basename = path.split('/').pop() ?? path;
+  return MANIFEST_BASENAMES.has(basename) ? 'DEPENDENCY_MANIFEST' : 'ANALYZABLE';
+}
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 export interface Manifest {
   issue_ref: string;
@@ -9,11 +55,15 @@ export interface Manifest {
   files_to_modify?: string[];
 }
 
+export type OverlapType = 'manifest_only' | 'source' | 'mixed';
+
 export interface Conflict {
   a: string;
   b: string;
   files: string[];
   severity: 'hard';
+  /** Classifies the overlap so callers can discount manifest-only conflicts. */
+  overlap_type: OverlapType;
 }
 
 export function manifestFiles(m: Manifest): Set<string> {
@@ -23,9 +73,29 @@ export function manifestFiles(m: Manifest): Set<string> {
   return files;
 }
 
+// ---------------------------------------------------------------------------
+// Overlap classification helper
+// ---------------------------------------------------------------------------
+
+function classifyOverlap(files: string[]): OverlapType {
+  let hasManifest = false;
+  let hasSource = false;
+  for (const f of files) {
+    if (classifyFile(f) === 'DEPENDENCY_MANIFEST') {
+      hasManifest = true;
+    } else {
+      hasSource = true;
+    }
+  }
+  if (hasManifest && hasSource) return 'mixed';
+  if (hasManifest) return 'manifest_only';
+  return 'source';
+}
+
 /**
  * Compute pairwise file conflicts. Any shared file path between two
- * manifests is a hard conflict (symbol-level refinement is v2).
+ * manifests is a conflict. Each conflict is annotated with an
+ * `overlap_type` so callers can discount manifest-only overlaps.
  */
 export function computePairConflicts(manifests: Manifest[]): Conflict[] {
   const conflicts: Conflict[] = [];
@@ -42,6 +112,7 @@ export function computePairConflicts(manifests: Manifest[]): Conflict[] {
           b: manifests[j].issue_ref,
           files: shared,
           severity: 'hard',
+          overlap_type: classifyOverlap(shared),
         });
       }
     }
@@ -52,13 +123,21 @@ export function computePairConflicts(manifests: Manifest[]): Conflict[] {
 /**
  * Group issues into conflict-free sets greedily: for each issue, assign
  * it to the first group that has no conflict with any existing member.
+ *
+ * Manifest-only conflicts are discounted — two issues that only overlap
+ * on DEPENDENCY_MANIFEST files (e.g. both add deps to package.json) are
+ * allowed in the same group.  `commutativity_verify` at merge time
+ * remains the safety net.
  */
 export function conflictFreeGroups(
   manifests: Manifest[],
   conflicts: Conflict[],
 ): string[][] {
+  // Only source and mixed conflicts block co-flight grouping.
+  const blockingConflicts = conflicts.filter(c => c.overlap_type !== 'manifest_only');
+
   const conflictSet = new Set<string>();
-  for (const c of conflicts) {
+  for (const c of blockingConflicts) {
     // Store bidirectional edges.
     conflictSet.add(`${c.a}|${c.b}`);
     conflictSet.add(`${c.b}|${c.a}`);
@@ -69,8 +148,8 @@ export function conflictFreeGroups(
     const ref = m.issue_ref;
     let placed = false;
     for (const group of groups) {
-      const conflicts = group.some(other => conflictSet.has(`${ref}|${other}`));
-      if (!conflicts) {
+      const hasConflict = group.some(other => conflictSet.has(`${ref}|${other}`));
+      if (!hasConflict) {
         group.push(ref);
         placed = true;
         break;

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import {
+  classifyFile,
   computePairConflicts,
   conflictFreeGroups,
   type Manifest,
@@ -15,6 +16,10 @@ const manifestSchema = z.object({
 const inputSchema = z.object({
   manifests: z.array(manifestSchema),
   strategy: z.enum(['safe', 'aggressive']).optional().default('safe'),
+  /** Optional file-to-FileClass mapping. When provided, overrides the
+   *  built-in `classifyFile()` for the specified paths. Useful when the
+   *  caller already has classification data from commutativity-probe. */
+  file_classifications: z.record(z.string(), z.string()).optional(),
 });
 
 interface Flight {
@@ -25,7 +30,8 @@ interface Flight {
 
 const flightPartitionHandler: HandlerDef = {
   name: 'flight_partition',
-  description: 'Partition issues into conflict-free flights',
+  description:
+    'Partition issues into conflict-free flights. Overlaps on DEPENDENCY_MANIFEST files (Cargo.toml, package.json, go.mod, etc.) are discounted — issues that only share manifest/lockfile paths stay in the same flight. commutativity_verify at merge time remains the safety net.',
   inputSchema,
   async execute(rawArgs: unknown) {
     let args: z.infer<typeof inputSchema>;
