@@ -120,6 +120,16 @@ export function computePairConflicts(manifests: Manifest[]): Conflict[] {
   return conflicts;
 }
 
+// ---------------------------------------------------------------------------
+// Predicted verdict support
+// ---------------------------------------------------------------------------
+
+export interface PredictedVerdict {
+  a: string;
+  b: string;
+  verdict: 'STRONG' | 'MEDIUM' | 'WEAK' | 'ORACLE_REQUIRED';
+}
+
 /**
  * Group issues into conflict-free sets greedily: for each issue, assign
  * it to the first group that has no conflict with any existing member.
@@ -128,13 +138,35 @@ export function computePairConflicts(manifests: Manifest[]): Conflict[] {
  * on DEPENDENCY_MANIFEST files (e.g. both add deps to package.json) are
  * allowed in the same group.  `commutativity_verify` at merge time
  * remains the safety net.
+ *
+ * When `predictedVerdicts` are provided, pairs with STRONG or MEDIUM
+ * verdicts are also discounted even if they have source/mixed file
+ * conflicts.  This enables smarter partitioning using planning-time
+ * commutativity prediction.
  */
 export function conflictFreeGroups(
   manifests: Manifest[],
   conflicts: Conflict[],
+  predictedVerdicts?: PredictedVerdict[],
 ): string[][] {
-  // Only source and mixed conflicts block co-flight grouping.
-  const blockingConflicts = conflicts.filter(c => c.overlap_type !== 'manifest_only');
+  // Build a set of pairs that predicted verdicts say are safe.
+  const safeByPrediction = new Set<string>();
+  if (predictedVerdicts) {
+    for (const pv of predictedVerdicts) {
+      if (pv.verdict === 'STRONG' || pv.verdict === 'MEDIUM') {
+        safeByPrediction.add(`${pv.a}|${pv.b}`);
+        safeByPrediction.add(`${pv.b}|${pv.a}`);
+      }
+    }
+  }
+
+  // Only source and mixed conflicts block co-flight grouping,
+  // unless a predicted verdict says the pair is safe.
+  const blockingConflicts = conflicts.filter(c => {
+    if (c.overlap_type === 'manifest_only') return false;
+    if (safeByPrediction.has(`${c.a}|${c.b}`)) return false;
+    return true;
+  });
 
   const conflictSet = new Set<string>();
   for (const c of blockingConflicts) {
