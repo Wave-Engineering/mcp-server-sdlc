@@ -28,7 +28,12 @@ function makeDeps(sequence: ChecksSnapshot[], intervalSec: number) {
   const snapshotCalls: number[] = [];
   const sleepCalls: number[] = [];
 
-  const deps = {
+  const deps: {
+    snapshotFn: (n: number) => ChecksSnapshot;
+    sleepFn: (ms: number) => Promise<void>;
+    nowFn: () => number;
+    heartbeatFn?: (number: number, attempt: number, snap: ChecksSnapshot) => void;
+  } = {
     snapshotFn: (_n: number) => {
       snapshotCalls.push(now);
       // Last element sticks if we run past the script end.
@@ -239,6 +244,49 @@ describe('pr_wait_ci handler', () => {
     const checks = data.checks as Record<string, number>;
     expect(checks.failed).toBe(1);
     expect(checks.pending).toBe(1); // proves early termination preserved state
+  });
+
+  test('heartbeatFn called on each poll iteration with correct args', async () => {
+    const heartbeatCalls: Array<{ number: number; attempt: number; total: number }> = [];
+    const { deps } = makeDeps(
+      [
+        snap({ total: 3, passed: 1, pending: 2 }),
+        snap({ total: 3, passed: 2, pending: 1 }),
+        snap({ total: 3, passed: 3, pending: 0 }),
+      ],
+      5,
+    );
+
+    deps.heartbeatFn = (number: number, attempt: number, s: ChecksSnapshot) => {
+      heartbeatCalls.push({ number, attempt, total: s.total });
+    };
+
+    const result = await runWithDeps(
+      { number: 42, poll_interval_sec: 5, timeout_sec: 600 },
+      deps,
+    );
+
+    expect(result.final_state).toBe('passed');
+    // 3 snapshots → 3 heartbeat calls
+    expect(heartbeatCalls).toHaveLength(3);
+    expect(heartbeatCalls[0]).toEqual({ number: 42, attempt: 1, total: 3 });
+    expect(heartbeatCalls[1]).toEqual({ number: 42, attempt: 2, total: 3 });
+    expect(heartbeatCalls[2]).toEqual({ number: 42, attempt: 3, total: 3 });
+  });
+
+  test('heartbeatFn omitted — poll loop still works', async () => {
+    const { deps } = makeDeps(
+      [snap({ total: 1, passed: 1, pending: 0 })],
+      5,
+    );
+    // Explicitly set heartbeatFn to undefined
+    deps.heartbeatFn = undefined;
+
+    const result = await runWithDeps(
+      { number: 1, poll_interval_sec: 5, timeout_sec: 60 },
+      deps,
+    );
+    expect(result.final_state).toBe('passed');
   });
 
   test('execute — gitlab mr with successful pipeline', async () => {

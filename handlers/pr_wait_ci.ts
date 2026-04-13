@@ -157,12 +157,27 @@ interface Deps {
   snapshotFn: (number: number) => ChecksSnapshot;
   sleepFn: (ms: number) => Promise<void>;
   nowFn: () => number;
+  /** Optional heartbeat called on each poll iteration for wave-status updates. */
+  heartbeatFn?: (number: number, attempt: number, snap: ChecksSnapshot) => void;
+}
+
+function defaultHeartbeat(number: number, attempt: number, snap: ChecksSnapshot): void {
+  const detail = `PR #${number} attempt ${attempt}: ${snap.summary}`;
+  try {
+    execSync(`wave-status waiting-ci '${detail.replace(/'/g, "'\\''")}'`, {
+      encoding: 'utf8',
+      timeout: 5000,
+    });
+  } catch {
+    // Best-effort — swallow all errors silently.
+  }
 }
 
 const defaultDeps: Deps = {
   snapshotFn: snapshotChecks,
   sleepFn: (ms: number) => new Promise((r) => setTimeout(r, ms)),
   nowFn: () => Date.now(),
+  heartbeatFn: defaultHeartbeat,
 };
 
 export async function runPollLoop(
@@ -189,13 +204,17 @@ export async function runPollLoop(
     url: '',
   };
 
+  let attempt = 0;
+
   // Loop: snapshot → decide → (sleep | return). Timeout is checked after each
   // snapshot AND before each sleep so we can't over-shoot by a full interval.
   // eslint-disable-next-line no-constant-condition
   while (true) {
+    attempt++;
     lastSnap = deps.snapshotFn(args.number);
     const elapsedSec = Math.floor((deps.nowFn() - start) / 1000);
     logCycle(args.number, elapsedSec, lastSnap);
+    deps.heartbeatFn?.(args.number, attempt, lastSnap);
 
     const decision = decide(lastSnap);
     if (decision) {
