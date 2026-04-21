@@ -80,9 +80,32 @@ function parseDependenciesSection(section: string, currentSlug: string | null): 
   return deps;
 }
 
+/**
+ * Fallback extractor for stories that embed dependencies as a bold label
+ * (e.g. `**Dependencies:** Stories 1.1 (#86), 2.1 (#87)`) inside another
+ * section like `## Metadata`, rather than in a dedicated `## Dependencies`
+ * H2 section.
+ *
+ * Returns the content following the first `**Dependencies:**` label in any
+ * section, up to the next bold label, next H2-equivalent break, or end of
+ * that section's content.
+ */
+function findBoldLabelDependencies(sections: Record<string, string>): string {
+  // Content after **Dependencies:** up to: next bold label (possibly on a
+  // bulleted line, e.g. `- **Reviewer:**`), next H2, or end of section.
+  const labelRe =
+    /\*\*Dependencies:?\*\*\s*(.+?)(?=\n\s*(?:[-*]\s+)?\*\*[A-Z][A-Za-z ]*:?\*\*|\n##\s|\n*$)/s;
+  for (const sec of Object.values(sections)) {
+    const m = labelRe.exec(sec);
+    if (m && m[1].trim()) return m[1].trim();
+  }
+  return '';
+}
+
 const specDependenciesHandler: HandlerDef = {
   name: 'spec_dependencies',
-  description: 'Extract the list of dependency issue references from an issue spec',
+  description:
+    "Extract the list of dependency issue references from an issue spec. Primary source: `## Dependencies` H2 section. Fallback: a `**Dependencies:**` bold label inside any other section (e.g. `## Metadata`). Accepts `#N`, `org/repo#N`, and full GitHub/GitLab issue URLs. See docs/issue-body-grammar.md.",
   inputSchema,
   async execute(rawArgs: unknown) {
     let args: z.infer<typeof inputSchema>;
@@ -113,8 +136,23 @@ const specDependenciesHandler: HandlerDef = {
     try {
       const body = fetchBody(ref);
       const { sections } = parseSections(body);
-      const depsSection = sections.dependencies ?? '';
+      let depsSection = sections.dependencies ?? '';
+      let source: 'dependencies_section' | 'bold_label_fallback' | 'none' =
+        depsSection.trim() ? 'dependencies_section' : 'none';
+      if (!depsSection.trim()) {
+        const fallback = findBoldLabelDependencies(sections);
+        if (fallback) {
+          depsSection = fallback;
+          source = 'bold_label_fallback';
+        }
+      }
       const deps = parseDependenciesSection(depsSection, parseRepoSlug());
+      // If the fallback yielded text but no refs, the bold label didn't
+      // actually provide dependency data — report source as 'none' rather
+      // than misleading the caller about where (non-existent) refs came from.
+      if (source === 'bold_label_fallback' && deps.length === 0) {
+        source = 'none';
+      }
 
       return {
         content: [
@@ -125,6 +163,7 @@ const specDependenciesHandler: HandlerDef = {
               issue_ref: args.issue_ref,
               dependencies: deps,
               count: deps.length,
+              source,
             }),
           },
         ],

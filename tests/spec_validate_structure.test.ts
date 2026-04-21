@@ -95,4 +95,60 @@ describe('spec_validate_structure handler', () => {
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);
   });
+
+  test('implementation_steps_satisfies_changes_alias', async () => {
+    mockBody(
+      '## Implementation Steps\n1. do stuff\n## Tests\nt\n## Acceptance Criteria\n- [ ] ok\n',
+    );
+    const result = await handler.execute({ issue_ref: '#1' });
+    const parsed = parseResult(result);
+    expect(parsed.valid).toBe(true);
+    expect(parsed.has_changes).toBe(true);
+    expect(parsed.missing_sections).toEqual([]);
+  });
+
+  test('test_procedures_satisfies_tests_alias', async () => {
+    mockBody(
+      '## Changes\nc\n## Test Procedures\n- unit tests\n## Acceptance Criteria\n- [ ] ok\n',
+    );
+    const result = await handler.execute({ issue_ref: '#1' });
+    const parsed = parseResult(result);
+    expect(parsed.valid).toBe(true);
+    expect(parsed.has_tests).toBe(true);
+  });
+
+  test('both_aliases_together_valid', async () => {
+    mockBody(
+      '## Implementation Steps\n1.\n## Test Procedures\n- ok\n## Acceptance Criteria\n- [ ] ok\n',
+    );
+    const result = await handler.execute({ issue_ref: '#1' });
+    const parsed = parseResult(result);
+    expect(parsed.valid).toBe(true);
+    expect(parsed.has_changes).toBe(true);
+    expect(parsed.has_tests).toBe(true);
+  });
+
+  test('accepted_headings_surfaced_when_missing', async () => {
+    mockBody('## Summary\nnothing relevant\n');
+    const result = await handler.execute({ issue_ref: '#1' });
+    const parsed = parseResult(result);
+    expect(parsed.valid).toBe(false);
+    expect(parsed.accepted_headings).toBeDefined();
+    expect(parsed.accepted_headings.changes).toEqual(
+      expect.arrayContaining(['## Changes', '## Implementation Steps']),
+    );
+    expect(parsed.accepted_headings.tests).toEqual(
+      expect.arrayContaining(['## Tests', '## Test Procedures']),
+    );
+  });
+
+  test('accepted_headings_absent_when_valid', async () => {
+    mockBody(
+      '## Changes\nc\n## Tests\nt\n## Acceptance Criteria\n- [ ] ok\n',
+    );
+    const result = await handler.execute({ issue_ref: '#1' });
+    const parsed = parseResult(result);
+    expect(parsed.valid).toBe(true);
+    expect(parsed.accepted_headings).toBeUndefined();
+  });
 });
