@@ -8,8 +8,21 @@ const inputSchema = z.object({
   issue_ref: z.string().min(1, 'issue_ref must be a non-empty string'),
 });
 
-const REQUIRED_SECTIONS = ['changes', 'tests', 'acceptance_criteria'] as const;
-const OPTIONAL_SECTIONS = ['dependencies'] as const;
+// Canonical section keys → accepted H2 heading aliases (after normalizeHeading).
+// `## Changes` or `## Implementation Steps` both satisfy the `changes` requirement;
+// `## Tests` or `## Test Procedures` both satisfy `tests`. See docs/issue-body-grammar.md.
+const REQUIRED_SECTION_ALIASES: Record<string, readonly string[]> = {
+  changes: ['changes', 'implementation_steps'],
+  tests: ['tests', 'test_procedures'],
+  acceptance_criteria: ['acceptance_criteria'],
+};
+const OPTIONAL_SECTION_ALIASES: Record<string, readonly string[]> = {
+  dependencies: ['dependencies'],
+};
+
+function acceptedHeadings(aliases: readonly string[]): string[] {
+  return aliases.map((a) => `## ${a.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}`);
+}
 
 function fetchBody(ref: IssueRef): string {
   const platform = detectPlatform();
@@ -25,7 +38,8 @@ function fetchBody(ref: IssueRef): string {
 
 const specValidateStructureHandler: HandlerDef = {
   name: 'spec_validate_structure',
-  description: 'Check for presence of required sections in an issue spec',
+  description:
+    'Check for presence of required sections in an issue spec. Accepts H2 heading aliases: `## Changes` or `## Implementation Steps`; `## Tests` or `## Test Procedures`; `## Acceptance Criteria`. Optional: `## Dependencies`. See docs/issue-body-grammar.md.',
   inputSchema,
   async execute(rawArgs: unknown) {
     let args: z.infer<typeof inputSchema>;
@@ -59,30 +73,36 @@ const specValidateStructureHandler: HandlerDef = {
 
       const presence: Record<string, boolean> = {};
       const missing: string[] = [];
-      for (const key of REQUIRED_SECTIONS) {
-        const has = Boolean(sections[key] && sections[key].trim().length > 0);
-        presence[`has_${key}`] = has;
-        if (!has) missing.push(key);
+      const acceptedHeadingsHint: Record<string, string[]> = {};
+      for (const [canonical, aliases] of Object.entries(REQUIRED_SECTION_ALIASES)) {
+        const has = aliases.some(
+          (alias) => sections[alias] && sections[alias].trim().length > 0,
+        );
+        presence[`has_${canonical}`] = has;
+        if (!has) {
+          missing.push(canonical);
+          acceptedHeadingsHint[canonical] = acceptedHeadings(aliases);
+        }
       }
-      for (const key of OPTIONAL_SECTIONS) {
-        presence[`has_${key}`] = Boolean(
-          sections[key] && sections[key].trim().length > 0,
+      for (const [canonical, aliases] of Object.entries(OPTIONAL_SECTION_ALIASES)) {
+        presence[`has_${canonical}`] = aliases.some(
+          (alias) => sections[alias] && sections[alias].trim().length > 0,
         );
       }
 
+      const response: Record<string, unknown> = {
+        ok: true,
+        issue_ref: args.issue_ref,
+        ...presence,
+        missing_sections: missing,
+        valid: missing.length === 0,
+      };
+      if (missing.length > 0) {
+        response.accepted_headings = acceptedHeadingsHint;
+      }
+
       return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify({
-              ok: true,
-              issue_ref: args.issue_ref,
-              ...presence,
-              missing_sections: missing,
-              valid: missing.length === 0,
-            }),
-          },
-        ],
+        content: [{ type: 'text' as const, text: JSON.stringify(response) }],
       };
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);

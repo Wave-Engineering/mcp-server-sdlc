@@ -46,11 +46,32 @@ function normalizeRef(ref: string, currentSlug: string | null): string {
 
 /**
  * Find which section of the parsed body contains the sub-issues.
- * Accepts "Sub-Issues", "Sub Issues", "Sub-issues", "Children", "Tasks".
+ * Accepts (as normalized H2 heading keys):
+ *   - Explicit: sub_issues, subissues, children, tasks, task_list
+ *   - Wave-plan shape: waves, wave_map, phases, phased_implementation_plan,
+ *     implementation_plan, stories, backlog
+ *
+ * The wave-plan aliases let `/devspec upshift`-generated Epic bodies
+ * (which group `#NN` refs under `### Wave N` H3 headings inside a
+ * `## Waves` H2) parse without requiring a rename.
  */
+const SUB_ISSUE_SECTION_KEYS = [
+  'sub_issues',
+  'subissues',
+  'children',
+  'tasks',
+  'task_list',
+  'waves',
+  'wave_map',
+  'phases',
+  'phased_implementation_plan',
+  'implementation_plan',
+  'stories',
+  'backlog',
+] as const;
+
 function findSubIssueSection(sections: Record<string, string>): string | null {
-  const keys = ['sub_issues', 'subissues', 'children', 'tasks', 'task_list'];
-  for (const k of keys) {
+  for (const k of SUB_ISSUE_SECTION_KEYS) {
     if (sections[k]) return sections[k];
   }
   return null;
@@ -112,8 +133,10 @@ function parseChecklistOrBullets(section: string, currentSlug: string | null): S
     if (!refM) continue;
     const raw = refM[1];
     const ref = normalizeRef(raw, currentSlug);
-    // Title = text with the ref token stripped out.
-    const title = text.replace(refM[0], '').trim().replace(/^[-:*\s]+/, '').trim();
+    // Title = text with the ref token stripped out. Also strip leading
+    // list/separator punctuation including em/en dashes commonly used in
+    // `- #NN — Title` style bullets.
+    const title = text.replace(refM[0], '').trim().replace(/^[-:*\s—–]+/, '').trim();
     subs.push({
       ref,
       title: title.length > 0 ? title : undefined,
@@ -126,7 +149,8 @@ function parseChecklistOrBullets(section: string, currentSlug: string | null): S
 
 const epicSubIssuesHandler: HandlerDef = {
   name: 'epic_sub_issues',
-  description: "Extract sub-issue references from an epic's body",
+  description:
+    "Extract sub-issue references from an epic's body. Accepts H2 sections named: `## Sub-Issues` (or Children/Tasks/Task List), `## Waves` (or Wave Map/Phases/Phased Implementation Plan/Implementation Plan/Stories/Backlog). Content may be a table with Order/Issue/Title columns, or a checklist/bullet list with `#NN` refs. See docs/issue-body-grammar.md.",
   inputSchema,
   async execute(rawArgs: unknown) {
     let args: z.infer<typeof inputSchema>;
@@ -168,6 +192,8 @@ const epicSubIssuesHandler: HandlerDef = {
                 epic_ref: args.epic_ref,
                 sub_issues: [],
                 count: 0,
+                reason: 'no matching sub-issue section found in epic body',
+                accepted_sections: [...SUB_ISSUE_SECTION_KEYS],
               }),
             },
           ],

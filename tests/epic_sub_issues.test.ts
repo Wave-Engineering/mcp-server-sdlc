@@ -108,4 +108,86 @@ describe('epic_sub_issues handler', () => {
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);
   });
+
+  test('parses_wave_grouped_epic — ## Waves with ### Wave N + bullets', async () => {
+    mockBody(`## Waves
+
+### Wave 1 — Foundation (master: #88)
+
+- #86 — Story 1.1: Pipeline config schema
+- #87 — Story 1.2: Pipeline config loader
+
+### Wave 2 — Services (master: #91)
+
+- #89 — Story 2.1: Pipeline Service
+- #90 — Story 2.2: Pipeline Executor
+`);
+    const result = await handler.execute({ epic_ref: '#100' });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.count).toBe(4);
+    expect(parsed.sub_issues.map((s: { ref: string }) => s.ref)).toEqual([
+      'myorg/myrepo#86',
+      'myorg/myrepo#87',
+      'myorg/myrepo#89',
+      'myorg/myrepo#90',
+    ]);
+    expect(parsed.sub_issues[0].title).toBe('Story 1.1: Pipeline config schema');
+  });
+
+  test('parses_stories_section_alias', async () => {
+    mockBody(`## Stories
+
+- #10 — Story A
+- #11 — Story B
+`);
+    const result = await handler.execute({ epic_ref: '#100' });
+    const parsed = parseResult(result);
+    expect(parsed.count).toBe(2);
+    expect(parsed.sub_issues[0].ref).toBe('myorg/myrepo#10');
+  });
+
+  test('parses_phases_alias', async () => {
+    mockBody(`## Phases
+
+- #20 — Phase 1 master
+- #21 — Phase 2 master
+`);
+    const result = await handler.execute({ epic_ref: '#100' });
+    const parsed = parseResult(result);
+    expect(parsed.count).toBe(2);
+  });
+
+  test('accepted_sections_surfaced_when_missing', async () => {
+    mockBody('## Summary\nnothing here.\n');
+    const result = await handler.execute({ epic_ref: '#100' });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.count).toBe(0);
+    expect(parsed.reason).toContain('no matching');
+    expect(parsed.accepted_sections).toEqual(
+      expect.arrayContaining(['sub_issues', 'waves', 'stories', 'phases']),
+    );
+  });
+
+  test('sub_issues_section_takes_precedence_over_waves', async () => {
+    // When both exist, the explicit sub_issues section wins.
+    mockBody(`## Sub-Issues
+
+- #5 explicit
+- #6 explicit
+
+## Waves
+
+### Wave 1
+
+- #99 secondary
+`);
+    const result = await handler.execute({ epic_ref: '#100' });
+    const parsed = parseResult(result);
+    expect(parsed.sub_issues.map((s: { ref: string }) => s.ref)).toEqual([
+      'myorg/myrepo#5',
+      'myorg/myrepo#6',
+    ]);
+  });
 });
