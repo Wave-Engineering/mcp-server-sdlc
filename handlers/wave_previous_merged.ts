@@ -2,7 +2,7 @@ import { execSync } from 'child_process';
 import { join } from 'path';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
-import { detectPlatform, gitlabApiIssue } from '../lib/glab';
+import { detectPlatform, gitlabApiIssue, parseRepoSlug } from '../lib/glab';
 
 const inputSchema = z.object({}).strict();
 
@@ -84,21 +84,74 @@ function findPreviousWaveId(plan: PlanData, state: StateData): string | null {
   return null;
 }
 
-interface GhIssueState {
-  state: string;
-  stateReason?: string;
+interface IssueClosureInfo {
+  state: 'OPEN' | 'CLOSED';
+  closedByMergedPR: boolean;
 }
 
-function fetchGithubIssueState(n: number): GhIssueState {
-  const raw = execSync(`gh issue view ${n} --json state,stateReason`, { encoding: 'utf8' });
-  const parsed = JSON.parse(raw) as { state: string; stateReason?: string };
-  return { state: parsed.state.toUpperCase(), stateReason: parsed.stateReason };
+// GraphQL query that returns both the closure state AND the linkage to any
+// merging PR. `closedByPullRequestsReferences` captures body-keyword closures
+// (`Closes #N`) which the REST events API misses (commit_id is null for those),
+// while `timelineItems[ClosedEvent].closer` covers the broader "closed by a PR"
+// timeline event. An issue counts as closed-via-merged-PR iff CLOSED and at
+// least one linked PR is merged, OR the closer is explicitly a PullRequest.
+const GH_ISSUE_CLOSURE_QUERY =
+  'query($owner:String!,$repo:String!,$num:Int!)' +
+  '{repository(owner:$owner,name:$repo){issue(number:$num){' +
+  'state ' +
+  'closedByPullRequestsReferences(first:5,includeClosedPrs:true){nodes{merged}} ' +
+  'timelineItems(first:1,itemTypes:[CLOSED_EVENT]){nodes{... on ClosedEvent{closer{__typename}}}}' +
+  '}}}';
+
+interface GhGraphqlResponse {
+  data?: {
+    repository?: {
+      issue?: {
+        state?: string;
+        closedByPullRequestsReferences?: { nodes?: Array<{ merged?: boolean }> };
+        timelineItems?: { nodes?: Array<{ closer?: { __typename?: string } }> };
+      };
+    };
+  };
 }
 
-function fetchGitlabIssueState(n: number): GhIssueState {
+// GitHub's owner/repo grammar: alphanumerics plus `.`, `_`, `-`. Enforcing this
+// at the boundary prevents a maliciously-crafted git remote URL from smuggling
+// shell metacharacters through `parseRepoSlug()` into the `execSync` string.
+const GITHUB_SLUG_SEGMENT = /^[A-Za-z0-9._-]+$/;
+
+function fetchGithubClosureInfo(n: number, slug: string): IssueClosureInfo {
+  const [owner, repo] = slug.split('/', 2);
+  if (!owner || !repo) throw new Error(`invalid github slug: ${slug}`);
+  if (!GITHUB_SLUG_SEGMENT.test(owner) || !GITHUB_SLUG_SEGMENT.test(repo)) {
+    throw new Error(`invalid github slug characters: ${slug}`);
+  }
+  const cmd =
+    `gh api graphql -f 'query=${GH_ISSUE_CLOSURE_QUERY}' ` +
+    `-F owner=${owner} -F repo=${repo} -F num=${n}`;
+  const raw = execSync(cmd, { encoding: 'utf8' });
+  const parsed = JSON.parse(raw) as GhGraphqlResponse;
+  const issue = parsed.data?.repository?.issue;
+  if (!issue) throw new Error(`github issue ${n} not found`);
+  const state = (issue.state ?? '').toUpperCase() === 'CLOSED' ? 'CLOSED' : 'OPEN';
+  if (state !== 'CLOSED') return { state: 'OPEN', closedByMergedPR: false };
+  const prRefs = issue.closedByPullRequestsReferences?.nodes ?? [];
+  const hasMergedPR = prRefs.some((ref) => ref?.merged === true);
+  const closerIsPR =
+    issue.timelineItems?.nodes?.[0]?.closer?.__typename === 'PullRequest';
+  return { state: 'CLOSED', closedByMergedPR: hasMergedPR || closerIsPR };
+}
+
+// GitLab: `wave_previous_merged` still treats state-only as closed. The
+// reported #183 repro was GitHub-specific (body-keyword closures); GitLab's
+// default commit-trailer style populates closer info through a different path
+// and hasn't been reported as broken. Leaving the GitLab code path untouched
+// avoids a cross-platform regression; strengthening it to "closed by merged
+// MR" is a separate feature.
+function fetchGitlabClosureInfo(n: number): IssueClosureInfo {
   const parsed = gitlabApiIssue(n);
-  const state = parsed.state === 'opened' ? 'OPEN' : parsed.state.toUpperCase();
-  return { state };
+  const state = parsed.state === 'opened' ? 'OPEN' : 'CLOSED';
+  return { state, closedByMergedPR: state === 'CLOSED' };
 }
 
 const wavePreviousMergedHandler: HandlerDef = {
@@ -170,15 +223,29 @@ const wavePreviousMergedHandler: HandlerDef = {
       }
 
       const platform = detectPlatform();
+      const githubSlug = platform === 'github' ? parseRepoSlug() : null;
+      if (platform === 'github' && !githubSlug) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error: 'could not parse github repo slug from origin url',
+              }),
+            },
+          ],
+        };
+      }
       const openIssues: number[] = [];
 
       for (const issue of prevWave.issues ?? []) {
         try {
           const info =
             platform === 'github'
-              ? fetchGithubIssueState(issue.number)
-              : fetchGitlabIssueState(issue.number);
-          if (info.state !== 'CLOSED') {
+              ? fetchGithubClosureInfo(issue.number, githubSlug as string)
+              : fetchGitlabClosureInfo(issue.number);
+          if (info.state !== 'CLOSED' || !info.closedByMergedPR) {
             openIssues.push(issue.number);
           }
         } catch {
