@@ -1,6 +1,7 @@
 import { join } from 'path';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
+import { computeWaves, type DepNode } from '../lib/dependency_graph.js';
 
 const inputSchema = z.object({}).strict();
 
@@ -61,14 +62,33 @@ function findNextPending(plan: PlanData, state: StateData): NextPendingResult | 
     for (const wave of phase.waves ?? []) {
       const status = waves[wave.id]?.status ?? 'pending';
       if (status === 'pending') {
+        const issues = (wave.issues ?? []).map(i => ({
+          number: i.number,
+          title: i.title ?? '',
+        }));
+
+        let topology: string;
+        if (wave.topology != null) {
+          // Pass through caller-supplied topology from the plan file as-is.
+          topology = wave.topology;
+        } else {
+          // Fallback classifier sees zero-dep nodes because PlanWave doesn't store
+          // per-issue edges. Multi-issue waves without explicit deps will classify as
+          // 'parallel'; true 'mixed'/'serial' classification would require fetching
+          // issue bodies, which would make this handler network-bound — accept the
+          // limitation.
+          const nodes: DepNode[] = issues.map(i => ({
+            ref: String(i.number),
+            depends_on: [],
+          }));
+          topology = computeWaves(nodes).topology;
+        }
+
         return {
           id: wave.id,
-          issues: (wave.issues ?? []).map(i => ({
-            number: i.number,
-            title: i.title ?? '',
-          })),
+          issues,
           depends_on: wave.depends_on ?? [],
-          topology: wave.topology ?? null,
+          topology,
         };
       }
     }
