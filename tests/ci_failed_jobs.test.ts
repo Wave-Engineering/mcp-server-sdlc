@@ -376,6 +376,96 @@ describe('ci_failed_jobs handler', () => {
     expect(jobs[0].finished_at).toBeNull();
   });
 
+  // --- Issue #197: cross-repo orchestration via explicit `repo` ---
+
+  test('github_explicit_repo — appends --repo flag to gh run view', async () => {
+    let sawRepoFlag = false;
+    execMockFn = (cmd: string) => {
+      if (cmd.startsWith('git remote'))
+        return 'https://github.com/cwd-org/cwd-repo.git\n';
+      if (cmd.startsWith('gh run view 777 --json jobs')) {
+        if (cmd.includes('--repo other-org/other-repo')) sawRepoFlag = true;
+        return JSON.stringify({
+          jobs: [
+            {
+              databaseId: 1,
+              name: 'unit',
+              status: 'completed',
+              conclusion: 'failure',
+              startedAt: '2025-01-01T00:00:00Z',
+              completedAt: '2025-01-01T00:01:00Z',
+              url: 'https://github.com/other-org/other-repo/actions/runs/777/job/1',
+            },
+          ],
+        });
+      }
+      throw new Error(`Unexpected exec: ${cmd}`);
+    };
+
+    const result = await ciFailedJobsHandler.execute({
+      run_id: 777,
+      repo: 'other-org/other-repo',
+    });
+    const data = parseResult(result);
+    expect(data.ok).toBe(true);
+    expect(sawRepoFlag).toBe(true);
+  });
+
+  test('gitlab_explicit_repo — replaces :id with encoded explicit slug', async () => {
+    let sawExplicitPath = false;
+    let sawColonId = false;
+    execMockFn = (cmd: string) => {
+      if (cmd.startsWith('git remote'))
+        return 'https://gitlab.com/cwd-org/cwd-repo.git\n';
+      if (cmd.startsWith('glab api')) {
+        if (cmd.includes('projects/other-org%2Fother-repo/pipelines/101/jobs'))
+          sawExplicitPath = true;
+        if (cmd.includes('projects/:id/pipelines/101/jobs'))
+          sawColonId = true;
+        return JSON.stringify([
+          {
+            id: 501,
+            name: 'unit',
+            status: 'failed',
+            stage: 'test',
+            started_at: null,
+            finished_at: null,
+            web_url: 'https://gitlab.com/other-org/other-repo/-/jobs/501',
+          },
+        ]);
+      }
+      throw new Error(`Unexpected exec: ${cmd}`);
+    };
+
+    const result = await ciFailedJobsHandler.execute({
+      run_id: 101,
+      repo: 'other-org/other-repo',
+    });
+    const data = parseResult(result);
+    expect(data.ok).toBe(true);
+    expect(sawExplicitPath).toBe(true);
+    expect(sawColonId).toBe(false);
+  });
+
+  test('regression_no_repo — preserves :id shorthand when repo not provided', async () => {
+    let sawColonId = false;
+    execMockFn = (cmd: string) => {
+      if (cmd.startsWith('git remote'))
+        return 'https://gitlab.com/org/repo.git\n';
+      if (cmd.startsWith('glab api')) {
+        if (cmd.includes('projects/:id/pipelines/202/jobs'))
+          sawColonId = true;
+        return JSON.stringify([]);
+      }
+      throw new Error(`Unexpected exec: ${cmd}`);
+    };
+
+    const result = await ciFailedJobsHandler.execute({ run_id: 202 });
+    const data = parseResult(result);
+    expect(data.ok).toBe(true);
+    expect(sawColonId).toBe(true);
+  });
+
   // --- exec error surfaces as ok:false ---
   test('exec_error — surfaces platform command failure as ok:false', async () => {
     execMockFn = (cmd: string) => {

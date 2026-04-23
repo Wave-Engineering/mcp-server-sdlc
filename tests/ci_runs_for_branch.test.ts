@@ -265,6 +265,69 @@ describe('ci_runs_for_branch handler', () => {
 
   });
 
+  // --- Issue #197: cross-repo orchestration via explicit `repo` ---
+
+  test('github_explicit_repo — appends --repo flag to gh run list', async () => {
+    execRegistry['git remote get-url origin'] = 'https://github.com/cwd-org/cwd-repo.git';
+    execRegistry['gh run list'] = JSON.stringify([
+      {
+        databaseId: 8001,
+        name: 'ci',
+        status: 'completed',
+        conclusion: 'success',
+        headSha: 'ff',
+        url: 'https://github.com/other-org/other-repo/actions/runs/8001',
+        createdAt: '2026-04-07T12:00:00Z',
+      },
+    ]);
+
+    const result = await handler.execute({
+      branch: 'feature/88-ci',
+      repo: 'other-org/other-repo',
+    });
+    const data = parseResult(result);
+    expect(data.ok).toBe(true);
+
+    const runListCall = execCalls.find((c) => c.includes('gh run list'));
+    expect(runListCall).toBeDefined();
+    expect(runListCall).toContain('--repo other-org/other-repo');
+  });
+
+  test('gitlab_explicit_repo — routes to encoded explicit slug', async () => {
+    execRegistry['git remote get-url origin'] = 'https://gitlab.com/cwd-org/cwd-repo.git';
+    execRegistry['glab api projects/other-org%2Fother-repo/pipelines?ref='] = JSON.stringify([
+      {
+        id: 8100,
+        status: 'success',
+        sha: 'gsha',
+        web_url: 'https://gitlab.com/other-org/other-repo/-/pipelines/8100',
+        created_at: '2026-04-07T12:00:00Z',
+        source: 'push',
+      },
+    ]);
+
+    const result = await handler.execute({
+      branch: 'feature/88-ci',
+      repo: 'other-org/other-repo',
+    });
+    const data = parseResult(result);
+    expect(data.ok).toBe(true);
+
+    const glabCall = execCalls.find((c) => c.startsWith('glab api')) ?? '';
+    expect(glabCall).toContain('projects/other-org%2Fother-repo/pipelines');
+    expect(glabCall).not.toContain('projects/cwd-org%2Fcwd-repo/pipelines');
+  });
+
+  test('regression_no_repo — omits --repo flag when repo not provided', async () => {
+    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
+    execRegistry['gh run list'] = '[]';
+
+    await handler.execute({ branch: 'feature/88-ci' });
+
+    const runListCall = execCalls.find((c) => c.includes('gh run list')) ?? '';
+    expect(runListCall).not.toContain('--repo');
+  });
+
   test('gitlab_empty_branch — empty pipeline list returns ok with runs=[]', async () => {
     execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
     execRegistry['glab api projects/org%2Frepo/pipelines?ref='] = '[]';

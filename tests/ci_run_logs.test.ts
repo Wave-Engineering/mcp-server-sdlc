@@ -216,6 +216,82 @@ describe('ci_run_logs handler', () => {
     expect((parsed.error as string)).toContain('no failed job');
   });
 
+  // --- Issue #197: cross-repo orchestration via explicit `repo` ---
+
+  test('github_explicit_repo — appends --repo flag to gh run view', async () => {
+    let sawRepoFlag = false;
+    execMockFn = (cmd: string) => {
+      if (cmd.startsWith('git remote'))
+        return 'https://github.com/cwd-org/cwd-repo.git\n';
+      if (cmd.includes('gh run view')) {
+        if (cmd.includes('--repo other-org/other-repo')) sawRepoFlag = true;
+        return 'logline\n';
+      }
+      throw new Error(`unexpected cmd: ${cmd}`);
+    };
+
+    const result = await handler.execute({
+      run_id: 321,
+      repo: 'other-org/other-repo',
+    });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    expect(sawRepoFlag).toBe(true);
+  });
+
+  test('github_explicit_repo — URL construction uses explicit slug not cwd', async () => {
+    execMockFn = (cmd: string) => {
+      if (cmd.startsWith('git remote'))
+        return 'https://github.com/cwd-org/cwd-repo.git\n';
+      if (cmd.includes('gh run view')) return 'logline\n';
+      throw new Error(`unexpected cmd: ${cmd}`);
+    };
+
+    const result = await handler.execute({
+      run_id: 654,
+      repo: 'explicit-org/explicit-repo',
+    });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    const url = parsed.url as string;
+    expect(url).toContain('explicit-org/explicit-repo');
+    expect(url).not.toContain('cwd-org/cwd-repo');
+  });
+
+  test('gitlab_explicit_repo — pipelines URL + trace use explicit slug', async () => {
+    let sawExplicitPipelinesPath = false;
+    let sawTraceRepoFlag = false;
+    execMockFn = (cmd: string) => {
+      if (cmd.startsWith('git remote'))
+        return 'https://gitlab.com/cwd-org/cwd-repo.git\n';
+      if (
+        cmd.includes('glab api') &&
+        cmd.includes(
+          'projects/other-org%2Fother-repo/pipelines/99/jobs',
+        )
+      ) {
+        sawExplicitPipelinesPath = true;
+        return JSON.stringify([{ id: 701, status: 'failed' }]);
+      }
+      if (cmd.startsWith('glab ci trace 701')) {
+        if (cmd.includes('-R other-org/other-repo')) sawTraceRepoFlag = true;
+        return 'failing log\n';
+      }
+      throw new Error(`unexpected cmd: ${cmd}`);
+    };
+
+    const result = await handler.execute({
+      run_id: 99,
+      repo: 'other-org/other-repo',
+    });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    expect(sawExplicitPipelinesPath).toBe(true);
+    expect(sawTraceRepoFlag).toBe(true);
+    const url = parsed.url as string;
+    expect(url).toContain('other-org/other-repo');
+  });
+
   test('gitlab — long log triggers truncation', async () => {
     const longLog = makeLines(1200);
     execMockFn = (cmd: string) => {

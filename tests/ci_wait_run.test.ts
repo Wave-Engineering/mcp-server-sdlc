@@ -469,6 +469,138 @@ describe('ci_wait_run handler', () => {
     }
   });
 
+  // --- Issue #197: cross-repo orchestration via explicit `repo` ---
+
+  // GitHub with explicit repo → gh run list gets --repo flag.
+  test('github_explicit_repo — appends --repo flag and routes to the specified slug', async () => {
+    // Intentionally do NOT register `git remote get-url origin` — the handler
+    // must not depend on cwd when `repo` is provided. (detectPlatform still
+    // runs, but falls back to 'github' on exec failure.)
+    execRegistry['gh run list'] = JSON.stringify([
+      ghRun({ status: 'completed', conclusion: 'success' }),
+    ]);
+
+    const result = await ciWaitRunHandler.execute({
+      ref: 'main',
+      repo: 'other-org/other-repo',
+    });
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(true);
+    expect(data.final_status).toBe('success');
+    const ghCalls = execCallLog.filter((c) => c.startsWith('gh run list'));
+    expect(ghCalls.length).toBeGreaterThan(0);
+    expect(ghCalls[0]).toContain('--repo "other-org/other-repo"');
+  });
+
+  // GitHub merge-queue fallback with explicit repo → must skip parseRepoSlug()
+  // (git remote get-url origin) and use `repo` directly when resolving branch
+  // → SHA. Assert via the call log that only the allowed gh-subprocess calls
+  // occur for SHA resolution.
+  test('github_explicit_repo_merge_queue_branch — SHA resolution uses explicit slug', async () => {
+    const targetSha = 'e'.repeat(40);
+    // Register the cwd remote URL (detectPlatform still reads it) AND the
+    // explicit-slug `gh api` endpoint. The key assertion below is that the
+    // SHA-resolution hit `gh api repos/other-org/other-repo/...`, NOT
+    // `gh api repos/cwd-org/cwd-repo/...`.
+    execRegistry['git remote get-url origin'] =
+      'https://github.com/cwd-org/cwd-repo.git';
+    execRegistry['gh api repos/other-org/other-repo/git/refs/heads/main'] =
+      targetSha;
+    execRegistry['gh run list'] = JSON.stringify([
+      ghRun({
+        databaseId: 888,
+        status: 'completed',
+        conclusion: 'success',
+        event: 'merge_group',
+        headSha: targetSha,
+        url: 'https://github.com/other-org/other-repo/actions/runs/888',
+      }),
+    ]);
+
+    const result = await ciWaitRunHandler.execute({
+      ref: 'main',
+      repo: 'other-org/other-repo',
+    });
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(true);
+    expect(data.final_status).toBe('not_applicable');
+    expect(data.reason).toBe('merge_group_validated');
+    expect(data.run_id).toBe(888);
+
+    // Verify the branch-to-SHA resolution hit the EXPLICIT slug, NOT the cwd
+    // slug — the handler must have skipped `parseRepoSlug()` (which would
+    // have returned `cwd-org/cwd-repo`) and used the caller's `repo` directly.
+    const apiCalls = execCallLog.filter((c) =>
+      c.includes('gh api repos/other-org/other-repo/git/refs/heads/main'),
+    );
+    expect(apiCalls.length).toBe(1);
+    const wrongApiCalls = execCallLog.filter((c) =>
+      c.includes('gh api repos/cwd-org/cwd-repo/git/refs/'),
+    );
+    expect(wrongApiCalls.length).toBe(0);
+  });
+
+  // GitLab with explicit repo → gitlabApiCiList uses encoded explicit slug.
+  test('gitlab_explicit_repo — uses encoded owner/repo path, not cwd', async () => {
+    // Register BOTH a failing cwd entry AND the explicit-path entry; the
+    // handler must hit the explicit-path entry. (Intentionally register the
+    // cwd lookup to show it's never hit: if hit, the test would still pass
+    // because the handler's detectPlatform reads cwd first — we still allow it.)
+    execRegistry['git remote get-url origin'] =
+      'https://gitlab.com/cwd-org/cwd-repo.git';
+    execRegistry['glab api projects/other-org%2Fother-repo/pipelines?ref='] =
+      JSON.stringify([glabPipeline({ status: 'success' })]);
+
+    const result = await ciWaitRunHandler.execute({
+      ref: 'main',
+      repo: 'other-org/other-repo',
+    });
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(true);
+    expect(data.final_status).toBe('success');
+
+    const glabCalls = execCallLog.filter((c) => c.startsWith('glab api'));
+    expect(glabCalls.length).toBeGreaterThan(0);
+    // Every glab call must target the explicit encoded slug.
+    for (const c of glabCalls) {
+      expect(c).toContain('projects/other-org%2Fother-repo/pipelines');
+      expect(c).not.toContain('projects/cwd-org%2Fcwd-repo/pipelines');
+    }
+  });
+
+  // Branch ref with explicit repo → merge-queue SHA resolution uses the
+  // explicit slug (NOT the cwd slug).
+  test('merge_group_branch_with_explicit_repo — resolves SHA via explicit slug', async () => {
+    const targetSha = 'f'.repeat(40);
+    execRegistry['git remote get-url origin'] =
+      'https://github.com/cwd-org/cwd-repo.git';
+    execRegistry['gh api repos/explicit-org/explicit-repo/git/refs/heads/feature/1-demo'] =
+      targetSha;
+    execRegistry['gh run list'] = JSON.stringify([
+      ghRun({
+        databaseId: 2222,
+        status: 'completed',
+        conclusion: 'success',
+        event: 'merge_group',
+        headSha: targetSha,
+      }),
+    ]);
+
+    const result = await ciWaitRunHandler.execute({
+      ref: 'feature/1-demo',
+      repo: 'explicit-org/explicit-repo',
+    });
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(true);
+    expect(data.final_status).toBe('not_applicable');
+    expect(data.reason).toBe('merge_group_validated');
+    // Must not have asked the cwd for a SHA.
+    const wrongApiCalls = execCallLog.filter((c) =>
+      c.includes('gh api repos/cwd-org/cwd-repo/git/refs/'),
+    );
+    expect(wrongApiCalls.length).toBe(0);
+  });
+
   // Timeout still fires for push-triggered runs that never complete.
   // Verifies the pre-flight doesn't swallow the existing timeout path.
   test('timeout_still_fires_for_push_triggered — push run stays in_progress, times out', async () => {

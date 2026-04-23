@@ -316,6 +316,89 @@ describe('ci_run_status handler', () => {
     expect(typeof data.error).toBe('string');
   });
 
+  // --- Issue #197: cross-repo orchestration via explicit `repo` ---
+
+  test('github_explicit_repo — appends --repo flag to gh run list', async () => {
+    execRegistry['git remote get-url origin'] =
+      'https://github.com/cwd-org/cwd-repo.git';
+    execRegistry['gh run list --branch'] = JSON.stringify([
+      {
+        databaseId: 9001,
+        name: 'CI',
+        status: 'completed',
+        conclusion: 'success',
+        url: 'https://github.com/other-org/other-repo/actions/runs/9001',
+        headBranch: 'main',
+        headSha: '1111111111111111111111111111111111111111',
+        createdAt: '2026-04-07T12:00:00Z',
+        updatedAt: '2026-04-07T12:05:00Z',
+      },
+    ]);
+
+    const result = await ciRunStatusHandler.execute({
+      ref: 'main',
+      repo: 'other-org/other-repo',
+    });
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(true);
+    const runListCall = execCalls.find((c) => c.includes('gh run list')) ?? '';
+    expect(runListCall).toContain('--repo');
+    expect(runListCall).toContain('other-org/other-repo');
+  });
+
+  test('gitlab_explicit_repo — targets encoded explicit slug', async () => {
+    execRegistry['git remote get-url origin'] =
+      'https://gitlab.com/cwd-org/cwd-repo.git';
+    execRegistry['glab api projects/other-org%2Fother-repo/pipelines?ref='] =
+      JSON.stringify([
+        {
+          id: 9002,
+          status: 'success',
+          web_url: 'https://gitlab.com/other-org/other-repo/-/pipelines/9002',
+          ref: 'main',
+          sha: '2222222222222222222222222222222222222222',
+          created_at: '2026-04-07T12:00:00Z',
+          updated_at: '2026-04-07T12:05:00Z',
+          finished_at: '2026-04-07T12:05:00Z',
+          source: 'push',
+        },
+      ]);
+
+    const result = await ciRunStatusHandler.execute({
+      ref: 'main',
+      repo: 'other-org/other-repo',
+    });
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(true);
+    const glabCall = execCalls.find((c) => c.startsWith('glab api')) ?? '';
+    expect(glabCall).toContain('projects/other-org%2Fother-repo/pipelines');
+    expect(glabCall).not.toContain('projects/cwd-org%2Fcwd-repo/pipelines');
+  });
+
+  test('regression_no_repo — omits --repo and uses cwd slug when repo not set', async () => {
+    execRegistry['git remote get-url origin'] =
+      'https://github.com/org/repo.git';
+    execRegistry['gh run list --branch'] = JSON.stringify([
+      {
+        databaseId: 4242,
+        name: 'CI',
+        status: 'completed',
+        conclusion: 'success',
+        url: 'https://github.com/org/repo/actions/runs/4242',
+        headBranch: 'main',
+        headSha: 'abc0000000000000000000000000000000000000',
+        createdAt: '2026-04-07T12:00:00Z',
+        updatedAt: '2026-04-07T12:05:00Z',
+      },
+    ]);
+
+    const result = await ciRunStatusHandler.execute({ ref: 'main' });
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(true);
+    const runListCall = execCalls.find((c) => c.includes('gh run list')) ?? '';
+    expect(runListCall).not.toContain('--repo');
+  });
+
   // --- Input validation: unsafe ref characters ---
   test('validation — shell-unsafe ref characters surface as error', async () => {
     execRegistry['git remote get-url origin'] =
