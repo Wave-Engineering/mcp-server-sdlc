@@ -62,8 +62,40 @@ describe('wave_record_mr handler', () => {
     expect(parsed.error).toContain('no current wave');
   });
 
-  test('schema_validation — rejects missing issue_number', async () => {
+  test('schema_validation — rejects missing issue_number AND issue_ref', async () => {
     const result = await handler.execute({ mr_ref: '#1' });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(false);
+  });
+
+  test('issue_ref_uses_qualified_ref_in_CLI', async () => {
+    const result = await handler.execute({
+      issue_ref: 'Wave-Engineering/sdlc#185',
+      mr_ref: '#42',
+    });
+    expect(lastExecCall).toContain('wave-status record-mr');
+    expect(lastExecCall).toContain("'Wave-Engineering/sdlc#185'");
+    // Should NOT degrade to a bare number.
+    expect(lastExecCall).not.toMatch(/wave-status record-mr 185 /);
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+  });
+
+  test('issue_ref — accepts bare-number ref', async () => {
+    await handler.execute({ issue_ref: '185', mr_ref: '#1' });
+    expect(lastExecCall).toContain("'185'");
+  });
+
+  test('issue_number_fallback — bare number still works when issue_ref absent', async () => {
+    const result = await handler.execute({ issue_number: 42, mr_ref: '#99' });
+    expect(lastExecCall).toContain('wave-status record-mr 42');
+    expect(lastExecCall).toContain("'#99'");
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+  });
+
+  test('issue_ref — rejects malformed ref', async () => {
+    const result = await handler.execute({ issue_ref: 'not a ref', mr_ref: '#1' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);
   });
