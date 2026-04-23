@@ -9,6 +9,10 @@ import { detectPlatform, gitlabApiMr } from '../lib/glab';
 
 const inputSchema = z.object({
   number: z.number().int().positive('number must be a positive integer'),
+  repo: z
+    .string()
+    .regex(/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/, 'repo must be owner/repo format')
+    .optional(),
 });
 
 type Input = z.infer<typeof inputSchema>;
@@ -53,8 +57,19 @@ interface GithubFile {
   changeType: string;
 }
 
-function getGithubFiles(number: number): FileEntry[] {
-  const raw = exec(`gh pr view ${number} --json files`);
+function repoFlag(repo: string | undefined): string {
+  return repo !== undefined ? ` --repo ${repo}` : '';
+}
+
+function parseSlugOpts(slug: string | undefined): { owner?: string; repo?: string } | undefined {
+  if (slug === undefined) return undefined;
+  const idx = slug.indexOf('/');
+  if (idx <= 0 || idx === slug.length - 1) return undefined;
+  return { owner: slug.slice(0, idx), repo: slug.slice(idx + 1) };
+}
+
+function getGithubFiles(number: number, repo?: string): FileEntry[] {
+  const raw = exec(`gh pr view ${number} --json files${repoFlag(repo)}`);
   const parsed = JSON.parse(raw) as { files: GithubFile[] };
   const files = parsed.files ?? [];
   return files.map(f => ({
@@ -104,8 +119,8 @@ function mapGitlabStatus(change: GitlabChange): FileStatus {
   return 'modified';
 }
 
-function getGitlabFiles(number: number): FileEntry[] {
-  const mr = gitlabApiMr(number) as unknown as { changes?: GitlabChange[] };
+function getGitlabFiles(number: number, repo?: string): FileEntry[] {
+  const mr = gitlabApiMr(number, parseSlugOpts(repo)) as unknown as { changes?: GitlabChange[] };
   const changes = mr.changes ?? [];
   return changes.map(c => {
     const path = c.new_path ?? c.old_path ?? '';
@@ -134,7 +149,9 @@ const prFilesHandler: HandlerDef = {
     try {
       const platform = detectPlatform();
       const files =
-        platform === 'github' ? getGithubFiles(args.number) : getGitlabFiles(args.number);
+        platform === 'github'
+          ? getGithubFiles(args.number, args.repo)
+          : getGitlabFiles(args.number, args.repo);
 
       const total_additions = files.reduce((sum, f) => sum + f.additions, 0);
       const total_deletions = files.reduce((sum, f) => sum + f.deletions, 0);

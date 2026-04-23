@@ -515,6 +515,198 @@ echo "unhandled glab: $*" >&2; exit 1
     expect(data.created).toBe(false);
   });
 
+  test('route_with_repo_github — appends --repo to gh pr create/view when repo provided', async () => {
+    const { fixture, stubBin } = await makeFixture({ '.keep': '' });
+    fixtureDir = fixture;
+    stubBinDir = stubBin;
+
+    // cwd remote is a DIFFERENT repo — repo arg must override.
+    await writeStub(
+      stubBin,
+      'git',
+      `
+case "$1 $2" in
+  "branch --show-current") echo "feature/196-cross-repo" ;;
+  "remote -v") echo "origin\tgit@github.com:cwd-org/cwd-repo.git (fetch)" ;;
+  *) exit 1 ;;
+esac
+`,
+    );
+
+    const createRecordPath = `${fixture}/gh-create-args.txt`;
+    const viewRecordPath = `${fixture}/gh-view-args.txt`;
+    await writeStub(
+      stubBin,
+      'gh',
+      `
+if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
+  printf '%s\\n' "$@" > "${createRecordPath}"
+  echo "https://github.com/Wave-Engineering/mcp-server-sdlc/pull/196"
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+  printf '%s\\n' "$@" > "${viewRecordPath}"
+  cat <<'EOF'
+{"number":196,"url":"https://github.com/Wave-Engineering/mcp-server-sdlc/pull/196","state":"OPEN","headRefName":"feature/196-cross-repo","baseRefName":"main"}
+EOF
+  exit 0
+fi
+exit 1
+`,
+    );
+
+    activate(fixture, stubBin);
+
+    const result = await handler.execute({
+      title: 't',
+      body: 'b',
+      base: 'main',
+      repo: 'Wave-Engineering/mcp-server-sdlc',
+    });
+    const data = parseResult(result);
+    expect(data.ok).toBe(true);
+    expect(data.number).toBe(196);
+
+    const createArgs = await Bun.file(createRecordPath).text();
+    expect(createArgs).toContain('--repo');
+    expect(createArgs).toContain('Wave-Engineering/mcp-server-sdlc');
+    const viewArgs = await Bun.file(viewRecordPath).text();
+    expect(viewArgs).toContain('--repo');
+    expect(viewArgs).toContain('Wave-Engineering/mcp-server-sdlc');
+  });
+
+  test('route_with_repo_gitlab — appends -R to glab mr create/view when repo provided', async () => {
+    const { fixture, stubBin } = await makeFixture({ '.keep': '' });
+    fixtureDir = fixture;
+    stubBinDir = stubBin;
+
+    await writeStub(
+      stubBin,
+      'git',
+      `
+case "$1 $2" in
+  "branch --show-current") echo "feature/196-cross-repo" ;;
+  "remote -v") echo "origin\tgit@gitlab.com:cwd-org/cwd-repo.git (fetch)" ;;
+  *) exit 1 ;;
+esac
+`,
+    );
+
+    const createRecordPath = `${fixture}/glab-create-args.txt`;
+    const viewRecordPath = `${fixture}/glab-view-args.txt`;
+    await writeStub(
+      stubBin,
+      'glab',
+      `
+if [ "$1" = "mr" ] && [ "$2" = "create" ]; then
+  printf '%s\\n' "$@" > "${createRecordPath}"
+  echo "https://gitlab.com/target-org/target-repo/-/merge_requests/8"
+  exit 0
+fi
+if [ "$1" = "mr" ] && [ "$2" = "view" ]; then
+  printf '%s\\n' "$@" > "${viewRecordPath}"
+  cat <<'EOF'
+{"iid":8,"web_url":"https://gitlab.com/target-org/target-repo/-/merge_requests/8","state":"opened","source_branch":"feature/196-cross-repo","target_branch":"main"}
+EOF
+  exit 0
+fi
+exit 1
+`,
+    );
+
+    activate(fixture, stubBin);
+
+    const result = await handler.execute({
+      title: 't',
+      body: 'b',
+      base: 'main',
+      repo: 'target-org/target-repo',
+    });
+    const data = parseResult(result);
+    expect(data.ok).toBe(true);
+    expect(data.number).toBe(8);
+
+    const createArgs = await Bun.file(createRecordPath).text();
+    expect(createArgs).toContain('-R');
+    expect(createArgs).toContain('target-org/target-repo');
+    const viewArgs = await Bun.file(viewRecordPath).text();
+    expect(viewArgs).toContain('-R');
+    expect(viewArgs).toContain('target-org/target-repo');
+  });
+
+  test('regression_without_repo — gh pr create argv has no --repo flag', async () => {
+    const { fixture, stubBin } = await makeFixture({ '.keep': '' });
+    fixtureDir = fixture;
+    stubBinDir = stubBin;
+
+    await writeStub(
+      stubBin,
+      'git',
+      `
+case "$1 $2" in
+  "branch --show-current") echo "feature/xyz" ;;
+  "remote -v") echo "origin\tgit@github.com:org/repo.git (fetch)" ;;
+  *) exit 1 ;;
+esac
+`,
+    );
+
+    const recordPath = `${fixture}/gh-args.txt`;
+    await writeStub(
+      stubBin,
+      'gh',
+      `
+if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
+  printf '%s\\n' "$@" > "${recordPath}"
+  echo "https://github.com/org/repo/pull/100"
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+  cat <<'EOF'
+{"number":100,"url":"https://github.com/org/repo/pull/100","state":"OPEN","headRefName":"feature/xyz","baseRefName":"main"}
+EOF
+  exit 0
+fi
+exit 1
+`,
+    );
+
+    activate(fixture, stubBin);
+
+    const result = await handler.execute({
+      title: 't',
+      body: 'b',
+      base: 'main',
+    });
+    const data = parseResult(result);
+    expect(data.ok).toBe(true);
+
+    const argsText = await Bun.file(recordPath).text();
+    expect(argsText).not.toContain('--repo');
+  });
+
+  test('invalid_slug_early_error — returns ok:false and does not spawn any subprocess', async () => {
+    // No stubs registered — if handler spawned anything it'd fail with an
+    // unpredictable error from PATH lookup. We rely on zod validation to
+    // short-circuit before any spawn.
+    const { fixture, stubBin } = await makeFixture({ '.keep': '' });
+    fixtureDir = fixture;
+    stubBinDir = stubBin;
+
+    // Activate with an EMPTY stubBin — no git, gh, or glab available.
+    activate(fixture, stubBin);
+
+    const result = await handler.execute({
+      title: 't',
+      body: 'b',
+      base: 'main',
+      repo: 'not-a-slug',
+    });
+    const data = parseResult(result);
+    expect(data.ok).toBe(false);
+    expect(String(data.error)).toContain('repo');
+  });
+
   test('fallback_platform_detection — no .claude-project.md, uses git remote', async () => {
     const { fixture, stubBin } = await makeFixture({
       // Intentionally no .claude-project.md — handler must consult `git remote -v`.

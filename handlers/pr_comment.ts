@@ -8,6 +8,10 @@ import type { HandlerDef } from '../types.js';
 const inputSchema = z.object({
   number: z.number().int().positive('number must be a positive integer'),
   body: z.string().min(1, 'body must be a non-empty string'),
+  repo: z
+    .string()
+    .regex(/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/, 'repo must be owner/repo format')
+    .optional(),
 });
 
 type Input = z.infer<typeof inputSchema>;
@@ -71,11 +75,12 @@ interface PostResult {
   url: string;
 }
 
-function postGithubComment(num: number, body: string, cwd: string): PostResult {
-  const proc = runCommand(
-    ['gh', 'pr', 'comment', String(num), '--body', body],
-    cwd,
-  );
+function postGithubComment(num: number, body: string, cwd: string, repo?: string): PostResult {
+  const cmd = ['gh', 'pr', 'comment', String(num), '--body', body];
+  if (repo !== undefined) {
+    cmd.push('--repo', repo);
+  }
+  const proc = runCommand(cmd, cwd);
   if (proc.exitCode !== 0) {
     throw new Error(`gh pr comment failed: ${proc.stderr.trim() || proc.stdout.trim()}`);
   }
@@ -87,11 +92,12 @@ function postGithubComment(num: number, body: string, cwd: string): PostResult {
   return { commentId, url };
 }
 
-function postGitlabComment(num: number, body: string, cwd: string): PostResult {
-  const proc = runCommand(
-    ['glab', 'mr', 'note', String(num), '--message', body],
-    cwd,
-  );
+function postGitlabComment(num: number, body: string, cwd: string, repo?: string): PostResult {
+  const cmd = ['glab', 'mr', 'note', String(num), '--message', body];
+  if (repo !== undefined) {
+    cmd.push('-R', repo);
+  }
+  const proc = runCommand(cmd, cwd);
   if (proc.exitCode !== 0) {
     throw new Error(`glab mr note failed: ${proc.stderr.trim() || proc.stdout.trim()}`);
   }
@@ -125,8 +131,8 @@ const prCommentHandler: HandlerDef = {
 
       const { commentId, url } =
         platform === 'github'
-          ? postGithubComment(args.number, args.body, cwd)
-          : postGitlabComment(args.number, args.body, cwd);
+          ? postGithubComment(args.number, args.body, cwd, args.repo)
+          : postGitlabComment(args.number, args.body, cwd, args.repo);
 
       return {
         content: [

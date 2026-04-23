@@ -11,6 +11,10 @@ const inputSchema = z.object({
   base: z.string().min(1, 'base must be a non-empty string'),
   head: z.string().optional(),
   draft: z.boolean().optional().default(false),
+  repo: z
+    .string()
+    .regex(/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/, 'repo must be owner/repo format')
+    .optional(),
 });
 
 type Input = z.infer<typeof inputSchema>;
@@ -70,11 +74,10 @@ interface NormalizedPr {
   created: boolean;
 }
 
-function lookupGithubPr(head: string, cwd: string): NormalizedPr | null {
-  const list = run(
-    ['gh', 'pr', 'list', '--head', head, '--state', 'open', '--json', 'number,url,state,headRefName,baseRefName', '--limit', '1'],
-    cwd,
-  );
+function lookupGithubPr(head: string, cwd: string, repo?: string): NormalizedPr | null {
+  const cmd = ['gh', 'pr', 'list', '--head', head, '--state', 'open', '--json', 'number,url,state,headRefName,baseRefName', '--limit', '1'];
+  if (repo !== undefined) cmd.push('--repo', repo);
+  const list = run(cmd, cwd);
   if (list.exitCode !== 0) return null;
   const prs = JSON.parse(list.stdout) as Array<{
     number: number;
@@ -109,13 +112,14 @@ function createGithubPr(args: Input, head: string, cwd: string): NormalizedPr {
     head,
   ];
   if (args.draft) createCmd.push('--draft');
+  if (args.repo !== undefined) createCmd.push('--repo', args.repo);
 
   const result = run(createCmd, cwd);
   if (result.exitCode !== 0) {
     const errText = (result.stderr + result.stdout).toLowerCase();
     // gh says "a pull request for branch ... already exists" on duplicate
     if (errText.includes('already exists')) {
-      const existing = lookupGithubPr(head, cwd);
+      const existing = lookupGithubPr(head, cwd, args.repo);
       if (existing) return existing;
       // Lookup failed (PR may have been closed between create and lookup)
       throw new Error(`gh pr create: PR already exists for branch '${head}' but could not be found via lookup`);
@@ -132,10 +136,9 @@ function createGithubPr(args: Input, head: string, cwd: string): NormalizedPr {
   const prNumber = parseInt(numMatch[1], 10);
 
   // Fetch canonical details to normalize the response.
-  const view = run(
-    ['gh', 'pr', 'view', String(prNumber), '--json', 'number,url,state,headRefName,baseRefName'],
-    cwd,
-  );
+  const viewCmd = ['gh', 'pr', 'view', String(prNumber), '--json', 'number,url,state,headRefName,baseRefName'];
+  if (args.repo !== undefined) viewCmd.push('--repo', args.repo);
+  const view = run(viewCmd, cwd);
   if (view.exitCode !== 0) {
     throw new Error(`gh pr view failed: ${view.stderr.trim() || view.stdout.trim()}`);
   }
@@ -156,8 +159,10 @@ function createGithubPr(args: Input, head: string, cwd: string): NormalizedPr {
   };
 }
 
-function lookupGitlabMr(head: string, cwd: string): NormalizedPr | null {
-  const view = run(['glab', 'mr', 'view', head, '-F', 'json'], cwd);
+function lookupGitlabMr(head: string, cwd: string, repo?: string): NormalizedPr | null {
+  const cmd = ['glab', 'mr', 'view', head, '-F', 'json'];
+  if (repo !== undefined) cmd.push('-R', repo);
+  const view = run(cmd, cwd);
   if (view.exitCode !== 0) return null;
   try {
     const parsed = JSON.parse(view.stdout) as {
@@ -197,13 +202,14 @@ function createGitlabMr(args: Input, head: string, cwd: string): NormalizedPr {
     '--yes',
   ];
   if (args.draft) createCmd.push('--draft');
+  if (args.repo !== undefined) createCmd.push('-R', args.repo);
 
   const result = run(createCmd, cwd);
   if (result.exitCode !== 0) {
     const errText = (result.stderr + result.stdout).toLowerCase();
     // glab says "Another open merge request already exists" on duplicate
     if (errText.includes('already exists')) {
-      const existing = lookupGitlabMr(head, cwd);
+      const existing = lookupGitlabMr(head, cwd, args.repo);
       if (existing) return existing;
       // Lookup failed (MR may have been closed between create and lookup)
       throw new Error(`glab mr create: MR already exists for branch '${head}' but could not be found via lookup`);
@@ -212,7 +218,9 @@ function createGitlabMr(args: Input, head: string, cwd: string): NormalizedPr {
   }
 
   // Normalize by fetching the MR we just created via `glab mr view <head> -F json`.
-  const view = run(['glab', 'mr', 'view', head, '-F', 'json'], cwd);
+  const viewCmd = ['glab', 'mr', 'view', head, '-F', 'json'];
+  if (args.repo !== undefined) viewCmd.push('-R', args.repo);
+  const view = run(viewCmd, cwd);
   if (view.exitCode !== 0) {
     throw new Error(`glab mr view failed: ${view.stderr.trim() || view.stdout.trim()}`);
   }

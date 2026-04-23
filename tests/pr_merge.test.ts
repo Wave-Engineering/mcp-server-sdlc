@@ -439,4 +439,90 @@ describe('pr_merge handler', () => {
     expect(data.ok).toBe(true);
     expect(data.merge_method).toBe('merge_queue');
   });
+
+  // --- cross-repo routing ---
+
+  test('route_with_repo — github threads --repo into gh pr merge and gh pr view', async () => {
+    onExec('git remote get-url origin', 'https://github.com/cwd-org/cwd-repo.git\n');
+    onExec('gh pr merge 42 --squash --delete-branch', '');
+    onExec(
+      'gh pr view 42 --json mergeCommit,url',
+      JSON.stringify({
+        mergeCommit: { oid: 'abc123' },
+        url: 'https://github.com/Wave-Engineering/mcp-server-sdlc/pull/42',
+      }),
+    );
+
+    const result = await prMergeHandler.execute({
+      number: 42,
+      repo: 'Wave-Engineering/mcp-server-sdlc',
+    });
+    const data = parseResult(result);
+    expect(data.ok).toBe(true);
+
+    const mergeCall = execCalls.find((c) => c.startsWith('gh pr merge 42')) ?? '';
+    expect(mergeCall).toContain('--repo Wave-Engineering/mcp-server-sdlc');
+    const viewCall = execCalls.find((c) => c.startsWith('gh pr view 42')) ?? '';
+    expect(viewCall).toContain('--repo Wave-Engineering/mcp-server-sdlc');
+  });
+
+  test('route_with_repo — gitlab threads -R into glab mr merge + forwards slug to glab api', async () => {
+    onExec('git remote get-url origin', 'https://gitlab.com/cwd-org/cwd-repo.git\n');
+    onExec('glab mr merge 17 --squash --remove-source-branch --yes', '');
+    onExec(
+      'glab api projects/target-org%2Ftarget-repo/merge_requests/17',
+      JSON.stringify({
+        iid: 17,
+        title: 'Test MR',
+        description: '',
+        state: 'merged',
+        source_branch: 'feature/test',
+        target_branch: 'main',
+        web_url: 'https://gitlab.com/target-org/target-repo/-/merge_requests/17',
+        labels: [],
+        merge_commit_sha: 'deadbeef',
+      }),
+    );
+
+    const result = await prMergeHandler.execute({
+      number: 17,
+      repo: 'target-org/target-repo',
+    });
+    const data = parseResult(result);
+    expect(data.ok).toBe(true);
+
+    const mergeCall = execCalls.find((c) => c.startsWith('glab mr merge 17')) ?? '';
+    expect(mergeCall).toContain('-R target-org/target-repo');
+    const apiCall = execCalls.find((c) => c.includes('glab api projects/')) ?? '';
+    expect(apiCall).toContain('target-org%2Ftarget-repo');
+    expect(apiCall).not.toContain('cwd-org%2Fcwd-repo');
+  });
+
+  test('regression_without_repo — gh pr merge does not contain --repo', async () => {
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git\n');
+    onExec('gh pr merge 42 --squash --delete-branch', '');
+    onExec(
+      'gh pr view 42 --json mergeCommit,url',
+      JSON.stringify({
+        mergeCommit: { oid: 'x' },
+        url: 'https://github.com/org/repo/pull/42',
+      }),
+    );
+
+    await prMergeHandler.execute({ number: 42 });
+
+    const mergeCall = execCalls.find((c) => c.startsWith('gh pr merge 42')) ?? '';
+    expect(mergeCall).not.toContain('--repo');
+    const viewCall = execCalls.find((c) => c.startsWith('gh pr view 42')) ?? '';
+    expect(viewCall).not.toContain('--repo');
+  });
+
+  test('invalid_slug_early_error — returns ok:false with zero exec calls', async () => {
+    const result = await prMergeHandler.execute({ number: 1, repo: 'bogus' });
+    const data = parseResult(result);
+
+    expect(data.ok).toBe(false);
+    expect(typeof data.error).toBe('string');
+    expect(execCalls).toHaveLength(0);
+  });
 });

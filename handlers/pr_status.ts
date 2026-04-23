@@ -9,6 +9,10 @@ import { detectPlatform, gitlabApiMr } from '../lib/glab';
 
 const inputSchema = z.object({
   number: z.number().int().positive(),
+  repo: z
+    .string()
+    .regex(/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/, 'repo must be owner/repo format')
+    .optional(),
 });
 
 type Input = z.infer<typeof inputSchema>;
@@ -36,6 +40,17 @@ interface PrStatusResponse {
 
 function exec(cmd: string): string {
   return execSync(cmd, { encoding: 'utf8' }).trim();
+}
+
+function repoFlag(repo: string | undefined): string {
+  return repo !== undefined ? ` --repo ${repo}` : '';
+}
+
+function parseSlugOpts(slug: string | undefined): { owner?: string; repo?: string } | undefined {
+  if (slug === undefined) return undefined;
+  const idx = slug.indexOf('/');
+  if (idx <= 0 || idx === slug.length - 1) return undefined;
+  return { owner: slug.slice(0, idx), repo: slug.slice(idx + 1) };
 }
 
 // --- GitHub normalization ---
@@ -102,9 +117,9 @@ function aggregateGithubChecks(checks: GithubCheck[]): ChecksAggregate {
   return { total, passed, failed, pending, summary };
 }
 
-function getGithubPrStatus(num: number): PrStatusResponse {
+function getGithubPrStatus(num: number, repo?: string): PrStatusResponse {
   const rawPr = exec(
-    `gh pr view ${num} --json state,mergeStateStatus,mergeable,url`,
+    `gh pr view ${num} --json state,mergeStateStatus,mergeable,url${repoFlag(repo)}`,
   );
   const pr = JSON.parse(rawPr) as {
     state: string;
@@ -123,7 +138,7 @@ function getGithubPrStatus(num: number): PrStatusResponse {
 
   let checks: ChecksAggregate = { total: 0, passed: 0, failed: 0, pending: 0, summary: 'none' };
   try {
-    const rawChecks = exec(`gh pr checks ${num} --json name,state,conclusion`);
+    const rawChecks = exec(`gh pr checks ${num} --json name,state,conclusion${repoFlag(repo)}`);
     const parsed = JSON.parse(rawChecks) as GithubCheck[];
     checks = aggregateGithubChecks(parsed);
   } catch {
@@ -193,8 +208,8 @@ function aggregateGitlabPipeline(
   return { total: 1, passed: 0, failed: 0, pending: 1, summary: 'pending' };
 }
 
-function getGitlabMrStatus(num: number): PrStatusResponse {
-  const mr = gitlabApiMr(num);
+function getGitlabMrStatus(num: number, repo?: string): PrStatusResponse {
+  const mr = gitlabApiMr(num, parseSlugOpts(repo));
 
   const state = normalizeGitlabState(mr.state);
   const merge_state = normalizeGitlabMergeState(mr.detailed_merge_status, mr.merge_status);
@@ -233,8 +248,8 @@ const prStatusHandler: HandlerDef = {
       const platform = detectPlatform();
       const data =
         platform === 'github'
-          ? getGithubPrStatus(args.number)
-          : getGitlabMrStatus(args.number);
+          ? getGithubPrStatus(args.number, args.repo)
+          : getGitlabMrStatus(args.number, args.repo);
 
       return {
         content: [

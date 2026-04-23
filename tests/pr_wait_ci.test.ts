@@ -3,7 +3,11 @@ import { describe, test, expect, mock, beforeEach } from 'bun:test';
 // --- Mock child_process for the real-deps path (execute) ---------------------
 
 let execMockFn: (cmd: string) => string = () => '';
-const mockExecSync = mock((cmd: string, _opts?: unknown) => execMockFn(cmd));
+let execCalls: string[] = [];
+const mockExecSync = mock((cmd: string, _opts?: unknown) => {
+  execCalls.push(cmd);
+  return execMockFn(cmd);
+});
 mock.module('child_process', () => ({ execSync: mockExecSync }));
 
 // Import AFTER the module mock is registered.
@@ -14,6 +18,7 @@ const runWithDeps = mod.__runWithDeps;
 
 beforeEach(() => {
   execMockFn = () => '';
+  execCalls = [];
   mockExecSync.mockClear();
 });
 
@@ -317,5 +322,137 @@ describe('pr_wait_ci handler', () => {
     expect(data.ok).toBe(true);
     expect(data.final_state).toBe('passed');
     expect(data.url).toBe('https://gitlab.com/org/repo/-/merge_requests/3');
+  });
+
+  // --- cross-repo routing ---
+
+  test('route_with_repo — github threads --repo into gh pr checks and gh pr view', async () => {
+    execMockFn = (cmd: string) => {
+      if (cmd.startsWith('git remote'))
+        return 'https://github.com/cwd-org/cwd-repo.git\n';
+      if (cmd.startsWith('gh pr checks'))
+        return JSON.stringify([{ name: 'build', bucket: 'pass', state: 'SUCCESS' }]);
+      if (cmd.startsWith('gh pr view'))
+        return JSON.stringify({
+          url: 'https://github.com/Wave-Engineering/mcp-server-sdlc/pull/5',
+        });
+      throw new Error(`unexpected exec: ${cmd}`);
+    };
+
+    const result = await handler.execute({
+      number: 5,
+      poll_interval_sec: 5,
+      timeout_sec: 10,
+      repo: 'Wave-Engineering/mcp-server-sdlc',
+    });
+    const data = parseResult(result);
+    expect(data.ok).toBe(true);
+    expect(data.final_state).toBe('passed');
+
+    const checksCall = execCalls.find((c) => c.startsWith('gh pr checks')) ?? '';
+    expect(checksCall).toContain('--repo Wave-Engineering/mcp-server-sdlc');
+    const viewCall = execCalls.find((c) => c.startsWith('gh pr view')) ?? '';
+    expect(viewCall).toContain('--repo Wave-Engineering/mcp-server-sdlc');
+  });
+
+  test('route_with_repo — gitlab forwards slug into glab api URL path', async () => {
+    execMockFn = (cmd: string) => {
+      if (cmd.startsWith('git remote'))
+        return 'https://gitlab.com/cwd-org/cwd-repo.git\n';
+      if (cmd.includes('glab api projects/target-org%2Ftarget-repo/merge_requests/3'))
+        return JSON.stringify({
+          iid: 3,
+          web_url: 'https://gitlab.com/target-org/target-repo/-/merge_requests/3',
+          head_pipeline: { status: 'success' },
+          title: 'Test MR',
+          description: '',
+          state: 'opened',
+          source_branch: 'feature/test',
+          target_branch: 'main',
+          labels: [],
+        });
+      throw new Error(`unexpected exec: ${cmd}`);
+    };
+
+    const result = await handler.execute({
+      number: 3,
+      poll_interval_sec: 5,
+      timeout_sec: 10,
+      repo: 'target-org/target-repo',
+    });
+    const data = parseResult(result);
+    expect(data.ok).toBe(true);
+    expect(data.final_state).toBe('passed');
+
+    const apiCall = execCalls.find((c) => c.includes('glab api projects/')) ?? '';
+    expect(apiCall).toContain('target-org%2Ftarget-repo');
+    expect(apiCall).not.toContain('cwd-org%2Fcwd-repo');
+  });
+
+  test('regression_without_repo — gh pr checks/view do not contain --repo', async () => {
+    execMockFn = (cmd: string) => {
+      if (cmd.startsWith('git remote'))
+        return 'https://github.com/org/repo.git\n';
+      if (cmd.startsWith('gh pr checks'))
+        return JSON.stringify([{ name: 'build', bucket: 'pass', state: 'SUCCESS' }]);
+      if (cmd.startsWith('gh pr view'))
+        return JSON.stringify({ url: 'https://github.com/org/repo/pull/5' });
+      throw new Error(`unexpected exec: ${cmd}`);
+    };
+
+    await handler.execute({
+      number: 5,
+      poll_interval_sec: 5,
+      timeout_sec: 10,
+    });
+
+    const checksCall = execCalls.find((c) => c.startsWith('gh pr checks')) ?? '';
+    expect(checksCall).not.toContain('--repo');
+    const viewCall = execCalls.find((c) => c.startsWith('gh pr view')) ?? '';
+    expect(viewCall).not.toContain('--repo');
+  });
+
+  test('invalid_slug_early_error — returns ok:false with zero exec calls', async () => {
+    const result = await handler.execute({
+      number: 1,
+      poll_interval_sec: 5,
+      timeout_sec: 10,
+      repo: 'not-a-slug',
+    });
+    const data = parseResult(result);
+
+    expect(data.ok).toBe(false);
+    expect(typeof data.error).toBe('string');
+    expect(execCalls).toHaveLength(0);
+  });
+
+  test('strict_schema_accepts_repo — .strict() schema does not reject new field', async () => {
+    // Proof that adding repo to a .strict() schema doesn't trigger InvalidParams
+    // via the real MCP dispatch surface (handler.execute), not just the test seam.
+    // If `repo` wasn't declared inside the .strict() object, Zod would reject at
+    // inputSchema.parse() and execute() would return ok:false with "repo" in the
+    // error message. Here we just need the parse to succeed and the handler to
+    // run — we don't care about the poll outcome.
+    execMockFn = (cmd: string) => {
+      if (cmd.includes('gh pr checks')) {
+        return JSON.stringify([{ name: 'ci', bucket: 'pass', state: 'SUCCESS' }]);
+      }
+      if (cmd.includes('gh pr view')) {
+        return JSON.stringify({ url: 'https://github.com/owner/repo/pull/1' });
+      }
+      return '';
+    };
+
+    const result = await handler.execute({
+      number: 1,
+      poll_interval_sec: 5,
+      timeout_sec: 10,
+      repo: 'owner/repo',
+    });
+    const data = parseResult(result);
+    // ok:true proves the .strict() schema accepted `repo`; if it had rejected,
+    // data.ok would be false with an error mentioning the unexpected field.
+    expect(data.ok).toBe(true);
+    expect(typeof data.error).toBe('undefined');
   });
 });

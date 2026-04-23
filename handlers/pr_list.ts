@@ -13,6 +13,10 @@ const inputSchema = z.object({
   state: z.enum(['open', 'closed', 'merged', 'all']).optional().default('open'),
   author: z.string().optional(),
   limit: z.number().int().positive().optional().default(20),
+  repo: z
+    .string()
+    .regex(/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/, 'repo must be owner/repo format')
+    .optional(),
 });
 
 type Input = z.infer<typeof inputSchema>;
@@ -52,6 +56,7 @@ function listGithubPrs(args: Input): NormalizedPr[] {
   if (args.author !== undefined) flags.push(`--author ${quoteArg(args.author)}`);
   flags.push(`--limit ${args.limit}`);
   flags.push('--json number,title,state,headRefName,baseRefName,url');
+  if (args.repo !== undefined) flags.push(`--repo ${quoteArg(args.repo)}`);
 
   const cmd = `gh pr list ${flags.join(' ')}`;
   const raw = exec(cmd);
@@ -66,14 +71,24 @@ function listGithubPrs(args: Input): NormalizedPr[] {
   }));
 }
 
+function parseSlugOpts(slug: string | undefined): { owner?: string; repo?: string } | undefined {
+  if (slug === undefined) return undefined;
+  const idx = slug.indexOf('/');
+  if (idx <= 0 || idx === slug.length - 1) return undefined;
+  return { owner: slug.slice(0, idx), repo: slug.slice(idx + 1) };
+}
+
 function listGitlabMrs(args: Input): NormalizedPr[] {
-  const parsed = gitlabApiMrList({
-    head: args.head,
-    base: args.base,
-    state: args.state,
-    author: args.author,
-    limit: args.limit,
-  });
+  const parsed = gitlabApiMrList(
+    {
+      head: args.head,
+      base: args.base,
+      state: args.state,
+      author: args.author,
+      limit: args.limit,
+    },
+    parseSlugOpts(args.repo),
+  );
   return parsed.map((mr) => ({
     number: mr.iid,
     title: mr.title,
