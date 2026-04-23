@@ -223,6 +223,92 @@ describe('wave_compute handler', () => {
     expect(parsed.error).toContain('all 2 spec fetches failed');
   });
 
+  test('story_self_fallback — no sub-issues, valid spec → single-wave plan', async () => {
+    // Story body has all three required sections but no ## Sub-Issues section.
+    const storyBody = `## Changes
+
+- Do the thing.
+
+## Tests
+
+- Verify the thing.
+
+## Acceptance Criteria
+
+- [ ] Thing done.
+`;
+    execMockFn = (cmd: string) => {
+      if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
+      if (cmd.includes('gh issue view 398')) {
+        return JSON.stringify({ body: storyBody, title: 'Story 398' });
+      }
+      return '';
+    };
+    const result = await handler.execute({ epic_ref: '#398' });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.waves.length).toBe(1);
+    expect(parsed.waves[0].issues.length).toBe(1);
+    expect(parsed.waves[0].issues[0].ref).toBe('org/repo#398');
+    expect(parsed.topology).toBe('serial');
+    expect(parsed.reason).toBe('single issue (trivial)');
+    expect(parsed.fallback_reason).toBe('story-self');
+    expect(parsed.total_issues).toBe(1);
+    expect(parsed.fetched_count).toBe(1);
+  });
+
+  test('story_self_fallback — no sub-issues, invalid spec → errors loudly', async () => {
+    // Story body missing ## Acceptance Criteria → must NOT silently return empty.
+    const storyBody = `## Changes
+
+- Do the thing.
+
+## Tests
+
+- Verify the thing.
+`;
+    execMockFn = (cmd: string) => {
+      if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
+      if (cmd.includes('gh issue view 398')) {
+        return JSON.stringify({ body: storyBody, title: 'Story 398' });
+      }
+      return '';
+    };
+    const result = await handler.execute({ epic_ref: '#398' });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(false);
+    // Must NOT be the old silent-empty shape.
+    expect(parsed.reason).not.toBe('no issues');
+    expect(parsed.waves).toBeUndefined();
+    // Error must name what's missing.
+    expect(parsed.error).toContain('acceptance_criteria');
+    expect(parsed.missing_sections).toEqual(['acceptance_criteria']);
+  });
+
+  // Regression: epic with sub-issues continues to work as before.
+  // The existing `linear_chain_produces_serial_topology`,
+  // `independent_issues_produce_single_parallel_wave`, `diamond_dependency`,
+  // and `fetched_count — all success` tests exercise the multi-sub-issue path.
+  // This test double-checks that the fallback logic does NOT fire when sub-issues exist.
+  test('epic_with_subissues_regression — fallback does not fire', async () => {
+    const epicBody = `## Sub-Issues
+
+- #5 first
+- #6 second
+`;
+    const subs: Record<string, { body: string; title?: string }> = {
+      'org/repo#5': { body: '## Dependencies\nNone\n', title: 'first' },
+      'org/repo#6': { body: '## Dependencies\nNone\n', title: 'second' },
+    };
+    mockGraph(epicBody, subs);
+    const result = await handler.execute({ epic_ref: '#100' });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.fallback_reason).toBeUndefined();
+    expect(parsed.total_issues).toBe(2);
+    expect(parsed.waves[0].issues.length).toBe(2);
+  });
+
   test('epic_fetch_failure_surfaces_loudly', async () => {
     execMockFn = (cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';

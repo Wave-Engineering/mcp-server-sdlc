@@ -9,6 +9,15 @@ const inputSchema = z.object({
   epic_ref: z.string().min(1, 'epic_ref must be a non-empty string'),
 });
 
+// Mirrors REQUIRED_SECTION_ALIASES in handlers/spec_validate_structure.ts (lines 14-18).
+// Kept in lockstep so the story-self fallback applies the same "valid spec" test
+// that /prepwaves uses upstream.
+const REQUIRED_SECTION_ALIASES: Record<string, readonly string[]> = {
+  changes: ['changes', 'implementation_steps'],
+  tests: ['tests', 'test_procedures'],
+  acceptance_criteria: ['acceptance_criteria'],
+};
+
 function fetchIssue(ref: IssueRef): { body: string; title: string } {
   const platform = detectPlatform();
   if (platform === 'github') {
@@ -174,6 +183,68 @@ const waveComputeHandler: HandlerDef = {
         }
       }
 
+      // Story-self fallback: no sub-issues found → check whether the issue
+      // itself is a valid spec. If so, treat it as a single-issue single-wave
+      // plan. If not, error loudly (do NOT silently return an empty plan).
+      if (dedupedSubs.length === 0) {
+        const presence: Record<string, boolean> = {};
+        for (const [canonical, aliases] of Object.entries(REQUIRED_SECTION_ALIASES)) {
+          presence[`has_${canonical}`] = aliases.some(
+            alias => epicSections[alias] && epicSections[alias].trim().length > 0,
+          );
+        }
+        const specValid =
+          presence.has_changes && presence.has_tests && presence.has_acceptance_criteria;
+        if (!specValid) {
+          const missing = Object.entries(REQUIRED_SECTION_ALIASES)
+            .filter(([canonical]) => !presence[`has_${canonical}`])
+            .map(([canonical]) => canonical);
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify({
+                  ok: false,
+                  error: `no sub-issues found and epic spec is missing required sections: ${missing.join(', ')}`,
+                  missing_sections: missing,
+                }),
+              },
+            ],
+          };
+        }
+        const selfRef = slug ? `${slug}#${ref.number}` : `#${ref.number}`;
+        const selfNode: DepNode = {
+          ref: selfRef,
+          title: epicData.title,
+          depends_on: [],
+        };
+        const selfResult = computeWaves([selfNode]);
+        const selfResponse: {
+          ok: true;
+          epic_ref: string;
+          waves: typeof selfResult.waves;
+          topology: string;
+          reason: string;
+          total_issues: number;
+          fetched_count: number;
+          fallback_reason: string;
+        } = {
+          ok: true,
+          epic_ref: args.epic_ref,
+          waves: selfResult.waves,
+          topology: selfResult.topology,
+          reason: selfResult.reason,
+          total_issues: selfResult.total_issues,
+          fetched_count: 1,
+          fallback_reason: 'story-self',
+        };
+        return {
+          content: [
+            { type: 'text' as const, text: JSON.stringify(selfResponse) },
+          ],
+        };
+      }
+
       // Fetch dependencies for each sub-issue.
       const nodes: DepNode[] = [];
       const failures: string[] = [];
@@ -241,6 +312,7 @@ const waveComputeHandler: HandlerDef = {
         total_issues: number;
         fetched_count: number;
         warnings?: string[];
+        fallback_reason?: string;
       } = {
         ok: true,
         epic_ref: args.epic_ref,
