@@ -309,6 +309,87 @@ describe('wave_compute handler', () => {
     expect(parsed.waves[0].issues.length).toBe(2);
   });
 
+  test('cross_repo_epic_bare_ref_resolves_to_epic_repo', async () => {
+    // Epic is qualified to a DIFFERENT repo than cwd. Bare `#N` refs in
+    // the epic body (and in each sub-issue's Dependencies) must resolve
+    // against the epic's repo.
+    execMockFn = (cmd: string) => {
+      if (cmd.startsWith('git remote')) return 'https://github.com/myorg/myrepo.git\n';
+      if (cmd.includes('gh issue view 42') && cmd.includes('--repo Wave-Engineering/sdlc')) {
+        return JSON.stringify({
+          body: `## Sub-Issues\n\n- #5 first\n- #6 second\n`,
+          title: 'Epic 42',
+        });
+      }
+      if (cmd.includes('gh issue view 5') && cmd.includes('--repo Wave-Engineering/sdlc')) {
+        return JSON.stringify({ body: '## Dependencies\nNone\n', title: 'first' });
+      }
+      if (cmd.includes('gh issue view 6') && cmd.includes('--repo Wave-Engineering/sdlc')) {
+        return JSON.stringify({ body: '## Dependencies\n- #5\n', title: 'second' });
+      }
+      return JSON.stringify({ body: '', title: '' });
+    };
+    const result = await handler.execute({ epic_ref: 'Wave-Engineering/sdlc#42' });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    // Sub-issues must be qualified to epic's repo, not cwd's.
+    const allRefs = parsed.waves.flatMap((w: { issues: Array<{ ref: string }> }) =>
+      w.issues.map((i: { ref: string }) => i.ref),
+    );
+    expect(allRefs).toContain('Wave-Engineering/sdlc#5');
+    expect(allRefs).toContain('Wave-Engineering/sdlc#6');
+    expect(allRefs).not.toContain('myorg/myrepo#5');
+    expect(allRefs).not.toContain('myorg/myrepo#6');
+  });
+
+  test('cross_repo_epic_already_qualified_ref_preserved', async () => {
+    // Already-qualified refs in the epic body preserved verbatim.
+    execMockFn = (cmd: string) => {
+      if (cmd.startsWith('git remote')) return 'https://github.com/myorg/myrepo.git\n';
+      if (cmd.includes('gh issue view 42') && cmd.includes('--repo Wave-Engineering/sdlc')) {
+        return JSON.stringify({
+          body: `## Sub-Issues\n\n- Wave-Engineering/sdlc#7 story seven\n`,
+          title: 'Epic 42',
+        });
+      }
+      if (cmd.includes('gh issue view 7') && cmd.includes('--repo Wave-Engineering/sdlc')) {
+        return JSON.stringify({ body: '## Dependencies\nNone\n', title: 'seven' });
+      }
+      return JSON.stringify({ body: '', title: '' });
+    };
+    const result = await handler.execute({ epic_ref: 'Wave-Engineering/sdlc#42' });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    const allRefs = parsed.waves.flatMap((w: { issues: Array<{ ref: string }> }) =>
+      w.issues.map((i: { ref: string }) => i.ref),
+    );
+    expect(allRefs).toEqual(['Wave-Engineering/sdlc#7']);
+  });
+
+  test('unqualified_epic_bare_ref_falls_back_to_cwd_slug', async () => {
+    // Back-compat: bare epic_ref → bare `#N` in body resolves against cwd.
+    execMockFn = (cmd: string) => {
+      if (cmd.startsWith('git remote')) return 'https://github.com/myorg/myrepo.git\n';
+      if (cmd.includes('gh issue view 42')) {
+        return JSON.stringify({
+          body: `## Sub-Issues\n\n- #5 story\n`,
+          title: 'Epic 42',
+        });
+      }
+      if (cmd.includes('gh issue view 5')) {
+        return JSON.stringify({ body: '## Dependencies\nNone\n', title: 'story' });
+      }
+      return JSON.stringify({ body: '', title: '' });
+    };
+    const result = await handler.execute({ epic_ref: '#42' });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    const allRefs = parsed.waves.flatMap((w: { issues: Array<{ ref: string }> }) =>
+      w.issues.map((i: { ref: string }) => i.ref),
+    );
+    expect(allRefs).toEqual(['myorg/myrepo#5']);
+  });
+
   test('epic_fetch_failure_surfaces_loudly', async () => {
     execMockFn = (cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';

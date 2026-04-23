@@ -102,7 +102,16 @@ const waveTopologyHandler: HandlerDef = {
     }
 
     try {
-      const slug = parseRepoSlug();
+      // When invoked with an epic_ref, resolve bare `#N` refs against the
+      // EPIC's repo (fallback to cwd slug for bare epic refs). When invoked
+      // with issue_refs directly, there's no epic context — use cwd slug.
+      let slug: string | null = parseRepoSlug();
+      if (args.epic_ref) {
+        const epicParsed = parseIssueRef(args.epic_ref);
+        if (epicParsed && epicParsed.owner && epicParsed.repo) {
+          slug = `${epicParsed.owner}/${epicParsed.repo}`;
+        }
+      }
       const refs = resolveIssueList(args.issue_refs, args.epic_ref, slug);
       if (refs.length === 0) {
         return {
@@ -133,9 +142,12 @@ const waveTopologyHandler: HandlerDef = {
         try {
           const data = fetchIssue(parsed);
           const sections = parseSections(data.body).sections;
+          // Use the sub-issue's own repo slug for its deps, not the epic's.
+          const refSlug =
+            parsed.owner && parsed.repo ? `${parsed.owner}/${parsed.repo}` : slug;
           nodes.push({
             ref,
-            depends_on: parseDependencies(sections.dependencies ?? '', slug),
+            depends_on: parseDependencies(sections.dependencies ?? '', refSlug),
           });
           fetchedCount++;
         } catch (err) {

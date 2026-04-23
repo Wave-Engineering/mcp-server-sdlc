@@ -159,7 +159,10 @@ const waveComputeHandler: HandlerDef = {
     }
 
     try {
-      const slug = parseRepoSlug();
+      // Resolve bare `#N` refs against the EPIC's repo, not the MCP cwd.
+      // Fall back to cwd's slug only when the epic_ref itself was bare.
+      const slug =
+        ref.owner && ref.repo ? `${ref.owner}/${ref.repo}` : parseRepoSlug();
       const epicData = fetchIssue(ref);
       const epicSections = parseSections(epicData.body).sections;
       const subIssuesSection =
@@ -256,7 +259,14 @@ const waveComputeHandler: HandlerDef = {
         try {
           const subData = fetchIssue(subRefParsed);
           const subSections = parseSections(subData.body).sections;
-          const deps = parseDependencies(subSections.dependencies ?? '', slug);
+          // Use the sub-issue's own repo for resolving bare #N refs in ITS
+          // deps section — a heterogeneous epic (sub-issue in a different
+          // repo) has deps that live alongside the sub-issue, not the epic.
+          const subSlug =
+            subRefParsed.owner && subRefParsed.repo
+              ? `${subRefParsed.owner}/${subRefParsed.repo}`
+              : slug;
+          const deps = parseDependencies(subSections.dependencies ?? '', subSlug);
           nodes.push({
             ref: sub.ref,
             title: sub.title ?? subData.title,

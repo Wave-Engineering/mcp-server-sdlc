@@ -200,11 +200,15 @@ const epicSubIssuesHandler: HandlerDef = {
         };
       }
 
-      const slug = parseRepoSlug();
+      // Resolve bare `#N` refs in the epic body against the EPIC's repo, not
+      // the MCP process's cwd. Fall back to cwd's slug only when the epic_ref
+      // itself was bare (back-compat for same-repo invocations).
+      const epicSlug =
+        ref.owner && ref.repo ? `${ref.owner}/${ref.repo}` : parseRepoSlug();
       // Try table format first; if it yields nothing, fall back to checklist/bullets.
-      let subs = parseTableRows(section, slug);
+      let subs = parseTableRows(section, epicSlug);
       if (subs.length === 0) {
-        subs = parseChecklistOrBullets(section, slug);
+        subs = parseChecklistOrBullets(section, epicSlug);
       }
 
       return {

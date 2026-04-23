@@ -170,6 +170,82 @@ describe('epic_sub_issues handler', () => {
     );
   });
 
+  test('cross_repo_epic_bare_ref_resolves_to_epic_repo', async () => {
+    // Epic ref is qualified to a DIFFERENT repo than cwd. Bare `#N` refs in
+    // the epic body must resolve against the epic's repo, NOT cwd.
+    execMockFn = (cmd: string) => {
+      if (cmd.startsWith('git remote')) return 'https://github.com/myorg/myrepo.git\n';
+      if (cmd.includes('gh issue view 42') && cmd.includes('--repo Wave-Engineering/sdlc')) {
+        return JSON.stringify({
+          body: `## Sub-Issues\n\n- #5 story one\n- #6 story two\n`,
+        });
+      }
+      return JSON.stringify({ body: '' });
+    };
+    const result = await handler.execute({ epic_ref: 'Wave-Engineering/sdlc#42' });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.count).toBe(2);
+    expect(parsed.sub_issues[0].ref).toBe('Wave-Engineering/sdlc#5');
+    expect(parsed.sub_issues[1].ref).toBe('Wave-Engineering/sdlc#6');
+    // Must NOT have qualified against cwd's slug.
+    expect(parsed.sub_issues[0].ref).not.toBe('myorg/myrepo#5');
+  });
+
+  test('cross_repo_epic_bare_ref_resolves_to_epic_repo_table_format', async () => {
+    // Table-format variant of the cross-repo bare-ref test (exercises
+    // parseTableRows separately from parseChecklistOrBullets).
+    execMockFn = (cmd: string) => {
+      if (cmd.startsWith('git remote')) return 'https://github.com/myorg/myrepo.git\n';
+      if (cmd.includes('gh issue view 42') && cmd.includes('--repo Wave-Engineering/sdlc')) {
+        return JSON.stringify({
+          body: `## Sub-Issues\n\n| Order | Issue | Title |\n|-------|-------|-------|\n| 1 | #5 | story one |\n| 2 | #6 | story two |\n`,
+        });
+      }
+      return JSON.stringify({ body: '' });
+    };
+    const result = await handler.execute({ epic_ref: 'Wave-Engineering/sdlc#42' });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.count).toBe(2);
+    expect(parsed.sub_issues[0].ref).toBe('Wave-Engineering/sdlc#5');
+    expect(parsed.sub_issues[1].ref).toBe('Wave-Engineering/sdlc#6');
+    expect(parsed.sub_issues[0].ref).not.toBe('myorg/myrepo#5');
+  });
+
+  test('cross_repo_epic_already_qualified_ref_preserved', async () => {
+    // Already-qualified refs in the epic body must be preserved verbatim,
+    // never double-qualified.
+    execMockFn = (cmd: string) => {
+      if (cmd.startsWith('git remote')) return 'https://github.com/myorg/myrepo.git\n';
+      if (cmd.includes('gh issue view 42') && cmd.includes('--repo Wave-Engineering/sdlc')) {
+        return JSON.stringify({
+          body: `## Sub-Issues\n\n- Wave-Engineering/sdlc#7 story seven\n`,
+        });
+      }
+      return JSON.stringify({ body: '' });
+    };
+    const result = await handler.execute({ epic_ref: 'Wave-Engineering/sdlc#42' });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.count).toBe(1);
+    expect(parsed.sub_issues[0].ref).toBe('Wave-Engineering/sdlc#7');
+  });
+
+  test('unqualified_epic_bare_ref_falls_back_to_cwd_slug', async () => {
+    // Back-compat: when the epic_ref itself is bare (no slug), bare `#N`
+    // refs in the body should still resolve against cwd's slug.
+    mockBody(`## Sub-Issues
+
+- #5 story one
+`);
+    const result = await handler.execute({ epic_ref: '#42' });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.count).toBe(1);
+    expect(parsed.sub_issues[0].ref).toBe('myorg/myrepo#5');
+  });
+
   test('sub_issues_section_takes_precedence_over_waves', async () => {
     // When both exist, the explicit sub_issues section wins.
     mockBody(`## Sub-Issues
