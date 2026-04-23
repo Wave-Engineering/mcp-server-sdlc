@@ -128,4 +128,108 @@ describe('wave_next_pending handler', () => {
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);
   });
+
+  test('single_issue_wave → topology "serial"', async () => {
+    // Plan wave has one issue and no topology field; fallback classifier
+    // should return 'serial' per computeWaves single-issue rule.
+    const plan = {
+      phases: [
+        {
+          waves: [{ id: 'w1', issues: [{ number: 101, title: 'only' }] }],
+        },
+      ],
+    };
+    const state = { waves: { w1: { status: 'pending' } } };
+    await setupFixture(plan, state);
+    const result = await handler.execute({});
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.wave.id).toBe('w1');
+    expect(parsed.wave.topology).toBe('serial');
+  });
+
+  test('multi_issue_wave → topology "parallel"', async () => {
+    // Plan wave has 2+ issues and no topology field. Per the architectural
+    // limitation documented in the handler, the fallback classifier sees
+    // zero-dep nodes (PlanWave doesn't store per-issue edges), so multi-issue
+    // waves classify as 'parallel' — true 'mixed'/'serial' would require
+    // fetching issue bodies.
+    const plan = {
+      phases: [
+        {
+          waves: [
+            {
+              id: 'w1',
+              issues: [
+                { number: 201, title: 'a' },
+                { number: 202, title: 'b' },
+                { number: 203, title: 'c' },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const state = { waves: { w1: { status: 'pending' } } };
+    await setupFixture(plan, state);
+    const result = await handler.execute({});
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.wave.id).toBe('w1');
+    expect(parsed.wave.topology).toBe('parallel');
+  });
+
+  test('plan_includes_topology → pass-through (not recomputed)', async () => {
+    // Plan wave already declares topology: 'mixed'. The handler must preserve
+    // the caller-supplied value rather than recomputing it.
+    const plan = {
+      phases: [
+        {
+          waves: [
+            {
+              id: 'w1',
+              issues: [
+                { number: 301, title: 'a' },
+                { number: 302, title: 'b' },
+              ],
+              topology: 'mixed',
+            },
+          ],
+        },
+      ],
+    };
+    const state = { waves: { w1: { status: 'pending' } } };
+    await setupFixture(plan, state);
+    const result = await handler.execute({});
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.wave.topology).toBe('mixed');
+  });
+
+  test('no_pending_waves → wave null, no topology leak', async () => {
+    // With no pending waves, handler must return wave: null and must not
+    // emit a spurious topology value at the top level.
+    const plan = {
+      phases: [
+        {
+          waves: [
+            { id: 'w1', issues: [{ number: 401 }] },
+            { id: 'w2', issues: [{ number: 402 }, { number: 403 }] },
+          ],
+        },
+      ],
+    };
+    const state = {
+      waves: {
+        w1: { status: 'completed' },
+        w2: { status: 'completed' },
+      },
+    };
+    await setupFixture(plan, state);
+    const result = await handler.execute({});
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.wave).toBe(null);
+    expect(parsed).not.toHaveProperty('topology');
+  });
 });
