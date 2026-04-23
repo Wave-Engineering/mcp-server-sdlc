@@ -222,6 +222,40 @@ describe('wave_init handler', () => {
     expect(typeof parsed.total_waves).toBe('number');
   });
 
+  // ---- project_root_param -------------------------------------------------
+  test('project_root_param — overrides CLAUDE_PROJECT_DIR', async () => {
+    // Env points somewhere else, but project_root should win and become the
+    // execSync cwd.
+    const envDir = `/tmp/wave-init-env-${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
+    const overrideDir = `/tmp/wave-init-override-${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
+    process.env.CLAUDE_PROJECT_DIR = envDir;
+    const planJson = JSON.stringify({ project: 'foo', phases: [] });
+    await handler.execute({ plan_json: planJson, project_root: overrideDir });
+    expect(mockExecSync.mock.calls.length).toBe(1);
+    const opts = mockExecSync.mock.calls[0][1] as { cwd?: string } | undefined;
+    expect(opts?.cwd).toBe(overrideDir);
+  });
+
+  // ---- repo_param ---------------------------------------------------------
+  test('repo_param — appends --repo flag to CLI call', async () => {
+    await setupStatusFixture(null);
+    const planJson = JSON.stringify({ project: 'foo', phases: [] });
+    await handler.execute({ plan_json: planJson, repo: 'Wave-Engineering/sdlc' });
+    expect(lastExecCall).toContain('wave-status init');
+    // Value is single-quoted for shell safety; consistent with wave_record_mr.
+    expect(lastExecCall).toContain(`--repo 'Wave-Engineering/sdlc'`);
+  });
+
+  test('repo_param — rejects invalid repo format', async () => {
+    const result = await handler.execute({
+      plan_json: JSON.stringify({ phases: [] }),
+      repo: 'not-a-valid-repo',
+    });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(false);
+    expect(parsed.error).toContain('owner/repo');
+  });
+
   // ---- extend_missing_state -----------------------------------------------
   test('extend_missing_state — returns ok:false without throwing', async () => {
     // Point at a fresh empty tempdir; no state.json exists.

@@ -49,7 +49,7 @@ describe('wave_close_issue handler', () => {
     expect(parsed.error).toContain('does not exist');
   });
 
-  test('schema_validation — rejects missing issue_number', async () => {
+  test('schema_validation — rejects missing issue_number AND issue_ref', async () => {
     const result = await handler.execute({});
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);
@@ -57,6 +57,28 @@ describe('wave_close_issue handler', () => {
 
   test('schema_validation — rejects non-integer issue_number', async () => {
     const result = await handler.execute({ issue_number: 'abc' });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(false);
+  });
+
+  test('issue_ref_uses_qualified_ref_in_CLI', async () => {
+    const result = await handler.execute({ issue_ref: 'Wave-Engineering/sdlc#185' });
+    expect(lastExecCall).toContain('wave-status close-issue');
+    expect(lastExecCall).toContain("'Wave-Engineering/sdlc#185'");
+    expect(lastExecCall).not.toMatch(/close-issue 185$/);
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+  });
+
+  test('issue_number_fallback — bare number still works when issue_ref absent', async () => {
+    const result = await handler.execute({ issue_number: 42 });
+    expect(lastExecCall).toBe('wave-status close-issue 42');
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+  });
+
+  test('issue_ref — rejects malformed ref', async () => {
+    const result = await handler.execute({ issue_ref: 'garbage' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);
   });

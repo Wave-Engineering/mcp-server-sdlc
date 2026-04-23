@@ -7,6 +7,11 @@ import type { HandlerDef } from '../types.js';
 const inputSchema = z.object({
   plan_json: z.string().min(1, 'plan_json must be a non-empty JSON string'),
   extend: z.boolean().optional().default(false),
+  project_root: z.string().optional(),
+  repo: z
+    .string()
+    .regex(/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/, 'repo must be owner/repo format')
+    .optional(),
 });
 
 type Input = z.infer<typeof inputSchema>;
@@ -32,7 +37,8 @@ interface PhasesWavesData {
   phases?: Array<{ waves?: unknown[] }>;
 }
 
-function projectDir(): string {
+function projectDir(override?: string): string {
+  if (override !== undefined && override.length > 0) return override;
   return process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
 }
 
@@ -128,7 +134,7 @@ const waveInitHandler: HandlerDef = {
       }
 
       try {
-        const dir = await statusDir(projectDir());
+        const dir = await statusDir(projectDir(args.project_root));
         const statePath = join(dir, 'state.json');
 
         if (!(await fileExists(statePath))) {
@@ -172,9 +178,16 @@ const waveInitHandler: HandlerDef = {
     try {
       const planFile = writePlanFile(args.plan_json);
       const extendFlag = args.extend ? ' --extend' : '';
-      const cmd = `wave-status init${extendFlag} ${planFile}`;
+      // Single-quote the repo value before interpolating into the shell
+      // string. The Zod regex already restricts the character set to shell-
+      // safe chars, but explicit quoting is defense-in-depth + consistent
+      // with how issue_ref and mr_ref are handled in the other wave handlers.
+      const repoFlag = args.repo
+        ? ` --repo '${args.repo.replace(/'/g, `'\\''`)}'`
+        : '';
+      const cmd = `wave-status init${extendFlag}${repoFlag} ${planFile}`;
       execSync(cmd, {
-        cwd: projectDir(),
+        cwd: projectDir(args.project_root),
         encoding: 'utf8',
       });
 
@@ -186,7 +199,7 @@ const waveInitHandler: HandlerDef = {
       let total_phases = 0;
       let total_waves = 0;
       try {
-        const dir = await statusDir(projectDir());
+        const dir = await statusDir(projectDir(args.project_root));
         const phasesPath = join(dir, 'phases-waves.json');
         if (await fileExists(phasesPath)) {
           const phasesData = (await readJson(phasesPath)) as PhasesWavesData;
