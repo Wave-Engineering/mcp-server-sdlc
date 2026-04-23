@@ -54,6 +54,7 @@ function ghRun(overrides: Record<string, unknown> = {}) {
     headSha: '1234567890abcdef1234567890abcdef12345678',
     headBranch: 'feature/1-demo',
     createdAt: '2026-04-07T12:00:00Z',
+    event: 'push',
     ...overrides,
   };
 }
@@ -98,8 +99,10 @@ describe('ci_wait_run handler', () => {
       sleeps.push(ms);
     });
     execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
+    // Three entries: pre-flight (issue #187), phase 1 initial, phase 1 post-sleep.
     execRegistry['gh run list'] = [
-      JSON.stringify([ghRun({ status: 'in_progress' })]),
+      JSON.stringify([ghRun({ status: 'in_progress' })]), // pre-flight
+      JSON.stringify([ghRun({ status: 'in_progress' })]), // phase 1 initial
       JSON.stringify([ghRun({ status: 'completed', conclusion: 'success' })]),
     ];
 
@@ -364,5 +367,134 @@ describe('ci_wait_run handler', () => {
     __setSleep(async (_ms: number) => {
       // no-op
     });
+  });
+
+  // --- Issue #187: merge-queue fallback behavior ---
+
+  // Push trigger present + success → regression coverage for the happy path.
+  // The pre-flight must see event=push on at least one run and fall through
+  // to the existing poll loop; the final_status must remain "success".
+  test('push_trigger_present_success — push-event run completes as success (regression)', async () => {
+    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
+    execRegistry['gh run list'] = JSON.stringify([
+      ghRun({
+        databaseId: 777,
+        status: 'completed',
+        conclusion: 'success',
+        event: 'push',
+      }),
+    ]);
+
+    const result = await ciWaitRunHandler.execute({ ref: 'main' });
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(true);
+    expect(data.final_status).toBe('success');
+    expect(data.run_id).toBe(777);
+  });
+
+  // Merge-queue-only repo + matching merge_group run → not_applicable success.
+  // Pass ref as a 40-char SHA so the handler skips branch-to-SHA resolution
+  // (no gh api call needed — exec registry is intentionally silent on it).
+  test('merge_group_only_sha_match — returns not_applicable success', async () => {
+    const sha = 'b'.repeat(40);
+    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
+    execRegistry['gh run list'] = JSON.stringify([
+      ghRun({
+        databaseId: 555,
+        status: 'completed',
+        conclusion: 'success',
+        event: 'merge_group',
+        headSha: sha,
+        url: 'https://github.com/org/repo/actions/runs/555',
+      }),
+    ]);
+
+    const result = await ciWaitRunHandler.execute({ ref: sha });
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(true);
+    expect(data.final_status).toBe('not_applicable');
+    expect(data.reason).toBe('merge_group_validated');
+    expect(data.run_id).toBe(555);
+    expect(data.url).toBe('https://github.com/org/repo/actions/runs/555');
+    expect(data.waited_sec).toBe(0);
+  });
+
+  // Merge-queue-only repo + no matching merge_group run → not_applicable error.
+  test('merge_group_only_no_sha_match — returns not_applicable error', async () => {
+    const refSha = 'c'.repeat(40);
+    const otherSha = 'd'.repeat(40);
+    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
+    execRegistry['gh run list'] = JSON.stringify([
+      ghRun({
+        databaseId: 444,
+        status: 'completed',
+        conclusion: 'success',
+        event: 'merge_group',
+        headSha: otherSha,
+      }),
+    ]);
+
+    const result = await ciWaitRunHandler.execute({ ref: refSha });
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(false);
+    expect(data.final_status).toBe('not_applicable');
+    expect(data.error as string).toContain('no push-triggered workflows');
+    expect(data.ref).toBe(refSha);
+  });
+
+  // Empty run list → existing "no CI run found" path must still fire.
+  // The pre-flight must NOT mask this case; fall through to Phase 1 / error.
+  test('empty_run_list — preserves existing no-run-found error', async () => {
+    const realDateNow = Date.now;
+    let fakeNow = realDateNow();
+    Date.now = () => fakeNow;
+    __setSleep(async (ms: number) => {
+      fakeNow += ms;
+    });
+    try {
+      execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
+      execRegistry['gh run list'] = JSON.stringify([]); // sticky empty
+
+      const result = await ciWaitRunHandler.execute({
+        ref: 'main',
+        timeout_sec: 30,
+      });
+      const data = parseResult(result.content);
+      expect(data.ok).toBe(false);
+      expect((data.error as string).toLowerCase()).toContain('no ci run found');
+      // Must NOT be the merge-queue error path.
+      expect(data.final_status).toBeUndefined();
+    } finally {
+      Date.now = realDateNow;
+    }
+  });
+
+  // Timeout still fires for push-triggered runs that never complete.
+  // Verifies the pre-flight doesn't swallow the existing timeout path.
+  test('timeout_still_fires_for_push_triggered — push run stays in_progress, times out', async () => {
+    const realDateNow = Date.now;
+    let fakeNow = realDateNow();
+    Date.now = () => fakeNow;
+    __setSleep(async (ms: number) => {
+      fakeNow += ms;
+    });
+    try {
+      execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
+      execRegistry['gh run list'] = JSON.stringify([
+        ghRun({ status: 'in_progress', event: 'push' }),
+      ]);
+
+      const result = await ciWaitRunHandler.execute({
+        ref: 'main',
+        poll_interval_sec: 10,
+        timeout_sec: 30,
+      });
+      const data = parseResult(result.content);
+      expect(data.ok).toBe(true);
+      expect(data.final_status).toBe('timed_out');
+      expect(data.waited_sec as number).toBeGreaterThanOrEqual(30);
+    } finally {
+      Date.now = realDateNow;
+    }
   });
 });
