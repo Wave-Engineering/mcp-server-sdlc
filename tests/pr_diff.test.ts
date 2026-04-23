@@ -5,8 +5,10 @@ import { describe, test, expect, mock, beforeEach } from 'bun:test';
 
 let execRegistry: Array<{ match: string; value: string }> = [];
 let execError: Error | null = null;
+let execCalls: string[] = [];
 
 function mockExec(cmd: string): string {
+  execCalls.push(cmd);
   if (execError) throw execError;
   for (const { match, value } of execRegistry) {
     if (cmd.includes(match)) return value;
@@ -32,6 +34,7 @@ function register(match: string, value: string) {
 beforeEach(() => {
   execRegistry = [];
   execError = null;
+  execCalls = [];
 });
 
 const SMALL_DIFF = `diff --git a/foo.txt b/foo.txt
@@ -237,5 +240,75 @@ describe('pr_diff handler', () => {
     const data = parseResult(result.content);
     expect(data.ok).toBe(false);
     expect((data.error as string)).toContain('authentication');
+  });
+
+  // --- cross-repo routing ---
+
+  test('route_with_repo — github threads --repo into gh pr diff and gh pr view', async () => {
+    register('git remote get-url origin', 'https://github.com/cwd-org/cwd-repo.git');
+    register('gh pr diff 42', SMALL_DIFF);
+    register(
+      'gh pr view 42 --json url',
+      JSON.stringify({ url: 'https://github.com/Wave-Engineering/mcp-server-sdlc/pull/42' }),
+    );
+
+    const result = await prDiffHandler.execute({
+      number: 42,
+      repo: 'Wave-Engineering/mcp-server-sdlc',
+    });
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(true);
+
+    const diffCall = execCalls.find((c) => c.startsWith('gh pr diff 42')) ?? '';
+    expect(diffCall).toContain('--repo Wave-Engineering/mcp-server-sdlc');
+    const viewCall = execCalls.find((c) => c.startsWith('gh pr view 42')) ?? '';
+    expect(viewCall).toContain('--repo Wave-Engineering/mcp-server-sdlc');
+  });
+
+  test('route_with_repo — gitlab forwards slug into glab mr diff + glab api path', async () => {
+    register('git remote get-url origin', 'https://gitlab.com/cwd-org/cwd-repo.git');
+    register('glab mr diff 11', SMALL_DIFF);
+    register(
+      'glab api projects/target-org%2Ftarget-repo/merge_requests/11',
+      JSON.stringify({ web_url: 'https://gitlab.com/target-org/target-repo/-/merge_requests/11' }),
+    );
+
+    const result = await prDiffHandler.execute({
+      number: 11,
+      repo: 'target-org/target-repo',
+    });
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(true);
+
+    const diffCall = execCalls.find((c) => c.startsWith('glab mr diff 11')) ?? '';
+    expect(diffCall).toContain('--repo target-org/target-repo');
+    const apiCall = execCalls.find((c) => c.includes('glab api projects/')) ?? '';
+    expect(apiCall).toContain('target-org%2Ftarget-repo');
+    expect(apiCall).not.toContain('cwd-org%2Fcwd-repo');
+  });
+
+  test('regression_without_repo — gh pr diff call does not contain --repo', async () => {
+    register('git remote get-url origin', 'https://github.com/org/repo.git');
+    register('gh pr diff 7', SMALL_DIFF);
+    register(
+      'gh pr view 7 --json url',
+      JSON.stringify({ url: 'https://github.com/org/repo/pull/7' }),
+    );
+
+    await prDiffHandler.execute({ number: 7 });
+
+    const diffCall = execCalls.find((c) => c.startsWith('gh pr diff 7')) ?? '';
+    expect(diffCall).not.toContain('--repo');
+    const viewCall = execCalls.find((c) => c.startsWith('gh pr view 7')) ?? '';
+    expect(viewCall).not.toContain('--repo');
+  });
+
+  test('invalid_slug_early_error — returns ok:false with zero exec calls', async () => {
+    const result = await prDiffHandler.execute({ number: 1, repo: 'no-slash' });
+    const data = parseResult(result.content);
+
+    expect(data.ok).toBe(false);
+    expect(typeof data.error).toBe('string');
+    expect(execCalls).toHaveLength(0);
   });
 });

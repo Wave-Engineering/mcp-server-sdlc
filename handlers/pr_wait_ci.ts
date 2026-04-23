@@ -13,6 +13,10 @@ const inputSchema = z
     number: z.number().int().positive(),
     poll_interval_sec: z.number().int().optional().default(30),
     timeout_sec: z.number().int().positive().optional().default(1800),
+    repo: z
+      .string()
+      .regex(/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/, 'repo must be owner/repo format')
+      .optional(),
   })
   .strict();
 
@@ -43,8 +47,19 @@ interface GithubCheck {
   state?: string;
 }
 
-function snapshotGithub(number: number): ChecksSnapshot {
-  const raw = exec(`gh pr checks ${number} --json name,bucket,state`);
+function repoFlag(repo: string | undefined): string {
+  return repo !== undefined ? ` --repo ${repo}` : '';
+}
+
+function parseSlugOpts(slug: string | undefined): { owner?: string; repo?: string } | undefined {
+  if (slug === undefined) return undefined;
+  const idx = slug.indexOf('/');
+  if (idx <= 0 || idx === slug.length - 1) return undefined;
+  return { owner: slug.slice(0, idx), repo: slug.slice(idx + 1) };
+}
+
+function snapshotGithub(number: number, repo?: string): ChecksSnapshot {
+  const raw = exec(`gh pr checks ${number} --json name,bucket,state${repoFlag(repo)}`);
   const checks = JSON.parse(raw) as GithubCheck[];
 
   let passed = 0;
@@ -60,7 +75,7 @@ function snapshotGithub(number: number): ChecksSnapshot {
 
   const urlRaw = (() => {
     try {
-      return exec(`gh pr view ${number} --json url`);
+      return exec(`gh pr view ${number} --json url${repoFlag(repo)}`);
     } catch {
       return '{"url":""}';
     }
@@ -88,8 +103,8 @@ interface GitlabMr {
   pipeline?: GitlabPipeline;
 }
 
-function snapshotGitlab(number: number): ChecksSnapshot {
-  const mr = gitlabApiMr(number);
+function snapshotGitlab(number: number, repo?: string): ChecksSnapshot {
+  const mr = gitlabApiMr(number, parseSlugOpts(repo));
   const status = (
     mr.head_pipeline?.status ??
     mr.pipeline?.status ??
@@ -130,9 +145,9 @@ function snapshotGitlab(number: number): ChecksSnapshot {
   };
 }
 
-function snapshotChecks(number: number): ChecksSnapshot {
+function snapshotChecks(number: number, repo?: string): ChecksSnapshot {
   const platform = detectPlatform();
-  return platform === 'gitlab' ? snapshotGitlab(number) : snapshotGithub(number);
+  return platform === 'gitlab' ? snapshotGitlab(number, repo) : snapshotGithub(number, repo);
 }
 
 function decide(snap: ChecksSnapshot): FinalState | null {
@@ -154,7 +169,7 @@ function logCycle(number: number, elapsedSec: number, snap: ChecksSnapshot) {
 
 // Injection seam for tests — swap sleep + snapshot without touching real time/net.
 interface Deps {
-  snapshotFn: (number: number) => ChecksSnapshot;
+  snapshotFn: (number: number, repo?: string) => ChecksSnapshot;
   sleepFn: (ms: number) => Promise<void>;
   nowFn: () => number;
   /** Optional heartbeat called on each poll iteration for wave-status updates. */
@@ -211,7 +226,7 @@ export async function runPollLoop(
   // eslint-disable-next-line no-constant-condition
   while (true) {
     attempt++;
-    lastSnap = deps.snapshotFn(args.number);
+    lastSnap = deps.snapshotFn(args.number, args.repo);
     const elapsedSec = Math.floor((deps.nowFn() - start) / 1000);
     logCycle(args.number, elapsedSec, lastSnap);
     deps.heartbeatFn?.(args.number, attempt, lastSnap);
@@ -255,7 +270,7 @@ export async function runPollLoop(
 
     // Re-check timeout after sleep in case we slept past the deadline.
     if (deps.nowFn() - start >= timeoutMs) {
-      lastSnap = deps.snapshotFn(args.number);
+      lastSnap = deps.snapshotFn(args.number, args.repo);
       const finalElapsed = Math.floor((deps.nowFn() - start) / 1000);
       logCycle(args.number, finalElapsed, lastSnap);
       const postDecision = decide(lastSnap);

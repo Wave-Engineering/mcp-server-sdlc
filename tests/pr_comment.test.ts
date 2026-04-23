@@ -332,4 +332,90 @@ exit 0
     expect(data.ok).toBe(false);
     expect((data.error as string)).toContain('failed to parse comment ID');
   });
+
+  // --- cross-repo routing ---
+
+  test('route_with_repo — github appends --repo and slug to gh argv', async () => {
+    // cwd remote is a DIFFERENT repo than the target.
+    fixtureDir = await makeFixture({
+      git: fakeGit('https://github.com/cwd-org/cwd-repo.git'),
+      gh: fakeGh(42, 1001),
+    });
+
+    const result = await handler.execute({
+      number: 42,
+      body: 'cross-repo comment',
+      repo: 'Wave-Engineering/mcp-server-sdlc',
+    });
+    const data = parseResult(result);
+    expect(data.ok).toBe(true);
+
+    const calls = await readCalls(fixtureDir);
+    const ghCall = calls.find((c) => c[0] === 'pr' && c[1] === 'comment');
+    expect(ghCall).toBeDefined();
+    expect(ghCall).toContain('--repo');
+    expect(ghCall).toContain('Wave-Engineering/mcp-server-sdlc');
+  });
+
+  test('route_with_repo — gitlab appends -R and slug to glab argv', async () => {
+    fixtureDir = await makeFixture({
+      git: fakeGit('https://gitlab.com/cwd-org/cwd-repo.git'),
+      glab: fakeGlab(55, 9090),
+    });
+
+    const result = await handler.execute({
+      number: 55,
+      body: 'cross-repo note',
+      repo: 'target-org/target-repo',
+    });
+    const data = parseResult(result);
+    expect(data.ok).toBe(true);
+
+    const calls = await readCalls(fixtureDir);
+    const glabCall = calls.find((c) => c[0] === 'mr' && c[1] === 'note');
+    expect(glabCall).toBeDefined();
+    expect(glabCall).toContain('-R');
+    expect(glabCall).toContain('target-org/target-repo');
+  });
+
+  test('regression_without_repo — gh argv does NOT contain --repo', async () => {
+    fixtureDir = await makeFixture({
+      git: fakeGit('https://github.com/org/repo.git'),
+      gh: fakeGh(42, 1001),
+    });
+
+    const result = await handler.execute({ number: 42, body: 'hi' });
+    const data = parseResult(result);
+    expect(data.ok).toBe(true);
+
+    const calls = await readCalls(fixtureDir);
+    const ghCall = calls.find((c) => c[0] === 'pr' && c[1] === 'comment');
+    expect(ghCall).toBeDefined();
+    expect(ghCall).not.toContain('--repo');
+  });
+
+  test('invalid_slug_early_error — returns ok:false without spawning gh/glab', async () => {
+    // Fixture has no gh/glab stubs — any spawn attempt would fail with a
+    // different error. Empty bin dir; only git stub present (which shouldn't
+    // even be reached because zod rejects first).
+    const dir = `/tmp/pr-comment-invalid-${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
+    await Bun.write(`${dir}/.keep`, '');
+    await Bun.write(`${dir}/bin/.keep`, '');
+    process.env.PATH = `${dir}/bin:${ORIGINAL_PATH}`;
+    process.env.CLAUDE_PROJECT_DIR = dir;
+    fixtureDir = dir;
+
+    const result = await handler.execute({
+      number: 1,
+      body: 'x',
+      repo: 'not-a-slug',
+    });
+    const data = parseResult(result);
+    expect(data.ok).toBe(false);
+    expect(String(data.error)).toContain('repo');
+
+    // Calls file should not exist (no gh/glab was spawned).
+    const callsFile = Bun.file(`${dir}/bin/.calls`);
+    expect(await callsFile.exists()).toBe(false);
+  });
 });

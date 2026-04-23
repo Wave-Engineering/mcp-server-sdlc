@@ -9,6 +9,10 @@ import { detectPlatform, gitlabApiMr } from '../lib/glab';
 
 const inputSchema = z.object({
   number: z.number().int().positive(),
+  repo: z
+    .string()
+    .regex(/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/, 'repo must be owner/repo format')
+    .optional(),
 });
 
 type Input = z.infer<typeof inputSchema>;
@@ -29,22 +33,33 @@ function exec(cmd: string): string {
   });
 }
 
-function getGithubDiff(num: number): string {
-  return exec(`gh pr diff ${num}`);
+function repoFlag(repo: string | undefined): string {
+  return repo !== undefined ? ` --repo ${repo}` : '';
 }
 
-function getGithubUrl(num: number): string {
-  const raw = exec(`gh pr view ${num} --json url`);
+function parseSlugOpts(slug: string | undefined): { owner?: string; repo?: string } | undefined {
+  if (slug === undefined) return undefined;
+  const idx = slug.indexOf('/');
+  if (idx <= 0 || idx === slug.length - 1) return undefined;
+  return { owner: slug.slice(0, idx), repo: slug.slice(idx + 1) };
+}
+
+function getGithubDiff(num: number, repo?: string): string {
+  return exec(`gh pr diff ${num}${repoFlag(repo)}`);
+}
+
+function getGithubUrl(num: number, repo?: string): string {
+  const raw = exec(`gh pr view ${num} --json url${repoFlag(repo)}`);
   const parsed = JSON.parse(raw) as { url: string };
   return parsed.url;
 }
 
-function getGitlabDiff(num: number): string {
-  return exec(`glab mr diff ${num}`);
+function getGitlabDiff(num: number, repo?: string): string {
+  return exec(`glab mr diff ${num}${repoFlag(repo)}`);
 }
 
-function getGitlabUrl(num: number): string {
-  const mr = gitlabApiMr(num);
+function getGitlabUrl(num: number, repo?: string): string {
+  const mr = gitlabApiMr(num, parseSlugOpts(repo));
   return mr.web_url;
 }
 
@@ -115,9 +130,13 @@ const prDiffHandler: HandlerDef = {
     try {
       const platform = detectPlatform();
       const rawDiff =
-        platform === 'github' ? getGithubDiff(args.number) : getGitlabDiff(args.number);
+        platform === 'github'
+          ? getGithubDiff(args.number, args.repo)
+          : getGitlabDiff(args.number, args.repo);
       const url =
-        platform === 'github' ? getGithubUrl(args.number) : getGitlabUrl(args.number);
+        platform === 'github'
+          ? getGithubUrl(args.number, args.repo)
+          : getGitlabUrl(args.number, args.repo);
 
       const rawLineCount = countLines(rawDiff);
       const fileCount = countFiles(rawDiff);

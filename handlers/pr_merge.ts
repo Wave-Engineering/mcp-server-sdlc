@@ -21,6 +21,10 @@ const inputSchema = z.object({
   squash_message: z.string().optional(),
   use_merge_queue: z.boolean().optional(),
   skip_train: z.boolean().optional(),
+  repo: z
+    .string()
+    .regex(/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/, 'repo must be owner/repo format')
+    .optional(),
 });
 
 type Input = z.infer<typeof inputSchema>;
@@ -94,10 +98,18 @@ function writeTempMessageFile(message: string): string {
   return path;
 }
 
+function parseSlugOpts(slug: string | undefined): { owner?: string; repo?: string } | undefined {
+  if (slug === undefined) return undefined;
+  const idx = slug.indexOf('/');
+  if (idx <= 0 || idx === slug.length - 1) return undefined;
+  return { owner: slug.slice(0, idx), repo: slug.slice(idx + 1) };
+}
+
 function buildGithubMergeCommand(
   number: number,
   auto: boolean,
   squashMessage?: string,
+  repo?: string,
 ): string {
   const parts = ['gh', 'pr', 'merge', String(number), '--squash', '--delete-branch'];
   if (auto) parts.push('--auto');
@@ -110,10 +122,17 @@ function buildGithubMergeCommand(
       parts.push('--body', shellEscape(squashMessage));
     }
   }
+  if (repo !== undefined) {
+    parts.push('--repo', repo);
+  }
   return parts.join(' ');
 }
 
-function buildGitlabMergeCommand(number: number, squashMessage?: string): string {
+function buildGitlabMergeCommand(
+  number: number,
+  squashMessage?: string,
+  repo?: string,
+): string {
   const parts = [
     'glab',
     'mr',
@@ -128,6 +147,9 @@ function buildGitlabMergeCommand(number: number, squashMessage?: string): string
     // preserve newlines in POSIX shells.
     parts.push('--squash-message', shellEscape(squashMessage));
   }
+  if (repo !== undefined) {
+    parts.push('-R', repo);
+  }
   return parts.join(' ');
 }
 
@@ -136,8 +158,15 @@ interface GithubPrViewResponse {
   url?: string;
 }
 
-function fetchGithubPrMergeInfo(number: number): { url: string; merge_commit_sha?: string } {
-  const raw = exec(`gh pr view ${number} --json mergeCommit,url`);
+function repoFlag(repo: string | undefined): string {
+  return repo !== undefined ? ` --repo ${repo}` : '';
+}
+
+function fetchGithubPrMergeInfo(
+  number: number,
+  repo?: string,
+): { url: string; merge_commit_sha?: string } {
+  const raw = exec(`gh pr view ${number} --json mergeCommit,url${repoFlag(repo)}`);
   const parsed = JSON.parse(raw) as GithubPrViewResponse;
   return {
     url: parsed.url ?? '',
@@ -145,14 +174,17 @@ function fetchGithubPrMergeInfo(number: number): { url: string; merge_commit_sha
   };
 }
 
-function fetchGithubPrUrl(number: number): string {
-  const raw = exec(`gh pr view ${number} --json url`);
+function fetchGithubPrUrl(number: number, repo?: string): string {
+  const raw = exec(`gh pr view ${number} --json url${repoFlag(repo)}`);
   const parsed = JSON.parse(raw) as { url?: string };
   return parsed.url ?? '';
 }
 
-function fetchGitlabMrMergeInfo(number: number): { url: string; merge_commit_sha?: string } {
-  const mr = gitlabApiMr(number);
+function fetchGitlabMrMergeInfo(
+  number: number,
+  repo?: string,
+): { url: string; merge_commit_sha?: string } {
+  const mr = gitlabApiMr(number, parseSlugOpts(repo));
   return {
     url: mr.web_url ?? '',
     merge_commit_sha: mr.merge_commit_sha ?? undefined,
@@ -177,7 +209,7 @@ interface MergeFailure {
 function mergeGithub(args: Input): MergeSuccess | MergeFailure {
   // Forced merge-queue path.
   if (args.use_merge_queue === true) {
-    const cmd = buildGithubMergeCommand(args.number, true, args.squash_message);
+    const cmd = buildGithubMergeCommand(args.number, true, args.squash_message, args.repo);
     try {
       exec(cmd);
     } catch (err) {
@@ -187,7 +219,7 @@ function mergeGithub(args: Input): MergeSuccess | MergeFailure {
         error: `gh pr merge --auto failed: ${fail.message}`,
       };
     }
-    const url = fetchGithubPrUrl(args.number);
+    const url = fetchGithubPrUrl(args.number, args.repo);
     return {
       ok: true,
       number: args.number,
@@ -198,10 +230,10 @@ function mergeGithub(args: Input): MergeSuccess | MergeFailure {
   }
 
   // Direct-squash merge (no merge-queue enrollment).
-  const directCmd = buildGithubMergeCommand(args.number, false, args.squash_message);
+  const directCmd = buildGithubMergeCommand(args.number, false, args.squash_message, args.repo);
   try {
     exec(directCmd);
-    const info = fetchGithubPrMergeInfo(args.number);
+    const info = fetchGithubPrMergeInfo(args.number, args.repo);
     return {
       ok: true,
       number: args.number,
@@ -229,7 +261,7 @@ function mergeGithub(args: Input): MergeSuccess | MergeFailure {
   }
 
   // Merge-queue fallback (only reached when skip_train is not set).
-  const autoCmd = buildGithubMergeCommand(args.number, true, args.squash_message);
+  const autoCmd = buildGithubMergeCommand(args.number, true, args.squash_message, args.repo);
   try {
     exec(autoCmd);
   } catch (err) {
@@ -239,7 +271,7 @@ function mergeGithub(args: Input): MergeSuccess | MergeFailure {
       error: `gh pr merge --auto failed after merge-queue fallback: ${fail.message}`,
     };
   }
-  const url = fetchGithubPrUrl(args.number);
+  const url = fetchGithubPrUrl(args.number, args.repo);
   return {
     ok: true,
     number: args.number,
@@ -251,7 +283,7 @@ function mergeGithub(args: Input): MergeSuccess | MergeFailure {
 
 function mergeGitlab(args: Input): MergeSuccess | MergeFailure {
   // GitLab has no merge-queue concept; always direct.
-  const cmd = buildGitlabMergeCommand(args.number, args.squash_message);
+  const cmd = buildGitlabMergeCommand(args.number, args.squash_message, args.repo);
   try {
     exec(cmd);
   } catch (err) {
@@ -260,7 +292,7 @@ function mergeGitlab(args: Input): MergeSuccess | MergeFailure {
       error: `glab mr merge failed: ${extractFailure(err).message}`,
     };
   }
-  const info = fetchGitlabMrMergeInfo(args.number);
+  const info = fetchGitlabMrMergeInfo(args.number, args.repo);
   return {
     ok: true,
     number: args.number,

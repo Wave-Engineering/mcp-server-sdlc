@@ -264,14 +264,17 @@ export function gitlabApiMr(
  * The `head`/`base`/`author`/`limit` params are optional; only provided
  * fields become query parameters.
  */
-export function gitlabApiMrList(params: {
-  head?: string;
-  base?: string;
-  state?: 'open' | 'closed' | 'merged' | 'all';
-  author?: string;
-  limit?: number;
-}): GitlabMr[] {
-  const path = projectPath();
+export function gitlabApiMrList(
+  params: {
+    head?: string;
+    base?: string;
+    state?: 'open' | 'closed' | 'merged' | 'all';
+    author?: string;
+    limit?: number;
+  },
+  opts?: { owner?: string; repo?: string },
+): GitlabMr[] {
+  const path = projectPath(opts);
   const queryParts: string[] = [];
 
   // State translation: GitLab REST API uses 'opened' (not 'open'). 'all'

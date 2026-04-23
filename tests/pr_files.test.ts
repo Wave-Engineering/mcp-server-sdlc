@@ -3,8 +3,10 @@ import { describe, test, expect, mock, beforeEach } from 'bun:test';
 // --- Mock child_process.execSync at module level ---
 let execRegistry: Record<string, string> = {};
 let execError: Error | null = null;
+let execCalls: string[] = [];
 
 function mockExec(cmd: string): string {
+  execCalls.push(cmd);
   if (execError) throw execError;
   for (const [key, value] of Object.entries(execRegistry)) {
     if (cmd.includes(key)) return value;
@@ -26,6 +28,7 @@ function parseResult(content: Array<{ type: string; text: string }>) {
 beforeEach(() => {
   execRegistry = {};
   execError = null;
+  execCalls = [];
 });
 
 describe('pr_files handler — shape', () => {
@@ -329,5 +332,62 @@ describe('pr_files handler — GitLab', () => {
     expect(data.files).toEqual([]);
     expect(data.total_additions).toBe(0);
     expect(data.total_deletions).toBe(0);
+  });
+});
+
+describe('pr_files handler — cross-repo routing', () => {
+  test('route_with_repo — github threads --repo into gh pr view --json files', async () => {
+    // cwd origin differs from target.
+    execRegistry['git remote get-url origin'] = 'https://github.com/cwd-org/cwd-repo.git';
+    execRegistry['gh pr view 42'] = JSON.stringify({
+      files: [{ path: 'src/new.ts', additions: 5, deletions: 0, changeType: 'ADDED' }],
+    });
+
+    const result = await prFilesHandler.execute({
+      number: 42,
+      repo: 'Wave-Engineering/mcp-server-sdlc',
+    });
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(true);
+
+    const ghCall = execCalls.find((c) => c.startsWith('gh pr view 42')) ?? '';
+    expect(ghCall).toContain('--repo Wave-Engineering/mcp-server-sdlc');
+  });
+
+  test('route_with_repo — gitlab forwards owner/repo slug into glab api path', async () => {
+    execRegistry['git remote get-url origin'] = 'https://gitlab.com/cwd-org/cwd-repo.git';
+    execRegistry['glab api projects/target-org%2Ftarget-repo/merge_requests/7'] = JSON.stringify({
+      changes: [],
+    });
+
+    const result = await prFilesHandler.execute({
+      number: 7,
+      repo: 'target-org/target-repo',
+    });
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(true);
+
+    const glabCall = execCalls.find((c) => c.includes('glab api projects/')) ?? '';
+    expect(glabCall).toContain('target-org%2Ftarget-repo');
+    expect(glabCall).not.toContain('cwd-org%2Fcwd-repo');
+  });
+
+  test('regression_without_repo — github call does not contain --repo', async () => {
+    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
+    execRegistry['gh pr view 10'] = JSON.stringify({ files: [] });
+
+    await prFilesHandler.execute({ number: 10 });
+
+    const ghCall = execCalls.find((c) => c.startsWith('gh pr view 10')) ?? '';
+    expect(ghCall).not.toContain('--repo');
+  });
+
+  test('invalid_slug_early_error — returns ok:false with zero exec calls', async () => {
+    const result = await prFilesHandler.execute({ number: 1, repo: 'not-a-slug' });
+    const data = parseResult(result.content);
+
+    expect(data.ok).toBe(false);
+    expect(typeof data.error).toBe('string');
+    expect(execCalls).toHaveLength(0);
   });
 });

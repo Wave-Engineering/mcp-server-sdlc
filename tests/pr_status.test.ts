@@ -5,8 +5,10 @@ import { describe, test, expect, mock, beforeEach } from 'bun:test';
 
 let execRegistry: Array<{ match: string; value: string }> = [];
 let execError: Error | null = null;
+let execCalls: string[] = [];
 
 function mockExec(cmd: string): string {
+  execCalls.push(cmd);
   if (execError) throw execError;
   for (const { match, value } of execRegistry) {
     if (cmd.includes(match)) return value;
@@ -40,6 +42,7 @@ function registerGitlabRemote() {
 beforeEach(() => {
   execRegistry = [];
   execError = null;
+  execCalls = [];
 });
 
 describe('pr_status handler', () => {
@@ -378,5 +381,90 @@ describe('pr_status handler', () => {
     const out = parseResult(result.content);
     expect(out.ok).toBe(false);
     expect(typeof out.error).toBe('string');
+  });
+
+  // --- cross-repo routing ---
+
+  test('route_with_repo — github threads --repo into gh pr view and gh pr checks', async () => {
+    // cwd origin points at a DIFFERENT repo than the target.
+    register('git remote get-url origin', 'https://github.com/cwd-org/cwd-repo.git');
+    register(
+      'gh pr view 42 --json',
+      JSON.stringify({
+        state: 'OPEN',
+        mergeStateStatus: 'CLEAN',
+        mergeable: 'MERGEABLE',
+        url: 'https://github.com/Wave-Engineering/mcp-server-sdlc/pull/42',
+      }),
+    );
+    register('gh pr checks 42', JSON.stringify([]));
+
+    const result = await prStatusHandler.execute({
+      number: 42,
+      repo: 'Wave-Engineering/mcp-server-sdlc',
+    });
+    const out = parseResult(result.content);
+    expect(out.ok).toBe(true);
+
+    const viewCall = execCalls.find((c) => c.startsWith('gh pr view 42')) ?? '';
+    expect(viewCall).toContain('--repo Wave-Engineering/mcp-server-sdlc');
+    const checksCall = execCalls.find((c) => c.startsWith('gh pr checks 42')) ?? '';
+    expect(checksCall).toContain('--repo Wave-Engineering/mcp-server-sdlc');
+  });
+
+  test('route_with_repo — gitlab forwards owner/repo slug into glab api path', async () => {
+    register('git remote get-url origin', 'https://gitlab.com/cwd-org/cwd-repo.git');
+    register(
+      'glab api projects/target-org%2Ftarget-repo/merge_requests/7',
+      JSON.stringify({
+        iid: 7,
+        state: 'opened',
+        detailed_merge_status: 'mergeable',
+        merge_status: 'can_be_merged',
+        web_url: 'https://gitlab.com/target-org/target-repo/-/merge_requests/7',
+        head_pipeline: { status: 'success' },
+      }),
+    );
+
+    const result = await prStatusHandler.execute({
+      number: 7,
+      repo: 'target-org/target-repo',
+    });
+    const out = parseResult(result.content);
+    expect(out.ok).toBe(true);
+
+    const glabCall = execCalls.find((c) => c.includes('glab api projects/')) ?? '';
+    expect(glabCall).toContain('target-org%2Ftarget-repo');
+    expect(glabCall).not.toContain('cwd-org%2Fcwd-repo');
+  });
+
+  test('regression_without_repo — github call does not contain --repo', async () => {
+    registerGithubRemote();
+    register(
+      'gh pr view 42 --json',
+      JSON.stringify({
+        state: 'OPEN',
+        mergeStateStatus: 'CLEAN',
+        mergeable: 'MERGEABLE',
+        url: 'https://github.com/Wave-Engineering/example/pull/42',
+      }),
+    );
+    register('gh pr checks 42', JSON.stringify([]));
+
+    await prStatusHandler.execute({ number: 42 });
+
+    const viewCall = execCalls.find((c) => c.startsWith('gh pr view 42')) ?? '';
+    expect(viewCall).not.toContain('--repo');
+    const checksCall = execCalls.find((c) => c.startsWith('gh pr checks 42')) ?? '';
+    expect(checksCall).not.toContain('--repo');
+  });
+
+  test('invalid_slug_early_error — returns ok:false with zero exec calls', async () => {
+    const result = await prStatusHandler.execute({ number: 1, repo: 'not-a-slug' });
+    const out = parseResult(result.content);
+
+    expect(out.ok).toBe(false);
+    expect(typeof out.error).toBe('string');
+    expect(execCalls).toHaveLength(0);
   });
 });

@@ -283,4 +283,57 @@ describe('pr_list handler', () => {
     expect(data.ok).toBe(false);
     expect(typeof data.error).toBe('string');
   });
+
+  // --- cross-repo: route_with_repo ---
+  test('route_with_repo — forwards --repo to gh pr list when repo arg provided (github)', async () => {
+    // cwd origin is a DIFFERENT repo — repo arg must override.
+    execRegistry['git remote get-url origin'] = 'https://github.com/Wave-Engineering/claudecode-workflow.git';
+    execRegistry['gh pr list'] = JSON.stringify([]);
+
+    await prListHandler.execute({ repo: 'Wave-Engineering/mcp-server-sdlc' });
+    const ghCall = execCalls.find((c) => c.startsWith('gh pr list')) ?? '';
+    expect(ghCall).toContain("--repo 'Wave-Engineering/mcp-server-sdlc'");
+  });
+
+  test('route_with_repo — forwards owner/repo into glab api URL path (gitlab)', async () => {
+    execRegistry['git remote get-url origin'] = 'https://gitlab.com/other-org/other-repo.git';
+    execRegistry['glab api projects/target-org%2Ftarget-repo/merge_requests'] = JSON.stringify([]);
+
+    await prListHandler.execute({ repo: 'target-org/target-repo' });
+    const glabCall = execCalls.find((c) => c.includes('glab api projects/')) ?? '';
+    expect(glabCall).toContain('target-org%2Ftarget-repo');
+    // Must NOT use the cwd-derived slug.
+    expect(glabCall).not.toContain('other-org%2Fother-repo');
+  });
+
+  // --- cross-repo: regression_without_repo ---
+  test('regression_without_repo — no repo arg preserves cwd-based behavior (github)', async () => {
+    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
+    execRegistry['gh pr list'] = JSON.stringify([]);
+
+    await prListHandler.execute({});
+    const ghCall = execCalls.find((c) => c.startsWith('gh pr list')) ?? '';
+    expect(ghCall).not.toContain('--repo');
+  });
+
+  test('regression_without_repo — glab api uses cwd slug when no repo arg (gitlab)', async () => {
+    execRegistry['git remote get-url origin'] = 'https://gitlab.com/cwd-org/cwd-repo.git';
+    execRegistry['glab api projects/cwd-org%2Fcwd-repo/merge_requests'] = JSON.stringify([]);
+
+    await prListHandler.execute({});
+    const glabCall = execCalls.find((c) => c.includes('glab api projects/')) ?? '';
+    expect(glabCall).toContain('cwd-org%2Fcwd-repo');
+  });
+
+  // --- cross-repo: invalid_slug_early_error ---
+  test('invalid_slug_early_error — malformed repo returns ok:false with zero exec calls', async () => {
+    // No registry entries — any exec attempt would throw "Unexpected".
+    const result = await prListHandler.execute({ repo: 'not-a-slug' });
+    const data = parseResult(result.content);
+
+    expect(data.ok).toBe(false);
+    expect(typeof data.error).toBe('string');
+    // Crucially: no subprocess call was made.
+    expect(execCalls).toHaveLength(0);
+  });
 });
