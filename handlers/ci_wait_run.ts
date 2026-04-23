@@ -5,7 +5,12 @@
 import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
-import { detectPlatform, gitlabApiCiList, type GitlabPipeline } from '../lib/glab.js';
+import {
+  detectPlatform,
+  gitlabApiCiList,
+  parseRepoSlug,
+  type GitlabPipeline,
+} from '../lib/glab.js';
 import { log } from '../logger.js';
 
 const inputSchema = z
@@ -27,7 +32,15 @@ const NO_RUN_YET_WINDOW_SEC = 60; // wait up to 60s for a run to appear before m
 const NO_RUN_YET_POLL_SEC = 5; // how often to poll during the no-run-yet window
 
 // Final-status domain (what we return to the caller).
-type FinalStatus = 'success' | 'failure' | 'cancelled' | 'timed_out';
+// `not_applicable` covers merge-queue-only repos whose CI has no push:main
+// trigger — there's nothing to wait on, but the merge_group run that gated
+// the PR already ran and we can surface that fact distinctly from failure.
+type FinalStatus =
+  | 'success'
+  | 'failure'
+  | 'cancelled'
+  | 'timed_out'
+  | 'not_applicable';
 
 // --- injectable sleep (tests replace with a no-op) ---
 let sleepFn: (ms: number) => Promise<void> = (ms) =>
@@ -74,6 +87,23 @@ function shellQuote(value: string): string {
   return value.replace(/(["\\$`])/g, '\\$1');
 }
 
+// Resolve a branch ref to its HEAD commit SHA via `gh api`.
+// Only invoked when we need to compare a branch ref against a run.headSha
+// (e.g. merge-queue fallback). Uses the same authenticated gh subprocess
+// pattern the rest of the handler relies on. Returns null if resolution
+// fails for any reason — the caller treats that as "no SHA match".
+function resolveBranchToSha(slug: string, branch: string): string | null {
+  try {
+    const sha = exec(
+      `gh api repos/${slug}/git/refs/heads/${shellQuote(branch)} --jq .object.sha`
+    );
+    if (/^[0-9a-f]{40}$/i.test(sha)) return sha;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 // --- GitHub polling ---
 
 function githubListCmd(ref: string, workflowName: string | undefined): string {
@@ -83,7 +113,7 @@ function githubListCmd(ref: string, workflowName: string | undefined): string {
     ? ` --workflow "${shellQuote(workflowName)}"`
     : '';
   // Pull a generous set of fields so we can surface good error messages.
-  return `gh run list ${refFlag}${workflowFlag} --limit 20 --json databaseId,name,status,conclusion,url,headSha,headBranch,workflowName,createdAt`;
+  return `gh run list ${refFlag}${workflowFlag} --limit 20 --json databaseId,name,status,conclusion,url,headSha,headBranch,workflowName,createdAt,event`;
 }
 
 interface GithubRun {
@@ -96,6 +126,7 @@ interface GithubRun {
   headSha: string;
   headBranch?: string;
   createdAt?: string;
+  event?: string;
 }
 
 function fetchGithubRuns(
@@ -283,7 +314,7 @@ function normalizeConclusion(
 const ciWaitRunHandler: HandlerDef = {
   name: 'ci_wait_run',
   description:
-    "Block on a CI workflow/pipeline run for a commit SHA or branch ref, polling server-side until it completes or times out. Returns the final status without burning agent tokens in a busy-wait loop.",
+    "Block on a CI workflow/pipeline run for a commit SHA or branch ref, polling server-side until it completes or times out. Returns the final status without burning agent tokens in a busy-wait loop. Merge-queue-only GitHub repos (workflows gated on `merge_group`/`pull_request` with no `push` trigger) are handled specially: if no push-triggered runs exist for the ref but a `merge_group` run matches its HEAD SHA, returns `final_status: \"not_applicable\"` with `reason: \"merge_group_validated\"` — distinguishable from a real failure.",
   inputSchema,
   async execute(rawArgs: unknown) {
     let args: Input;
@@ -309,6 +340,74 @@ const ciWaitRunHandler: HandlerDef = {
       Math.floor((Date.now() - startMs) / 1000);
 
     try {
+      // --- Phase 0 (GitHub only): merge-queue pre-flight ---
+      // If the ref has NO push-triggered runs but DOES have a merge_group run
+      // matching its HEAD SHA, treat that as validation — don't wait for a
+      // push-triggered run that will never arrive.
+      if (platform === 'github') {
+        const initialRuns = fetchGithubRuns(ref, workflowName);
+        if (initialRuns.length > 0) {
+          const anyPush = initialRuns.some((r) => r.event === 'push');
+          if (!anyPush) {
+            // Resolve ref to a HEAD SHA for comparison against run.headSha.
+            let headSha: string | null = isSha(ref) ? ref.toLowerCase() : null;
+            if (!headSha) {
+              const slug = parseRepoSlug();
+              if (slug) headSha = resolveBranchToSha(slug, ref);
+            }
+            const mergeGroupMatch = initialRuns.find(
+              (r) =>
+                r.event === 'merge_group' &&
+                headSha !== null &&
+                r.headSha?.toLowerCase() === headSha
+            );
+            if (mergeGroupMatch) {
+              return {
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: JSON.stringify({
+                      ok: true,
+                      final_status: 'not_applicable' satisfies FinalStatus,
+                      reason: 'merge_group_validated',
+                      run_id: mergeGroupMatch.databaseId,
+                      workflow_name:
+                        mergeGroupMatch.workflowName ??
+                        mergeGroupMatch.name ??
+                        '(unknown)',
+                      url: mergeGroupMatch.url,
+                      ref,
+                      sha: mergeGroupMatch.headSha,
+                      waited_sec: 0,
+                    }),
+                  },
+                ],
+              };
+            }
+            // No push-triggered runs and no matching merge_group run. Fail
+            // fast with a structured not_applicable error — distinguishable
+            // from a real CI failure and from a generic timeout.
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: JSON.stringify({
+                    ok: false,
+                    final_status: 'not_applicable' satisfies FinalStatus,
+                    error: `ref '${ref}' has no push-triggered workflows and no matching merge_group run found`,
+                    ref,
+                  }),
+                },
+              ],
+            };
+          }
+          // At least one push-triggered run exists — fall through to the
+          // existing poll loop. (Phase 1 will re-fetch and pick up the run.)
+        }
+        // Empty initial list → fall through; existing phase 1 handles
+        // no-run-yet window and the "no CI run found" error.
+      }
+
       // --- Phase 1: wait for a run to appear (no-run-yet window) ---
       let snapshot: RunSnapshot | null = null;
       while (elapsedSec() < NO_RUN_YET_WINDOW_SEC) {
