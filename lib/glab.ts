@@ -308,11 +308,14 @@ export function gitlabApiMrList(params: {
  *
  * Endpoint: `GET /projects/:id/pipelines?<query>`
  */
-export function gitlabApiCiList(params: {
-  ref?: string;
-  limit?: number;
-}): GitlabPipeline[] {
-  const path = projectPath();
+export function gitlabApiCiList(
+  params: {
+    ref?: string;
+    limit?: number;
+  },
+  opts?: { owner?: string; repo?: string },
+): GitlabPipeline[] {
+  const path = projectPath(opts);
   const queryParts: string[] = [];
 
   if (params.ref !== undefined) {

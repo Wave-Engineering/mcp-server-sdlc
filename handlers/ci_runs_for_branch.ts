@@ -11,6 +11,10 @@ const inputSchema = z.object({
   branch: z.string().min(1, 'branch must be a non-empty string'),
   limit: z.number().int().positive().optional().default(10),
   status: z.enum(['success', 'failure', 'in_progress', 'all']).optional().default('all'),
+  repo: z
+    .string()
+    .regex(/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/, 'repo must be in owner/repo form')
+    .optional(),
 });
 
 type Input = z.infer<typeof inputSchema>;
@@ -65,11 +69,17 @@ interface GithubRun {
   createdAt: string;
 }
 
-function fetchGithubRuns(branch: string, limit: number, status: Input['status']): RunRecord[] {
+function fetchGithubRuns(
+  branch: string,
+  limit: number,
+  status: Input['status'],
+  repo: string | undefined,
+): RunRecord[] {
   const statusFlag = githubStatusFlag(status);
   const statusArg = statusFlag ? ` --status ${statusFlag}` : '';
+  const repoArg = repo ? ` --repo ${repo}` : '';
   const cmd =
-    `gh run list --branch ${JSON.stringify(branch)} --limit ${limit}${statusArg}` +
+    `gh run list --branch ${JSON.stringify(branch)} --limit ${limit}${statusArg}${repoArg}` +
     ` --json databaseId,name,status,conclusion,headSha,url,createdAt`;
   const raw = execSync(cmd, { encoding: 'utf8' });
   const runs = JSON.parse(raw) as GithubRun[];
@@ -84,10 +94,23 @@ function fetchGithubRuns(branch: string, limit: number, status: Input['status'])
   }));
 }
 
-function fetchGitlabRuns(branch: string, limit: number, status: Input['status']): RunRecord[] {
+function splitRepoSlug(
+  repo: string | undefined,
+): { owner: string; repo: string } | undefined {
+  if (!repo) return undefined;
+  const [owner, name] = repo.split('/', 2);
+  return { owner, repo: name };
+}
+
+function fetchGitlabRuns(
+  branch: string,
+  limit: number,
+  status: Input['status'],
+  repo: string | undefined,
+): RunRecord[] {
   // GitLab API doesn't support status filtering, so we fetch more and filter client-side.
   const fetchLimit = status === 'all' ? limit : limit * 3;
-  const pipelines = gitlabApiCiList({ ref: branch, limit: fetchLimit });
+  const pipelines = gitlabApiCiList({ ref: branch, limit: fetchLimit }, splitRepoSlug(repo));
 
   const targetStatus = gitlabStatusFlag(status);
   const filtered = targetStatus
@@ -132,8 +155,8 @@ const ciRunsForBranchHandler: HandlerDef = {
       const platform = detectPlatform();
       const runs =
         platform === 'github'
-          ? fetchGithubRuns(args.branch, args.limit, args.status)
-          : fetchGitlabRuns(args.branch, args.limit, args.status);
+          ? fetchGithubRuns(args.branch, args.limit, args.status, args.repo)
+          : fetchGitlabRuns(args.branch, args.limit, args.status, args.repo);
 
       return {
         content: [

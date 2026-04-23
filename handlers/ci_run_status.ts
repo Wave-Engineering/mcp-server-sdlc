@@ -11,6 +11,10 @@ const inputSchema = z
   .object({
     ref: z.string().min(1, 'ref must be a non-empty string'),
     workflow_name: z.string().optional(),
+    repo: z
+      .string()
+      .regex(/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/, 'repo must be in owner/repo form')
+      .optional(),
   })
   .strict();
 
@@ -156,27 +160,38 @@ function normalizeGlConclusion(
 
 function ghQueryRuns(
   ref: string,
-  workflowName: string | undefined
+  workflowName: string | undefined,
+  repo: string | undefined,
 ): GhRun[] {
   const selector = isSha(ref)
     ? `--commit ${shellQuote(ref)}`
     : `--branch ${shellQuote(ref)}`;
   const workflow = workflowName ? ` --workflow ${shellQuote(workflowName)}` : '';
-  const cmd = `gh run list ${selector}${workflow} --limit 1 --json databaseId,name,status,conclusion,url,headBranch,headSha,createdAt,updatedAt`;
+  const repoFlag = repo ? ` --repo ${shellQuote(repo)}` : '';
+  const cmd = `gh run list ${selector}${workflow}${repoFlag} --limit 1 --json databaseId,name,status,conclusion,url,headBranch,headSha,createdAt,updatedAt`;
   const raw = exec(cmd);
   if (!raw) return [];
   return JSON.parse(raw) as GhRun[];
 }
 
+function splitRepoSlug(
+  repo: string | undefined,
+): { owner: string; repo: string } | undefined {
+  if (!repo) return undefined;
+  const [owner, name] = repo.split('/', 2);
+  return { owner, repo: name };
+}
+
 function glQueryRuns(
   ref: string,
-  workflowName: string | undefined
+  workflowName: string | undefined,
+  repo: string | undefined,
 ): GitlabPipeline[] {
   // GitLab pipelines don't carry a workflow "name" the way GitHub does; we
   // list without filter and then apply workflow_name client-side against the
   // "source" field for best-effort matching.
   const limit = workflowName ? 20 : 1;
-  const runs = gitlabApiCiList({ ref, limit });
+  const runs = gitlabApiCiList({ ref, limit }, splitRepoSlug(repo));
   if (!workflowName) return runs;
   return runs.filter((r) => {
     const source = r.source ?? '';
@@ -240,12 +255,12 @@ const ciRunStatusHandler: HandlerDef = {
       let normalized: NormalizedRun | null = null;
 
       if (platform === 'github') {
-        const runs = ghQueryRuns(args.ref, args.workflow_name);
+        const runs = ghQueryRuns(args.ref, args.workflow_name, args.repo);
         if (runs.length > 0) {
           normalized = normalizeGh(runs[0]);
         }
       } else {
-        const runs = glQueryRuns(args.ref, args.workflow_name);
+        const runs = glQueryRuns(args.ref, args.workflow_name, args.repo);
         if (runs.length > 0) {
           normalized = normalizeGl(runs[0]);
         }

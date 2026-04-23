@@ -19,6 +19,10 @@ const inputSchema = z
     workflow_name: z.string().optional(),
     poll_interval_sec: z.number().int().positive().optional(),
     timeout_sec: z.number().int().positive().optional(),
+    repo: z
+      .string()
+      .regex(/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/, 'repo must be in owner/repo form')
+      .optional(),
   })
   .strict();
 
@@ -87,6 +91,17 @@ function shellQuote(value: string): string {
   return value.replace(/(["\\$`])/g, '\\$1');
 }
 
+// Split a validated `owner/repo` slug into the opts shape expected by
+// lib/glab.ts wrappers. Returns undefined when repo is not provided so
+// callers fall back to cwd resolution.
+function splitRepoSlug(
+  repo: string | undefined,
+): { owner: string; repo: string } | undefined {
+  if (!repo) return undefined;
+  const [owner, name] = repo.split('/', 2);
+  return { owner, repo: name };
+}
+
 // Resolve a branch ref to its HEAD commit SHA via `gh api`.
 // Only invoked when we need to compare a branch ref against a run.headSha
 // (e.g. merge-queue fallback). Uses the same authenticated gh subprocess
@@ -106,14 +121,19 @@ function resolveBranchToSha(slug: string, branch: string): string | null {
 
 // --- GitHub polling ---
 
-function githubListCmd(ref: string, workflowName: string | undefined): string {
+function githubListCmd(
+  ref: string,
+  workflowName: string | undefined,
+  repo: string | undefined,
+): string {
   const quotedRef = shellQuote(ref);
   const refFlag = isSha(ref) ? `--commit "${quotedRef}"` : `--branch "${quotedRef}"`;
   const workflowFlag = workflowName
     ? ` --workflow "${shellQuote(workflowName)}"`
     : '';
+  const repoFlag = repo ? ` --repo "${shellQuote(repo)}"` : '';
   // Pull a generous set of fields so we can surface good error messages.
-  return `gh run list ${refFlag}${workflowFlag} --limit 20 --json databaseId,name,status,conclusion,url,headSha,headBranch,workflowName,createdAt,event`;
+  return `gh run list ${refFlag}${workflowFlag}${repoFlag} --limit 20 --json databaseId,name,status,conclusion,url,headSha,headBranch,workflowName,createdAt,event`;
 }
 
 interface GithubRun {
@@ -131,9 +151,10 @@ interface GithubRun {
 
 function fetchGithubRuns(
   ref: string,
-  workflowName: string | undefined
+  workflowName: string | undefined,
+  repo: string | undefined,
 ): GithubRun[] {
-  const cmd = githubListCmd(ref, workflowName);
+  const cmd = githubListCmd(ref, workflowName, repo);
   let raw: string;
   try {
     raw = exec(cmd);
@@ -192,9 +213,13 @@ function githubSnapshot(run: GithubRun): RunSnapshot {
 
 // --- GitLab polling ---
 
-function fetchGitlabPipelines(ref: string): GitlabPipeline[] {
+function fetchGitlabPipelines(
+  ref: string,
+  repo: string | undefined,
+): GitlabPipeline[] {
   try {
-    return gitlabApiCiList({ ref, limit: 20 });
+    const opts = splitRepoSlug(repo);
+    return gitlabApiCiList({ ref, limit: 20 }, opts);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(
@@ -272,14 +297,15 @@ function gitlabSnapshot(pipeline: GitlabPipeline): RunSnapshot {
 function fetchSnapshot(
   platform: 'github' | 'gitlab',
   ref: string,
-  workflowName: string | undefined
+  workflowName: string | undefined,
+  repo: string | undefined,
 ): RunSnapshot | null {
   if (platform === 'github') {
-    const runs = fetchGithubRuns(ref, workflowName);
+    const runs = fetchGithubRuns(ref, workflowName, repo);
     const picked = pickGithubRun(runs, workflowName);
     return picked ? githubSnapshot(picked) : null;
   }
-  const pipelines = fetchGitlabPipelines(ref);
+  const pipelines = fetchGitlabPipelines(ref, repo);
   const picked = pickGitlabPipeline(pipelines, workflowName);
   return picked ? gitlabSnapshot(picked) : null;
 }
@@ -333,6 +359,7 @@ const ciWaitRunHandler: HandlerDef = {
     const timeoutSec = args.timeout_sec ?? DEFAULT_TIMEOUT_SEC;
     const ref = args.ref;
     const workflowName = args.workflow_name;
+    const repo = args.repo;
 
     const platform = detectPlatform();
     const startMs = Date.now();
@@ -345,14 +372,16 @@ const ciWaitRunHandler: HandlerDef = {
       // matching its HEAD SHA, treat that as validation — don't wait for a
       // push-triggered run that will never arrive.
       if (platform === 'github') {
-        const initialRuns = fetchGithubRuns(ref, workflowName);
+        const initialRuns = fetchGithubRuns(ref, workflowName, repo);
         if (initialRuns.length > 0) {
           const anyPush = initialRuns.some((r) => r.event === 'push');
           if (!anyPush) {
             // Resolve ref to a HEAD SHA for comparison against run.headSha.
             let headSha: string | null = isSha(ref) ? ref.toLowerCase() : null;
             if (!headSha) {
-              const slug = parseRepoSlug();
+              // When `repo` is explicitly provided, skip cwd-based slug
+              // parsing and pass the caller's slug directly.
+              const slug = repo ?? parseRepoSlug();
               if (slug) headSha = resolveBranchToSha(slug, ref);
             }
             const mergeGroupMatch = initialRuns.find(
@@ -411,7 +440,7 @@ const ciWaitRunHandler: HandlerDef = {
       // --- Phase 1: wait for a run to appear (no-run-yet window) ---
       let snapshot: RunSnapshot | null = null;
       while (elapsedSec() < NO_RUN_YET_WINDOW_SEC) {
-        snapshot = fetchSnapshot(platform, ref, workflowName);
+        snapshot = fetchSnapshot(platform, ref, workflowName, repo);
         if (snapshot) break;
         logPoll(ref, elapsedSec(), 'no_run_yet');
         // Also honor the overall timeout — don't exceed it here.
@@ -468,7 +497,7 @@ const ciWaitRunHandler: HandlerDef = {
         }
         await sleepFn(pollIntervalSec * 1000);
         // Refresh snapshot.
-        const next = fetchSnapshot(platform, ref, workflowName);
+        const next = fetchSnapshot(platform, ref, workflowName, repo);
         if (!next) {
           // Unusual — the run vanished between polls. Keep the previous snapshot and log.
           logPoll(ref, elapsedSec(), `${snapshot.status}(stale,no_run_returned)`);

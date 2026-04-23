@@ -10,6 +10,10 @@ import { detectPlatform } from '../lib/glab.js';
 const inputSchema = z
   .object({
     run_id: z.number().int().positive(),
+    repo: z
+      .string()
+      .regex(/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/, 'repo must be in owner/repo form')
+      .optional(),
   })
   .strict();
 
@@ -66,8 +70,9 @@ function normalizeGitlabConclusion(raw: string | undefined): string {
   return raw;
 }
 
-function fetchGithubFailedJobs(runId: number): FailedJob[] {
-  const raw = exec(`gh run view ${runId} --json jobs`);
+function fetchGithubFailedJobs(runId: number, repo: string | undefined): FailedJob[] {
+  const repoFlag = repo ? ` --repo ${repo}` : '';
+  const raw = exec(`gh run view ${runId} --json jobs${repoFlag}`);
   const parsed = JSON.parse(raw) as { jobs?: GithubJob[] };
   const jobs = parsed.jobs ?? [];
   const failed: FailedJob[] = [];
@@ -87,9 +92,11 @@ function fetchGithubFailedJobs(runId: number): FailedJob[] {
   return failed;
 }
 
-function fetchGitlabFailedJobs(runId: number): FailedJob[] {
-  // glab substitutes `:id` with the current project's numeric id.
-  const raw = exec(`glab api projects/:id/pipelines/${runId}/jobs`);
+function fetchGitlabFailedJobs(runId: number, repo: string | undefined): FailedJob[] {
+  // When repo is provided, URL-encode it as the explicit project slug; otherwise
+  // fall back to `:id` which glab substitutes with the cwd project's numeric id.
+  const projectId = repo ? encodeURIComponent(repo) : ':id';
+  const raw = exec(`glab api projects/${projectId}/pipelines/${runId}/jobs`);
   const parsed = JSON.parse(raw) as GitlabJob[];
   const failed: FailedJob[] = [];
   for (const j of parsed) {
@@ -127,8 +134,8 @@ const ciFailedJobsHandler: HandlerDef = {
       const platform = detectPlatform();
       const failed =
         platform === 'github'
-          ? fetchGithubFailedJobs(args.run_id)
-          : fetchGitlabFailedJobs(args.run_id);
+          ? fetchGithubFailedJobs(args.run_id, args.repo)
+          : fetchGitlabFailedJobs(args.run_id, args.repo);
 
       return {
         content: [

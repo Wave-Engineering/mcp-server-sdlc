@@ -15,6 +15,10 @@ const inputSchema = z.object({
   job_id: z.number().int().nonnegative().optional(),
   failed_only: z.boolean().optional().default(true),
   max_lines: z.number().int().positive().optional().default(DEFAULT_MAX_LINES),
+  repo: z
+    .string()
+    .regex(/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/, 'repo must be in owner/repo form')
+    .optional(),
 });
 
 type Input = z.infer<typeof inputSchema>;
@@ -46,10 +50,15 @@ function fetchGithub(args: Input): FetchResult {
     parts.push('--job', String(args.job_id));
   }
   parts.push(args.failed_only ? '--log-failed' : '--log');
+  if (args.repo) {
+    parts.push('--repo', args.repo);
+  }
   const cmd = parts.join(' ');
   const logs = exec(cmd);
 
-  const slug = parseRepoSlug();
+  // When `repo` is explicitly provided, use it directly for URL construction —
+  // skip the local cwd-based parseRepoSlug fallback entirely.
+  const slug = args.repo ?? parseRepoSlug();
   const url = slug
     ? `https://github.com/${slug}/actions/runs/${args.run_id}`
     : `https://github.com/actions/runs/${args.run_id}`;
@@ -67,9 +76,10 @@ interface GitlabJob {
   web_url?: string;
 }
 
-function gitlabProjectPath(): string {
-  // URL-encoded project path for glab api
-  const slug = parseRepoSlug();
+function gitlabProjectPath(repo: string | undefined): string {
+  // URL-encoded project path for glab api. Use the caller-supplied slug when
+  // provided, otherwise fall back to parsing the cwd's origin URL.
+  const slug = repo ?? parseRepoSlug();
   if (!slug) throw new Error('could not parse gitlab project path from origin url');
   return encodeURIComponent(slug);
 }
@@ -79,7 +89,7 @@ function fetchGitlab(args: Input): FetchResult {
 
   if (jobId === undefined) {
     // Fetch the first failed job from the pipeline
-    const projectPath = gitlabProjectPath();
+    const projectPath = gitlabProjectPath(args.repo);
     const raw = exec(`glab api projects/${projectPath}/pipelines/${args.run_id}/jobs`);
     const jobs = JSON.parse(raw) as GitlabJob[];
     const failed = jobs.find(j => j.status === 'failed');
@@ -89,9 +99,13 @@ function fetchGitlab(args: Input): FetchResult {
     jobId = failed.id;
   }
 
-  const logs = exec(`glab ci trace ${jobId}`);
+  // `glab ci trace` supports `-R owner/repo` for cross-repo targeting
+  // (verified against installed glab version). When `repo` is provided,
+  // append the flag so the trace runs against the explicit project.
+  const repoFlag = args.repo ? ` -R ${args.repo}` : '';
+  const logs = exec(`glab ci trace ${jobId}${repoFlag}`);
 
-  const slug = parseRepoSlug();
+  const slug = args.repo ?? parseRepoSlug();
   const url = slug
     ? `https://gitlab.com/${slug}/-/jobs/${jobId}`
     : `https://gitlab.com/-/jobs/${jobId}`;
