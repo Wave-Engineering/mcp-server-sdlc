@@ -167,6 +167,79 @@ describe('wave_dependency_graph handler', () => {
     expect(parsed.error).toContain('all 2 spec fetches failed');
   });
 
+  test('cross_repo_epic_bare_ref_resolves_to_epic_repo', async () => {
+    execMockFn = (cmd: string) => {
+      if (cmd.startsWith('git remote')) return 'https://github.com/myorg/myrepo.git\n';
+      if (cmd.includes('gh issue view 42') && cmd.includes('--repo Wave-Engineering/sdlc')) {
+        return JSON.stringify({
+          body: `## Sub-Issues\n\n- #5 first\n- #6 second\n`,
+          title: 'Epic 42',
+        });
+      }
+      if (cmd.includes('gh issue view 5') && cmd.includes('--repo Wave-Engineering/sdlc')) {
+        return JSON.stringify({ body: '## Dependencies\nNone\n', title: 'first' });
+      }
+      if (cmd.includes('gh issue view 6') && cmd.includes('--repo Wave-Engineering/sdlc')) {
+        return JSON.stringify({ body: '## Dependencies\n- #5\n', title: 'second' });
+      }
+      return JSON.stringify({ body: '', title: '' });
+    };
+    const result = await handler.execute({ epic_ref: 'Wave-Engineering/sdlc#42' });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.nodes.length).toBe(2);
+    const refs = parsed.nodes.map((n: { ref: string }) => n.ref);
+    expect(refs).toContain('Wave-Engineering/sdlc#5');
+    expect(refs).toContain('Wave-Engineering/sdlc#6');
+    expect(refs).not.toContain('myorg/myrepo#5');
+    // Dep edge: 5 blocks 6, both qualified to epic's repo.
+    expect(parsed.edges.length).toBe(1);
+    expect(parsed.edges[0].from).toBe('Wave-Engineering/sdlc#5');
+    expect(parsed.edges[0].to).toBe('Wave-Engineering/sdlc#6');
+  });
+
+  test('cross_repo_epic_already_qualified_ref_preserved', async () => {
+    execMockFn = (cmd: string) => {
+      if (cmd.startsWith('git remote')) return 'https://github.com/myorg/myrepo.git\n';
+      if (cmd.includes('gh issue view 42') && cmd.includes('--repo Wave-Engineering/sdlc')) {
+        return JSON.stringify({
+          body: `## Sub-Issues\n\n- Wave-Engineering/sdlc#7 story\n`,
+          title: 'Epic 42',
+        });
+      }
+      if (cmd.includes('gh issue view 7') && cmd.includes('--repo Wave-Engineering/sdlc')) {
+        return JSON.stringify({ body: '## Dependencies\nNone\n', title: 'seven' });
+      }
+      return JSON.stringify({ body: '', title: '' });
+    };
+    const result = await handler.execute({ epic_ref: 'Wave-Engineering/sdlc#42' });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.nodes.length).toBe(1);
+    expect(parsed.nodes[0].ref).toBe('Wave-Engineering/sdlc#7');
+  });
+
+  test('unqualified_epic_bare_ref_falls_back_to_cwd_slug', async () => {
+    execMockFn = (cmd: string) => {
+      if (cmd.startsWith('git remote')) return 'https://github.com/myorg/myrepo.git\n';
+      if (cmd.includes('gh issue view 42')) {
+        return JSON.stringify({
+          body: `## Sub-Issues\n\n- #5 story\n`,
+          title: 'Epic 42',
+        });
+      }
+      if (cmd.includes('gh issue view 5')) {
+        return JSON.stringify({ body: '## Dependencies\nNone\n', title: 'story' });
+      }
+      return JSON.stringify({ body: '', title: '' });
+    };
+    const result = await handler.execute({ epic_ref: '#42' });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.nodes.length).toBe(1);
+    expect(parsed.nodes[0].ref).toBe('myorg/myrepo#5');
+  });
+
   test('epic_ref_path_surfaces_errors_loudly', async () => {
     execMockFn = (cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
