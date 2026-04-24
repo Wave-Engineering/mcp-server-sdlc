@@ -7,7 +7,10 @@
 // contract.
 
 import { execSync } from 'child_process';
-import { readFileSync, readdirSync, statSync } from 'fs';
+// Imported via `node:fs` (not `'fs'`) so the partial `mock.module('fs', ...)`
+// in sibling test files (e.g. wave_init.test.ts, work_item.test.ts) does not
+// shadow these symbols as `undefined`. See lesson_mcp_gotchas.md §6.
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { createHash } from 'crypto';
 import { join, resolve } from 'path';
 import { z } from 'zod';
