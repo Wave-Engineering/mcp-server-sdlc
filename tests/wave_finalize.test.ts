@@ -1,6 +1,8 @@
 import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
-import { mkdirSync, writeFileSync, rmSync } from 'fs';
 import { join } from 'path';
+// Intentionally NOT importing from 'fs' — sibling test files partially mock
+// 'fs' (only writeFileSync exposed), and Bun's mock.module leaks across the
+// suite. Test setup uses Bun native APIs instead. See lesson_mcp_gotchas.md §6.
 
 type Responder = string | (() => string);
 
@@ -34,30 +36,25 @@ function onExec(match: string, respond: Responder) {
 }
 
 // --- tmp artifacts helpers ---
+// Each test gets a unique tmpRoot path. We do NOT pre-create the directory;
+// Bun.write creates parent dirs automatically when the first artifact lands.
+// Tests that don't write any artifacts simply leave tmpRoot non-existent —
+// the handler's safeScan path tolerates that.
 let tmpRoot: string = '';
 
-function makeTmpDir(): string {
-  const dir = `/tmp/wave-finalize-test-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
-  mkdirSync(dir, { recursive: true });
-  return dir;
+function makeTmpRoot(): string {
+  return `/tmp/wave-finalize-test-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 }
 
-function writeArtifact(root: string, relPath: string, content: string): void {
-  const full = join(root, relPath);
-  const dir = full.substring(0, full.lastIndexOf('/'));
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(full, content);
+async function writeArtifact(root: string, relPath: string, content: string): Promise<void> {
+  await Bun.write(join(root, relPath), content);
 }
 
 beforeEach(() => {
   execRegistry = [];
   execCalls = [];
   currentPlatform = 'github';
-  tmpRoot = makeTmpDir();
-  // detectPlatform() in lib/glab reads `git remote get-url origin`. Route it
-  // through the shared exec mock so individual tests control the platform
-  // via `currentPlatform`. Registered first so later test-specific matchers
-  // (registered via onExec) take precedence for other commands.
+  tmpRoot = makeTmpRoot();
   execRegistry.push({
     match: 'git remote get-url origin',
     respond: () => currentPlatform === 'gitlab'
@@ -69,11 +66,8 @@ beforeEach(() => {
 afterEach(() => {
   execRegistry = [];
   execCalls = [];
-  try {
-    rmSync(tmpRoot, { recursive: true, force: true });
-  } catch {
-    // ignore cleanup failures
-  }
+  // Tmp files in /tmp are reaped by the OS; explicit cleanup intentionally
+  // skipped to avoid depending on fs.rmSync (mock leakage risk).
 });
 
 describe('wave_finalize handler', () => {
@@ -143,7 +137,7 @@ describe('wave_finalize handler', () => {
 
   // --- idempotency edge case: MR open but branch deleted post-merge-attempt ---
   test('returns existing open MR even when the kahuna branch has been deleted', async () => {
-    writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md', 'done');
+    await writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md', 'done');
 
     onExec('gh pr list', JSON.stringify([{
       number: 88, url: 'https://github.com/o/r/pull/88',
@@ -178,7 +172,9 @@ describe('wave_finalize handler', () => {
   });
 
   test('no_artifacts even when wave-* dirs exist but no flights', async () => {
-    mkdirSync(join(tmpRoot, 'wave-1'), { recursive: true });
+    // Write a non-matching marker file inside wave-1/ so the directory exists
+    // without any matching flight-*/issue-*/results.md path.
+    await Bun.write(join(tmpRoot, 'wave-1', 'README.md'), 'no flights yet');
 
     onExec('git ls-remote', 'abc123\trefs/heads/kahuna/42-foo');
     onExec('gh pr list', '[]');
@@ -196,7 +192,7 @@ describe('wave_finalize handler', () => {
   // --- idempotency ---
   test('returns existing PR with created: false when one already exists', async () => {
     // Artifacts present so we can compute body_sha for drift detection.
-    writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md',
+    await writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md',
       '# results\n\n- Added widget\nPR: https://github.com/o/r/pull/100\n');
 
     onExec('git ls-remote', 'abc123\trefs/heads/kahuna/42-foo');
@@ -221,7 +217,7 @@ describe('wave_finalize handler', () => {
   });
 
   test('idempotent: does not call gh pr create when an existing PR is found', async () => {
-    writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md', 'done');
+    await writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md', 'done');
 
     onExec('git ls-remote', 'abc123\trefs/heads/kahuna/42-foo');
     onExec('gh pr list', JSON.stringify([{
@@ -240,9 +236,9 @@ describe('wave_finalize handler', () => {
 
   // --- happy path: github ---
   test('github happy path: creates PR with assembled body and returns body_sha', async () => {
-    writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md',
+    await writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md',
       '# Results\n\nAdded widget.\nPR: https://github.com/o/r/pull/100\n');
-    writeArtifact(tmpRoot, 'wave-1/flight-1/issue-6/results.md',
+    await writeArtifact(tmpRoot, 'wave-1/flight-1/issue-6/results.md',
       '# Results\n\nFixed bug.\nPR: https://github.com/o/r/pull/101\n');
 
     onExec('git ls-remote', 'abc123\trefs/heads/kahuna/42-wave-status-cli');
@@ -266,7 +262,7 @@ describe('wave_finalize handler', () => {
   });
 
   test('title uses epic(#N): <slug> — kahuna to <target_branch>', async () => {
-    writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md', 'done');
+    await writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md', 'done');
 
     onExec('git ls-remote', 'abc123\trefs/heads/kahuna/42-wave-status-cli');
     onExec('gh pr list', '[]');
@@ -284,7 +280,7 @@ describe('wave_finalize handler', () => {
   });
 
   test('title uses explicit target_branch when provided', async () => {
-    writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md', 'done');
+    await writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md', 'done');
 
     onExec('git ls-remote', 'abc123\trefs/heads/kahuna/42-foo');
     onExec('gh pr list', '[]');
@@ -304,9 +300,9 @@ describe('wave_finalize handler', () => {
 
   // --- body assembly (tests the exported assembleBody directly) ---
   test('body assembles per-flight bullets with issue IDs and PR links from results.md', async () => {
-    writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md',
+    await writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md',
       'Adds widget component.\nPR: https://github.com/o/r/pull/100\n');
-    writeArtifact(tmpRoot, 'wave-1/flight-2/issue-6/results.md',
+    await writeArtifact(tmpRoot, 'wave-1/flight-2/issue-6/results.md',
       'Fixes navigation crash.\nhttps://github.com/o/r/pull/101\n');
 
     const result = await assembleBody(tmpRoot, 42, 'kahuna/42-foo', 'main');
@@ -326,9 +322,9 @@ describe('wave_finalize handler', () => {
   });
 
   test('body assembly falls back to flight-level merge-report.md for MR URL when results.md lacks one', async () => {
-    writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md',
+    await writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md',
       'Adds widget component.\n(no URL here)\n');
-    writeArtifact(tmpRoot, 'wave-1/flight-1/merge-report.md',
+    await writeArtifact(tmpRoot, 'wave-1/flight-1/merge-report.md',
       '# Merge Report\n\n- issue-5 landed: https://github.com/o/r/pull/100 (CI green, direct squash)\n');
 
     const result = await assembleBody(tmpRoot, 42, 'kahuna/42-foo', 'main');
@@ -337,7 +333,7 @@ describe('wave_finalize handler', () => {
   });
 
   test('body assembly supports fallback flat layout: flight-*/results.md (no issue-* dir)', async () => {
-    writeArtifact(tmpRoot, 'wave-1/flight-1/results.md',
+    await writeArtifact(tmpRoot, 'wave-1/flight-1/results.md',
       'Combined flight summary.\nPR: https://github.com/o/r/pull/200\n');
 
     const result = await assembleBody(tmpRoot, 42, 'kahuna/42-foo', 'main');
@@ -358,8 +354,8 @@ describe('wave_finalize handler', () => {
 
   // --- body_sha determinism ---
   test('body_sha is deterministic — same artifacts produce the same hash', async () => {
-    writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md', 'Summary A\nPR: https://github.com/o/r/pull/100');
-    writeArtifact(tmpRoot, 'wave-1/flight-1/issue-6/results.md', 'Summary B\nPR: https://github.com/o/r/pull/101');
+    await writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md', 'Summary A\nPR: https://github.com/o/r/pull/100');
+    await writeArtifact(tmpRoot, 'wave-1/flight-1/issue-6/results.md', 'Summary B\nPR: https://github.com/o/r/pull/101');
 
     onExec('git ls-remote', 'abc123\trefs/heads/kahuna/42-foo');
     onExec('gh pr list', JSON.stringify([{
@@ -403,7 +399,7 @@ describe('wave_finalize handler', () => {
   // --- gitlab happy path ---
   test('gitlab happy path: creates MR with assembled body', async () => {
     currentPlatform = 'gitlab';
-    writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md',
+    await writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md',
       'Done.\nMR: https://gitlab.com/o/r/-/merge_requests/100\n');
 
     onExec('git ls-remote', 'abc123\trefs/heads/kahuna/42-foo');
@@ -431,7 +427,7 @@ describe('wave_finalize handler', () => {
 
   test('gitlab idempotency: returns existing MR when one already exists', async () => {
     currentPlatform = 'gitlab';
-    writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md', 'done');
+    await writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md', 'done');
 
     onExec('git ls-remote', 'abc123\trefs/heads/kahuna/42-foo');
     onExec('glab mr list', JSON.stringify([{
@@ -468,7 +464,7 @@ describe('wave_finalize handler', () => {
   });
 
   test('accepts body_artifacts_dir under /tmp', async () => {
-    writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md', 'done');
+    await writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md', 'done');
     onExec('gh pr list', '[]');
     onExec('git ls-remote', 'abc\trefs/heads/kahuna/42-foo');
     onExec('gh pr create', 'https://github.com/o/r/pull/555');
@@ -515,7 +511,7 @@ describe('wave_finalize handler', () => {
 
   // --- shell escaping ---
   test('shell-escapes kahuna_branch and target_branch in all commands', async () => {
-    writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md', 'done');
+    await writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md', 'done');
 
     onExec('git ls-remote', 'abc\trefs/heads/kahuna/42-foo');
     onExec('gh pr list', '[]');
