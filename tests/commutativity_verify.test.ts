@@ -4,9 +4,11 @@ type Responder = string | (() => string);
 
 let execRegistry: Array<{ match: string; respond: Responder }> = [];
 let execCalls: string[] = [];
+let lastExecOpts: { timeout?: number; cwd?: string } | undefined;
 
-function mockExec(cmd: string): string {
+function mockExec(cmd: string, opts?: { timeout?: number; cwd?: string }): string {
   execCalls.push(cmd);
+  lastExecOpts = opts;
   for (const { match, respond } of execRegistry) {
     if (cmd.includes(match)) {
       return typeof respond === 'function' ? respond() : respond;
@@ -16,7 +18,7 @@ function mockExec(cmd: string): string {
 }
 
 mock.module('child_process', () => ({
-  execSync: (cmd: string, _opts?: unknown) => mockExec(cmd),
+  execSync: (cmd: string, opts?: { timeout?: number; cwd?: string }) => mockExec(cmd, opts),
 }));
 
 const { default: handler } = await import('../handlers/commutativity_verify.ts');
@@ -51,11 +53,13 @@ function probeJson(verdict: string, pairs: Array<{
 beforeEach(() => {
   execRegistry = [];
   execCalls = [];
+  lastExecOpts = undefined;
 });
 
 afterEach(() => {
   execRegistry = [];
   execCalls = [];
+  lastExecOpts = undefined;
 });
 
 describe('commutativity_verify handler', () => {
@@ -65,15 +69,15 @@ describe('commutativity_verify handler', () => {
   });
 
   // --- schema validation ---
-  test('schema rejects single changeset (minItems: 2)', async () => {
+  test('schema rejects empty changesets array (min: 1)', async () => {
     const result = await handler.execute({
       repo_path: '/repo',
       base_ref: 'main',
-      changesets: [{ id: 'mr-1', head_ref: 'feature/1' }],
+      changesets: [],
     });
     const data = parseResult(result);
     expect(data.ok).toBe(false);
-    expect(data.error as string).toContain('2 changesets');
+    expect(data.error as string).toContain('1 changeset');
   });
 
   test('schema rejects missing repo_path', async () => {
@@ -337,6 +341,196 @@ describe('commutativity_verify handler', () => {
 
     const cmd = execCalls[0];
     expect(cmd).toContain("--repo '/my repo/with spaces'");
+  });
+
+  // --- new-shape fields in pairwise mode (backward-compat check) ---
+  test('pairwise mode includes new `mode`/`verdict`/`pairwise_results` fields alongside legacy aliases', async () => {
+    onExec('commutativity-probe', probeJson('MEDIUM', [{
+      a: 'feature/1',
+      b: 'feature/2',
+      verdict: 'MEDIUM',
+      reason: 'Overlap',
+    }]));
+
+    const result = await handler.execute({
+      repo_path: '/repo',
+      base_ref: 'main',
+      changesets: [
+        { id: 'mr-1', head_ref: 'feature/1' },
+        { id: 'mr-2', head_ref: 'feature/2' },
+      ],
+    });
+    const data = parseResult(result);
+
+    expect(data.ok).toBe(true);
+    expect(data.mode).toBe('pairwise');
+    expect(data.verdict).toBe('MEDIUM');
+    expect(data.group_verdict).toBe('MEDIUM'); // legacy alias preserved
+    const pairwise = data.pairwise_results as Array<{ a: string; b: string }>;
+    expect(pairwise).toHaveLength(1);
+    expect(pairwise[0].a).toBe('mr-1');
+    expect(data.pairs).toEqual(data.pairwise_results); // same content
+    expect(data.single_target_result).toBeUndefined();
+  });
+
+  // --- single-target mode: STRONG verdict (clean change) ---
+  test('single-target mode: STRONG verdict — clean branch safe to land', async () => {
+    // Probe emits empty pairs and a flight-level verdict for single-changeset invocations.
+    onExec('commutativity-probe', JSON.stringify({
+      changesets: ['kahuna/42-foo'],
+      flight_verdict: 'STRONG',
+      pairs: [],
+    }));
+
+    const result = await handler.execute({
+      repo_path: '/repo',
+      base_ref: 'main',
+      changesets: [{ id: 'kahuna', head_ref: 'kahuna/42-foo' }],
+    });
+    const data = parseResult(result);
+
+    expect(data.ok).toBe(true);
+    expect(data.mode).toBe('single_target');
+    expect(data.verdict).toBe('STRONG');
+    expect(data.group_verdict).toBe('STRONG'); // legacy alias
+    expect(data.pairs).toEqual([]);
+    expect(data.pairwise_results).toBeUndefined();
+    const single = data.single_target_result as { verdict: string; changeset_id: string; head_ref: string };
+    expect(single.verdict).toBe('STRONG');
+    expect(single.changeset_id).toBe('kahuna');
+    expect(single.head_ref).toBe('kahuna/42-foo');
+  });
+
+  // --- single-target mode: ORACLE_REQUIRED (probe fires CI_INFRA gate) ---
+  test('single-target mode: ORACLE_REQUIRED — probe flags CI_INFRA risk', async () => {
+    onExec('commutativity-probe', JSON.stringify({
+      changesets: ['kahuna/43-ci-infra'],
+      flight_verdict: 'ORACLE_REQUIRED',
+      pairs: [],
+    }));
+
+    const result = await handler.execute({
+      repo_path: '/repo',
+      base_ref: 'main',
+      changesets: [{ id: 'kahuna', head_ref: 'kahuna/43-ci-infra' }],
+    });
+    const data = parseResult(result);
+
+    expect(data.ok).toBe(true);
+    expect(data.mode).toBe('single_target');
+    expect(data.verdict).toBe('ORACLE_REQUIRED');
+    const single = data.single_target_result as { verdict: string };
+    expect(single.verdict).toBe('ORACLE_REQUIRED');
+  });
+
+  // --- defensive: single-target with unexpected non-empty pairs from probe ---
+  test('single-target mode: discards unexpected pairs from probe and warns', async () => {
+    // Hypothetical future probe output that breaks the single-target contract.
+    onExec('commutativity-probe', JSON.stringify({
+      changesets: ['kahuna/42-foo'],
+      flight_verdict: 'STRONG',
+      pairs: [{
+        a: 'kahuna/42-foo',
+        b: 'kahuna/42-foo',
+        verdict: 'STRONG',
+        reason: 'self-pair (unexpected)',
+        file_overlaps: [],
+        symbol_collisions: [],
+        import_overlaps: [],
+      }],
+    }));
+
+    const result = await handler.execute({
+      repo_path: '/repo',
+      base_ref: 'main',
+      changesets: [{ id: 'kahuna', head_ref: 'kahuna/42-foo' }],
+    });
+    const data = parseResult(result);
+
+    expect(data.ok).toBe(true);
+    expect(data.mode).toBe('single_target');
+    expect(data.pairs).toEqual([]); // defensively emptied
+    expect(data.pairwise_results).toBeUndefined();
+    const warnings = data.warnings as string[];
+    expect(warnings.some(w => w.includes('single-target'))).toBe(true);
+  });
+
+  // --- single-target mode: probe command structure ---
+  test('single-target mode: CLI command includes one branch, same flags', async () => {
+    onExec('commutativity-probe', JSON.stringify({
+      changesets: ['kahuna/42-foo'],
+      flight_verdict: 'STRONG',
+      pairs: [],
+    }));
+
+    await handler.execute({
+      repo_path: '/repo',
+      base_ref: 'main',
+      changesets: [{ id: 'kahuna', head_ref: 'kahuna/42-foo' }],
+    });
+
+    expect(execCalls).toHaveLength(1);
+    const cmd = execCalls[0];
+    expect(cmd).toContain('commutativity-probe analyze');
+    expect(cmd).toContain("--repo '/repo'");
+    expect(cmd).toContain("--base 'main'");
+    expect(cmd).toContain("'kahuna/42-foo'");
+  });
+
+  // --- single-target mode: subprocess timeout fails safe ---
+  test('single-target mode: timeout returns ORACLE_REQUIRED with single_target_result populated', async () => {
+    onExec('commutativity-probe', () => {
+      throw new Error('ETIMEDOUT: command timed out');
+    });
+
+    const result = await handler.execute({
+      repo_path: '/repo',
+      base_ref: 'main',
+      changesets: [{ id: 'kahuna', head_ref: 'kahuna/42-foo' }],
+    });
+    const data = parseResult(result);
+
+    expect(data.ok).toBe(true);
+    expect(data.mode).toBe('single_target');
+    expect(data.verdict).toBe('ORACLE_REQUIRED');
+    const single = data.single_target_result as { verdict: string; changeset_id: string };
+    expect(single.verdict).toBe('ORACLE_REQUIRED');
+    expect(single.changeset_id).toBe('kahuna');
+    expect(data.pairwise_results).toBeUndefined();
+  });
+
+  // --- timeout_sec parameter override ---
+  test('timeout_sec parameter overrides the default (30s) subprocess timeout', async () => {
+    onExec('commutativity-probe', JSON.stringify({
+      changesets: ['feature/1'],
+      flight_verdict: 'STRONG',
+      pairs: [],
+    }));
+
+    await handler.execute({
+      repo_path: '/repo',
+      base_ref: 'main',
+      changesets: [{ id: 'kahuna', head_ref: 'feature/1' }],
+      timeout_sec: 5,
+    });
+
+    expect(lastExecOpts?.timeout).toBe(5_000);
+  });
+
+  test('default timeout (30s) used when timeout_sec omitted', async () => {
+    onExec('commutativity-probe', JSON.stringify({
+      changesets: ['feature/1'],
+      flight_verdict: 'STRONG',
+      pairs: [],
+    }));
+
+    await handler.execute({
+      repo_path: '/repo',
+      base_ref: 'main',
+      changesets: [{ id: 'kahuna', head_ref: 'feature/1' }],
+    });
+
+    expect(lastExecOpts?.timeout).toBe(30_000);
   });
 
   // --- three changesets produce correct pair count ---
