@@ -158,7 +158,7 @@ interface AssembleResult {
  * `flight-M/results.md` with no issue-X sub-directory — keeps the handler
  * resilient to artifact-layout drift.
  */
-function assembleBody(
+export function assembleBody(
   artifactsDir: string,
   epicId: number,
   kahunaBranch: string,

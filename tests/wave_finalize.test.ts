@@ -23,7 +23,7 @@ mock.module('child_process', () => ({
 
 let currentPlatform: 'github' | 'gitlab' = 'github';
 
-const { default: handler } = await import('../handlers/wave_finalize.ts');
+const { default: handler, assembleBody } = await import('../handlers/wave_finalize.ts');
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
   return JSON.parse(result.content[0].text) as Record<string, unknown>;
@@ -302,88 +302,58 @@ describe('wave_finalize handler', () => {
     expect(createCall).toContain("--base 'release/v2'");
   });
 
-  // --- body assembly ---
-  test('body assembles per-flight bullets with issue IDs and PR links from results.md', async () => {
+  // --- body assembly (tests the exported assembleBody directly) ---
+  test('body assembles per-flight bullets with issue IDs and PR links from results.md', () => {
     writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md',
       'Adds widget component.\nPR: https://github.com/o/r/pull/100\n');
     writeArtifact(tmpRoot, 'wave-1/flight-2/issue-6/results.md',
       'Fixes navigation crash.\nhttps://github.com/o/r/pull/101\n');
 
-    let capturedBody = '';
-    onExec('git ls-remote', 'abc123\trefs/heads/kahuna/42-foo');
-    onExec('gh pr list', '[]');
-    onExec('gh pr create', () => {
-      const createCall = execCalls[execCalls.length - 1];
-      const bodyMatch = /--body '((?:[^'\\]|\\.|'\\'')*)'/s.exec(createCall);
-      if (bodyMatch !== null) capturedBody = bodyMatch[1].replace(/'\\''/g, "'");
-      return 'https://github.com/o/r/pull/555';
-    });
+    const result = assembleBody(tmpRoot, 42, 'kahuna/42-foo', 'main');
 
-    await handler.execute({
-      epic_id: 42,
-      kahuna_branch: 'kahuna/42-foo',
-      body_artifacts_dir: tmpRoot,
-    });
-
-    expect(capturedBody).toContain('Epic #42');
-    expect(capturedBody).toContain('wave-1');
-    expect(capturedBody).toContain('flight-1');
-    expect(capturedBody).toContain('flight-2');
-    expect(capturedBody).toContain('Issue #5');
-    expect(capturedBody).toContain('Issue #6');
-    expect(capturedBody).toContain('https://github.com/o/r/pull/100');
-    expect(capturedBody).toContain('https://github.com/o/r/pull/101');
-    expect(capturedBody).toContain('Adds widget component');
-    expect(capturedBody).toContain('Fixes navigation crash');
+    expect(result.flightCount).toBe(2);
+    expect(result.issueCount).toBe(2);
+    expect(result.body).toContain('Epic #42');
+    expect(result.body).toContain('wave-1');
+    expect(result.body).toContain('flight-1');
+    expect(result.body).toContain('flight-2');
+    expect(result.body).toContain('Issue #5');
+    expect(result.body).toContain('Issue #6');
+    expect(result.body).toContain('https://github.com/o/r/pull/100');
+    expect(result.body).toContain('https://github.com/o/r/pull/101');
+    expect(result.body).toContain('Adds widget component');
+    expect(result.body).toContain('Fixes navigation crash');
   });
 
-  test('body assembly falls back to flight-level merge-report.md for MR URL when results.md lacks one', async () => {
+  test('body assembly falls back to flight-level merge-report.md for MR URL when results.md lacks one', () => {
     writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md',
       'Adds widget component.\n(no URL here)\n');
     writeArtifact(tmpRoot, 'wave-1/flight-1/merge-report.md',
       '# Merge Report\n\n- issue-5 landed: https://github.com/o/r/pull/100 (CI green, direct squash)\n');
 
-    let capturedBody = '';
-    onExec('git ls-remote', 'abc123\trefs/heads/kahuna/42-foo');
-    onExec('gh pr list', '[]');
-    onExec('gh pr create', () => {
-      const createCall = execCalls[execCalls.length - 1];
-      const bodyMatch = /--body '((?:[^'\\]|\\.|'\\'')*)'/s.exec(createCall);
-      if (bodyMatch !== null) capturedBody = bodyMatch[1].replace(/'\\''/g, "'");
-      return 'https://github.com/o/r/pull/555';
-    });
+    const result = assembleBody(tmpRoot, 42, 'kahuna/42-foo', 'main');
 
-    await handler.execute({
-      epic_id: 42,
-      kahuna_branch: 'kahuna/42-foo',
-      body_artifacts_dir: tmpRoot,
-    });
-
-    expect(capturedBody).toContain('https://github.com/o/r/pull/100');
+    expect(result.body).toContain('https://github.com/o/r/pull/100');
   });
 
-  test('body assembly supports fallback flat layout: flight-*/results.md (no issue-* dir)', async () => {
+  test('body assembly supports fallback flat layout: flight-*/results.md (no issue-* dir)', () => {
     writeArtifact(tmpRoot, 'wave-1/flight-1/results.md',
       'Combined flight summary.\nPR: https://github.com/o/r/pull/200\n');
 
-    let capturedBody = '';
-    onExec('git ls-remote', 'abc123\trefs/heads/kahuna/42-foo');
-    onExec('gh pr list', '[]');
-    onExec('gh pr create', () => {
-      const createCall = execCalls[execCalls.length - 1];
-      const bodyMatch = /--body '((?:[^'\\]|\\.|'\\'')*)'/s.exec(createCall);
-      if (bodyMatch !== null) capturedBody = bodyMatch[1].replace(/'\\''/g, "'");
-      return 'https://github.com/o/r/pull/555';
-    });
+    const result = assembleBody(tmpRoot, 42, 'kahuna/42-foo', 'main');
 
-    await handler.execute({
-      epic_id: 42,
-      kahuna_branch: 'kahuna/42-foo',
-      body_artifacts_dir: tmpRoot,
-    });
+    expect(result.issueCount).toBe(1);
+    expect(result.body).toContain('Combined flight summary');
+    expect(result.body).toContain('https://github.com/o/r/pull/200');
+  });
 
-    expect(capturedBody).toContain('Combined flight summary');
-    expect(capturedBody).toContain('https://github.com/o/r/pull/200');
+  test('body assembly returns issueCount=0 for an empty artifact tree', () => {
+    const result = assembleBody(tmpRoot, 42, 'kahuna/42-foo', 'main');
+    expect(result.issueCount).toBe(0);
+    expect(result.flightCount).toBe(0);
+    // Body still has the header — non-empty by design (issueCount is the
+    // sentinel for "had any content", not body.length).
+    expect(result.body.length).toBeGreaterThan(0);
   });
 
   // --- body_sha determinism ---
