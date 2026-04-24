@@ -7,12 +7,13 @@
 // contract.
 
 import { execSync } from 'child_process';
-// Imported via `node:fs` (not `'fs'`) so the partial `mock.module('fs', ...)`
-// in sibling test files (e.g. wave_init.test.ts, work_item.test.ts) does not
-// shadow these symbols as `undefined`. See lesson_mcp_gotchas.md §6.
-import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { createHash } from 'crypto';
 import { join, resolve } from 'path';
+// File reads + directory walks use Bun native APIs (Bun.Glob + Bun.file)
+// instead of node:fs. Sibling test files partially mock 'fs' (only
+// writeFileSync), and Bun's mock.module leaks across the entire suite —
+// any handler importing readFileSync/readdirSync from 'fs' or 'node:fs' gets
+// `undefined` if the offending test runs first. See lesson_mcp_gotchas.md §6.
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { detectPlatform } from '../lib/glab.js';
@@ -106,23 +107,11 @@ function run(cmd: string, cwd: string): RunResult {
   }
 }
 
-function listDirs(path: string): string[] {
+async function readIfExists(path: string): Promise<string | null> {
+  const file = Bun.file(path);
+  if (!(await file.exists())) return null;
   try {
-    return readdirSync(path).filter((name) => {
-      try {
-        return statSync(join(path, name)).isDirectory();
-      } catch {
-        return false;
-      }
-    });
-  } catch {
-    return [];
-  }
-}
-
-function readIfExists(path: string): string | null {
-  try {
-    return readFileSync(path, 'utf8');
+    return await file.text();
   } catch {
     return null;
   }
@@ -161,70 +150,133 @@ interface AssembleResult {
  * `flight-M/results.md` with no issue-X sub-directory — keeps the handler
  * resilient to artifact-layout drift.
  */
-export function assembleBody(
+interface ResolvedEntry {
+  wave: string;
+  flight: string;
+  issueId?: string;
+  resultsRel: string; // path relative to artifactsDir
+}
+
+/** Sort `wave-N` / `flight-N` / `issue-N` lexicographically with numeric awareness. */
+function naturalCompare(a: string, b: string): number {
+  return a.localeCompare(b, undefined, { numeric: true });
+}
+
+export async function assembleBody(
   artifactsDir: string,
   epicId: number,
   kahunaBranch: string,
   targetBranch: string,
-): AssembleResult {
-  const waves = listDirs(artifactsDir)
-    .filter((d) => d.startsWith('wave-'))
-    .sort();
+): Promise<AssembleResult> {
+  // Bun.Glob.scanSync walks the tree without going through `'fs'`, so it is
+  // immune to the partial `mock.module('fs', ...)` leakage.
+  const issueGlob = new Bun.Glob('wave-*/flight-*/issue-*/results.md');
+  const flatGlob = new Bun.Glob('wave-*/flight-*/results.md');
+
+  // Bun.Glob.scanSync throws ENOENT when the cwd doesn't exist (legitimate
+  // case — e.g. the default `/tmp/wavemachine/<slug>/` may never have been
+  // created if the wave was run elsewhere). Treat as "no entries".
+  function safeScan(glob: Bun.Glob): string[] {
+    try {
+      return Array.from(glob.scanSync({ cwd: artifactsDir, onlyFiles: true }));
+    } catch {
+      return [];
+    }
+  }
+
+  const entries: ResolvedEntry[] = [];
+  for (const rel of safeScan(issueGlob)) {
+    const parts = rel.split('/');
+    if (parts.length === 4) {
+      entries.push({
+        wave: parts[0],
+        flight: parts[1],
+        issueId: parts[2].replace(/^issue-/, ''),
+        resultsRel: rel,
+      });
+    }
+  }
+  // Only consider the flat layout when no issue-* entries are found at all
+  // — mixing the two would produce confusing output.
+  if (entries.length === 0) {
+    for (const rel of safeScan(flatGlob)) {
+      const parts = rel.split('/');
+      if (parts.length === 3) {
+        entries.push({ wave: parts[0], flight: parts[1], resultsRel: rel });
+      }
+    }
+  }
+
+  entries.sort((a, b) => {
+    const w = naturalCompare(a.wave, b.wave);
+    if (w !== 0) return w;
+    const f = naturalCompare(a.flight, b.flight);
+    if (f !== 0) return f;
+    if (a.issueId !== undefined && b.issueId !== undefined) {
+      return naturalCompare(a.issueId, b.issueId);
+    }
+    return 0;
+  });
 
   const lines: string[] = [];
   lines.push(`Epic #${epicId} — integration branch \`${kahunaBranch}\` ready for merge into \`${targetBranch}\`.`);
   lines.push('');
   lines.push('## Waves');
 
-  let flightCount = 0;
+  // Cache merge-report.md URL maps per (wave, flight) so we don't reread them
+  // for each issue in the same flight.
+  const mergeReportCache = new Map<string, Map<string, string>>();
+  async function urlsForFlight(wave: string, flight: string): Promise<Map<string, string>> {
+    const key = `${wave}/${flight}`;
+    const cached = mergeReportCache.get(key);
+    if (cached !== undefined) return cached;
+    const content = (await readIfExists(join(artifactsDir, wave, flight, 'merge-report.md'))) ?? '';
+    const urls = new Map<string, string>();
+    for (const m of content.matchAll(/issue[-_ ]*#?(\d+)[^\n]*?(https?:\/\/\S+?\/(?:pull|merge_requests)\/\d+)/gi)) {
+      urls.set(m[1], m[2]);
+    }
+    mergeReportCache.set(key, urls);
+    return urls;
+  }
+
+  let currentWave = '';
+  let currentFlight = '';
+  const flightSet = new Set<string>();
   let issueCount = 0;
 
-  for (const wave of waves) {
-    const wavePath = join(artifactsDir, wave);
-    const flights = listDirs(wavePath).filter((d) => d.startsWith('flight-')).sort();
-    if (flights.length === 0) continue;
-    lines.push('');
-    lines.push(`### ${wave}`);
-
-    for (const flight of flights) {
-      flightCount++;
-      const flightPath = join(wavePath, flight);
+  for (const entry of entries) {
+    if (entry.wave !== currentWave) {
       lines.push('');
-      lines.push(`#### ${flight}`);
+      lines.push(`### ${entry.wave}`);
+      currentWave = entry.wave;
+      currentFlight = '';
+    }
+    if (entry.flight !== currentFlight) {
+      lines.push('');
+      lines.push(`#### ${entry.flight}`);
+      currentFlight = entry.flight;
+      flightSet.add(`${entry.wave}/${entry.flight}`);
+    }
 
-      const issues = listDirs(flightPath).filter((d) => d.startsWith('issue-')).sort();
-      if (issues.length > 0) {
-        const mergeReport = readIfExists(join(flightPath, 'merge-report.md')) ?? '';
-        const mergeReportUrls = new Map<string, string>();
-        // Best-effort correlation: line-level scan for "issue-X" paired with a PR/MR URL.
-        for (const m of mergeReport.matchAll(/issue[-_ ]*#?(\d+)[^\n]*?(https?:\/\/\S+?\/(?:pull|merge_requests)\/\d+)/gi)) {
-          mergeReportUrls.set(m[1], m[2]);
-        }
-        for (const issueDir of issues) {
-          issueCount++;
-          const issueId = issueDir.replace(/^issue-/, '');
-          const results = readIfExists(join(flightPath, issueDir, 'results.md')) ?? '';
-          const mrUrl = extractMrUrl(results) ?? mergeReportUrls.get(issueId);
-          const summary = extractSummary(results);
-          const mrLink = mrUrl !== undefined ? `[PR](${mrUrl}) — ` : '';
-          const bullet = summary.length > 0 ? `${mrLink}${summary}` : mrLink.replace(/ — $/, '');
-          lines.push(`- Issue #${issueId}: ${bullet}`.trimEnd());
-        }
-      } else {
-        // Flatter shape: flight-*/results.md directly (per devspec wording).
-        const results = readIfExists(join(flightPath, 'results.md'));
-        if (results !== null) {
-          issueCount++;
-          const mrUrl = extractMrUrl(results);
-          const summary = extractSummary(results);
-          const mrLink = mrUrl !== undefined ? `[PR](${mrUrl}) — ` : '';
-          lines.push(`- ${mrLink}${summary}`.trimEnd());
-        }
-      }
+    const content = (await readIfExists(join(artifactsDir, entry.resultsRel))) ?? '';
+    let mrUrl = extractMrUrl(content);
+    if (mrUrl === undefined && entry.issueId !== undefined) {
+      mrUrl = (await urlsForFlight(entry.wave, entry.flight)).get(entry.issueId);
+    }
+    const summary = extractSummary(content);
+    const mrLink = mrUrl !== undefined ? `[PR](${mrUrl}) — ` : '';
+
+    if (entry.issueId !== undefined) {
+      issueCount++;
+      const bullet = summary.length > 0 ? `${mrLink}${summary}` : mrLink.replace(/ — $/, '');
+      lines.push(`- Issue #${entry.issueId}: ${bullet}`.trimEnd());
+    } else {
+      issueCount++;
+      lines.push(`- ${mrLink}${summary}`.trimEnd());
     }
   }
 
-  return { body: lines.join('\n'), issueCount, flightCount };
+  return { body: lines.join('\n'), issueCount, flightCount: flightSet.size };
 }
 
 interface NormalizedMr {
@@ -393,7 +445,7 @@ const waveFinalizeHandler: HandlerDef = {
       if (existing !== null) {
         // Compute body_sha from current artifacts for drift detection. Empty
         // sha when artifacts are absent — a legitimate post-cleanup state.
-        const { body, issueCount } = assembleBody(artifactsDir, args.epic_id, args.kahuna_branch, args.target_branch);
+        const { body, issueCount } = await assembleBody(artifactsDir, args.epic_id, args.kahuna_branch, args.target_branch);
         const bodySha = issueCount > 0 ? createHash('sha256').update(body).digest('hex') : '';
         return {
           content: [{
@@ -416,7 +468,7 @@ const waveFinalizeHandler: HandlerDef = {
         };
       }
 
-      const { body, issueCount } = assembleBody(artifactsDir, args.epic_id, args.kahuna_branch, args.target_branch);
+      const { body, issueCount } = await assembleBody(artifactsDir, args.epic_id, args.kahuna_branch, args.target_branch);
       if (issueCount === 0) {
         return {
           content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: 'no_artifacts' }) }],

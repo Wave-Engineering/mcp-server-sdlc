@@ -303,13 +303,13 @@ describe('wave_finalize handler', () => {
   });
 
   // --- body assembly (tests the exported assembleBody directly) ---
-  test('body assembles per-flight bullets with issue IDs and PR links from results.md', () => {
+  test('body assembles per-flight bullets with issue IDs and PR links from results.md', async () => {
     writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md',
       'Adds widget component.\nPR: https://github.com/o/r/pull/100\n');
     writeArtifact(tmpRoot, 'wave-1/flight-2/issue-6/results.md',
       'Fixes navigation crash.\nhttps://github.com/o/r/pull/101\n');
 
-    const result = assembleBody(tmpRoot, 42, 'kahuna/42-foo', 'main');
+    const result = await assembleBody(tmpRoot, 42, 'kahuna/42-foo', 'main');
 
     expect(result.flightCount).toBe(2);
     expect(result.issueCount).toBe(2);
@@ -325,30 +325,30 @@ describe('wave_finalize handler', () => {
     expect(result.body).toContain('Fixes navigation crash');
   });
 
-  test('body assembly falls back to flight-level merge-report.md for MR URL when results.md lacks one', () => {
+  test('body assembly falls back to flight-level merge-report.md for MR URL when results.md lacks one', async () => {
     writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md',
       'Adds widget component.\n(no URL here)\n');
     writeArtifact(tmpRoot, 'wave-1/flight-1/merge-report.md',
       '# Merge Report\n\n- issue-5 landed: https://github.com/o/r/pull/100 (CI green, direct squash)\n');
 
-    const result = assembleBody(tmpRoot, 42, 'kahuna/42-foo', 'main');
+    const result = await assembleBody(tmpRoot, 42, 'kahuna/42-foo', 'main');
 
     expect(result.body).toContain('https://github.com/o/r/pull/100');
   });
 
-  test('body assembly supports fallback flat layout: flight-*/results.md (no issue-* dir)', () => {
+  test('body assembly supports fallback flat layout: flight-*/results.md (no issue-* dir)', async () => {
     writeArtifact(tmpRoot, 'wave-1/flight-1/results.md',
       'Combined flight summary.\nPR: https://github.com/o/r/pull/200\n');
 
-    const result = assembleBody(tmpRoot, 42, 'kahuna/42-foo', 'main');
+    const result = await assembleBody(tmpRoot, 42, 'kahuna/42-foo', 'main');
 
     expect(result.issueCount).toBe(1);
     expect(result.body).toContain('Combined flight summary');
     expect(result.body).toContain('https://github.com/o/r/pull/200');
   });
 
-  test('body assembly returns issueCount=0 for an empty artifact tree', () => {
-    const result = assembleBody(tmpRoot, 42, 'kahuna/42-foo', 'main');
+  test('body assembly returns issueCount=0 for an empty artifact tree', async () => {
+    const result = await assembleBody(tmpRoot, 42, 'kahuna/42-foo', 'main');
     expect(result.issueCount).toBe(0);
     expect(result.flightCount).toBe(0);
     // Body still has the header — non-empty by design (issueCount is the
