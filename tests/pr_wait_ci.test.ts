@@ -126,6 +126,27 @@ describe('pr_wait_ci handler', () => {
     expect(snapshotCalls.length).toBe(2);
   });
 
+  // --- regression for #221: all checks SKIPPED → passed on first poll ---
+  // Previously deadlocked because `decide` required `passed >= 1`. Common
+  // for docs-only PRs in repos with conditional CI: every workflow has an
+  // `if:` guard that doesn't match → all jobs SKIPPED → uncounted in
+  // passed/failed/pending → loop spins to timeout for no reason.
+  test('passed — all checks skipped (passed=0, failed=0, pending=0) → passed on first poll', async () => {
+    const allSkipped = snap({ total: 3, passed: 0, failed: 0, pending: 0, summary: '0/3 (all skipped)' });
+    const { deps, snapshotCalls, sleepCalls } = makeDeps([allSkipped], 5);
+
+    const result = await runWithDeps(
+      { number: 1, poll_interval_sec: 5, timeout_sec: 600 },
+      deps,
+    );
+
+    expect(result.final_state).toBe('passed');
+    expect(result.checks.passed).toBe(0);
+    expect(result.checks.total).toBe(3);
+    expect(snapshotCalls.length).toBe(1); // proves first poll terminated
+    expect(sleepCalls.length).toBe(0);    // no sleep needed
+  });
+
   test('timed_out — loop exits when elapsed > timeout', async () => {
     // Every snapshot stays pending forever.
     const stuck = snap({ total: 2, passed: 0, pending: 2 });
