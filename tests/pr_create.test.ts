@@ -309,11 +309,231 @@ exit 1
     expect(String(data.error)).toContain('body');
   });
 
-  test('missing_required_base — schema rejects', async () => {
-    const result = await handler.execute({ title: 't', body: 'b' });
+  // ---- #159: auto-resolve default branch when base is omitted ------------
+
+  test('default_branch_resolution_github — base omitted resolves via gh repo view', async () => {
+    const { fixture, stubBin } = await makeFixture({
+      '.claude-project.md': '# platform: github\n',
+    });
+    fixtureDir = fixture;
+    stubBinDir = stubBin;
+
+    await writeStub(
+      stubBin,
+      'git',
+      `
+case "$1 $2" in
+  "branch --show-current") echo "feature/159-default-branch" ;;
+  "remote -v") echo "origin\tgit@github.com:org/repo.git (fetch)" ;;
+  *) echo "unhandled git: $*" >&2; exit 1 ;;
+esac
+`,
+    );
+
+    // gh stub: repo view returns the default branch name; pr create succeeds; pr view normalizes.
+    await writeStub(
+      stubBin,
+      'gh',
+      `
+if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
+  # Verify --json defaultBranchRef --jq .defaultBranchRef.name is in argv.
+  echo "main"
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
+  # Verify --base main was passed (default-branch resolution worked).
+  case " $* " in
+    *" --base main "*) ;;
+    *) echo "expected --base main in argv, got: $*" >&2; exit 1 ;;
+  esac
+  echo "https://github.com/org/repo/pull/42"
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+  cat <<'EOF'
+{"number":42,"url":"https://github.com/org/repo/pull/42","state":"OPEN","headRefName":"feature/159-default-branch","baseRefName":"main"}
+EOF
+  exit 0
+fi
+echo "unhandled gh: $*" >&2; exit 1
+`,
+    );
+
+    activate(fixture, stubBin);
+
+    const result = await handler.execute({
+      title: 'feat: default branch',
+      body: 'Body',
+      // base intentionally omitted
+    });
+    const data = parseResult(result);
+    expect(data.ok).toBe(true);
+    expect(data.base).toBe('main');
+  });
+
+  test('default_branch_resolution_gitlab — base omitted resolves via glab api', async () => {
+    const { fixture, stubBin } = await makeFixture({
+      '.claude-project.md': '# platform: gitlab\n',
+    });
+    fixtureDir = fixture;
+    stubBinDir = stubBin;
+
+    await writeStub(
+      stubBin,
+      'git',
+      `
+case "$1 $2" in
+  "branch --show-current") echo "feature/159-default-branch" ;;
+  "remote -v") echo "origin\tgit@gitlab.com:org/repo.git (fetch)" ;;
+  *) echo "unhandled git: $*" >&2; exit 1 ;;
+esac
+`,
+    );
+
+    await writeStub(
+      stubBin,
+      'glab',
+      `
+if [ "$1" = "api" ] && [[ "$2" =~ ^projects/ ]]; then
+  # Faithful to the real glab binary: --jq is NOT a recognized flag.
+  # If the handler ever passes it, the stub fails so tests catch the regression.
+  for arg in "$@"; do
+    if [ "$arg" = "--jq" ]; then
+      echo "FAIL: glab api does not accept --jq" >&2
+      exit 99
+    fi
+  done
+  cat <<'EOF'
+{"id":42,"name":"repo","default_branch":"develop","path_with_namespace":"org/repo"}
+EOF
+  exit 0
+fi
+if [ "$1" = "mr" ] && [ "$2" = "create" ]; then
+  case " $* " in
+    *" --target-branch develop "*) ;;
+    *) echo "expected --target-branch develop in argv, got: $*" >&2; exit 1 ;;
+  esac
+  exit 0
+fi
+if [ "$1" = "mr" ] && [ "$2" = "view" ]; then
+  cat <<'EOF'
+{"iid":7,"web_url":"https://gitlab.com/org/repo/-/merge_requests/7","state":"opened","source_branch":"feature/159-default-branch","target_branch":"develop"}
+EOF
+  exit 0
+fi
+echo "unhandled glab: $*" >&2; exit 1
+`,
+    );
+
+    activate(fixture, stubBin);
+
+    const result = await handler.execute({
+      title: 'feat: default branch',
+      body: 'Body',
+    });
+    const data = parseResult(result);
+    expect(data.ok).toBe(true);
+    expect(data.base).toBe('develop');
+  });
+
+  test('explicit_base_wins — auto-resolution skipped when base is provided', async () => {
+    const { fixture, stubBin } = await makeFixture({
+      '.claude-project.md': '# platform: github\n',
+    });
+    fixtureDir = fixture;
+    stubBinDir = stubBin;
+
+    await writeStub(
+      stubBin,
+      'git',
+      `
+case "$1 $2" in
+  "branch --show-current") echo "feature/159-default-branch" ;;
+  "remote -v") echo "origin\tgit@github.com:org/repo.git (fetch)" ;;
+  *) echo "unhandled git: $*" >&2; exit 1 ;;
+esac
+`,
+    );
+
+    // gh repo view MUST NOT be called when explicit base provided — fail loudly.
+    await writeStub(
+      stubBin,
+      'gh',
+      `
+if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
+  echo "FAIL: repo view should not be called with explicit base" >&2
+  exit 99
+fi
+if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
+  case " $* " in
+    *" --base release/v2 "*) ;;
+    *) echo "expected --base release/v2 in argv, got: $*" >&2; exit 1 ;;
+  esac
+  echo "https://github.com/org/repo/pull/77"
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+  cat <<'EOF'
+{"number":77,"url":"https://github.com/org/repo/pull/77","state":"OPEN","headRefName":"feature/159-default-branch","baseRefName":"release/v2"}
+EOF
+  exit 0
+fi
+echo "unhandled gh: $*" >&2; exit 1
+`,
+    );
+
+    activate(fixture, stubBin);
+
+    const result = await handler.execute({
+      title: 'feat: explicit base',
+      body: 'Body',
+      base: 'release/v2',
+    });
+    const data = parseResult(result);
+    expect(data.ok).toBe(true);
+    expect(data.base).toBe('release/v2');
+  });
+
+  test('default_branch_resolution_failure — surfaces ok:false when gh repo view fails', async () => {
+    const { fixture, stubBin } = await makeFixture({
+      '.claude-project.md': '# platform: github\n',
+    });
+    fixtureDir = fixture;
+    stubBinDir = stubBin;
+
+    await writeStub(
+      stubBin,
+      'git',
+      `
+case "$1 $2" in
+  "branch --show-current") echo "feature/159-default-branch" ;;
+  "remote -v") echo "origin\tgit@github.com:org/repo.git (fetch)" ;;
+  *) echo "unhandled git: $*" >&2; exit 1 ;;
+esac
+`,
+    );
+
+    await writeStub(
+      stubBin,
+      'gh',
+      `
+if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
+  echo "auth required" >&2
+  exit 1
+fi
+echo "unhandled gh: $*" >&2; exit 1
+`,
+    );
+
+    activate(fixture, stubBin);
+
+    const result = await handler.execute({
+      title: 'feat: no base',
+      body: 'Body',
+    });
     const data = parseResult(result);
     expect(data.ok).toBe(false);
-    expect(String(data.error)).toContain('base');
+    expect(String(data.error)).toContain('default branch');
   });
 
   test('explicit_head_overrides_git_branch — uses args.head when provided', async () => {
