@@ -204,7 +204,11 @@ function snapshotChecks(number: number, repo?: string): ChecksSnapshot {
 
 function decide(snap: ChecksSnapshot): FinalState | null {
   if (snap.failed > 0) return 'failed';
-  if (snap.total > 0 && snap.pending === 0 && snap.passed >= 1) return 'passed';
+  // No failures + nothing pending → passed, even when `passed === 0` (every
+  // check skipped). The previous `passed >= 1` guard deadlocked on PRs whose
+  // entire check set was SKIPPED — common for docs-only PRs in repos with
+  // conditional CI. See #221.
+  if (snap.total > 0 && snap.pending === 0 && snap.failed === 0) return 'passed';
   return null;
 }
 
