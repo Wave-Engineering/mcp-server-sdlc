@@ -403,4 +403,54 @@ describe('wave_compute handler', () => {
     expect(parsed.ok).toBe(false);
     expect(parsed.error).toContain('epic fetch failed');
   });
+
+  // ---- #209: section-name alias parity with epic_sub_issues -------------
+  // wave_compute previously only accepted ## Sub-Issues / ## Children /
+  // ## Tasks. Epics using ## Stories / ## Waves / ## Phases (already accepted
+  // by epic_sub_issues) silently produced empty wave plans. The shared helper
+  // in lib/spec_parser now drives both handlers off the same alias list.
+  const ALIAS_HEADINGS = [
+    'Sub-Issues',
+    'Subissues',
+    'Children',
+    'Tasks',
+    'Task List',
+    'Waves',
+    'Wave Map',
+    'Phases',
+    'Phased Implementation Plan',
+    'Implementation Plan',
+    'Stories',
+    'Backlog',
+  ];
+
+  for (const heading of ALIAS_HEADINGS) {
+    test(`section_alias — accepts ## ${heading} as a sub-issue section`, async () => {
+      const epicBody = `## ${heading}\n\n- #5 first\n- #6 second\n`;
+      const subs: Record<string, { body: string; title?: string }> = {
+        'org/repo#5': { body: '## Dependencies\nNone\n', title: 'first' },
+        'org/repo#6': { body: '## Dependencies\nNone\n', title: 'second' },
+      };
+      mockGraph(epicBody, subs);
+      const result = await handler.execute({ epic_ref: '#100' });
+      const parsed = parseResult(result);
+      expect(parsed.ok).toBe(true);
+      expect(parsed.waves.length).toBeGreaterThanOrEqual(1);
+      expect(parsed.total_issues).toBe(2);
+    });
+  }
+
+  test('section_alias — unknown heading falls through to story-self check, then errors when spec is invalid', async () => {
+    // ## Frobnicators is NOT in the alias list. Without a valid spec section
+    // (no ## Changes / ## Tests / ## Acceptance Criteria), the story-self
+    // fallback rejects with ok:false rather than silently returning empty
+    // waves. This pins the fallback contract so a future regression can't
+    // accidentally mask a missing-section issue as success.
+    const epicBody = `## Frobnicators\n\n- #5 a\n- #6 b\n`;
+    mockGraph(epicBody, {});
+    const result = await handler.execute({ epic_ref: '#100' });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(false);
+    expect(typeof parsed.error).toBe('string');
+  });
 });
