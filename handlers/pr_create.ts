@@ -8,7 +8,10 @@ import type { HandlerDef } from '../types.js';
 const inputSchema = z.object({
   title: z.string().min(1, 'title must be a non-empty string'),
   body: z.string().min(1, 'body must be a non-empty string'),
-  base: z.string().min(1, 'base must be a non-empty string'),
+  // base is optional — when omitted, the handler queries the platform for
+  // the repo's default branch. /scp + sibling skills can stop probing for
+  // it themselves. See #159.
+  base: z.string().min(1).optional(),
   head: z.string().optional(),
   draft: z.boolean().optional().default(false),
   repo: z
@@ -65,6 +68,58 @@ function getCurrentBranch(cwd: string): string {
   return result.stdout.trim();
 }
 
+/**
+ * Query the platform for the repo's default branch name. Used when the
+ * caller omits `base` so /scp + sibling skills can stop probing for it
+ * themselves (#159).
+ *
+ * GitHub: `gh repo view <slug?> --json defaultBranchRef --jq .defaultBranchRef.name`
+ * GitLab: `glab api projects/<encoded> --jq .default_branch` (or `glab repo view`
+ *         when no explicit slug is provided — the porcelain command resolves
+ *         from the cwd's remote).
+ */
+function getDefaultBranch(
+  platform: 'github' | 'gitlab',
+  repo: string | undefined,
+  cwd: string,
+): string {
+  if (platform === 'github') {
+    const cmd = ['gh', 'repo', 'view'];
+    if (repo !== undefined) cmd.push(repo);
+    cmd.push('--json', 'defaultBranchRef', '--jq', '.defaultBranchRef.name');
+    const result = run(cmd, cwd);
+    if (result.exitCode !== 0 || result.stdout.trim().length === 0) {
+      throw new Error(
+        `failed to resolve GitHub default branch: ${result.stderr.trim() || 'empty response'}`,
+      );
+    }
+    return result.stdout.trim();
+  }
+  // GitLab — `glab repo view` doesn't expose default_branch reliably across
+  // versions; the API path does. Use `glab api projects/<encoded>` when an
+  // explicit slug is provided, fall back to `:id` (which glab resolves from
+  // the cwd remote) when not. NB: `glab api` has NO `--jq` flag (unlike
+  // `gh api`); we parse the JSON in-process.
+  const project = repo !== undefined ? repo.replace(/\//g, '%2F') : ':id';
+  const result = run(['glab', 'api', `projects/${project}`], cwd);
+  if (result.exitCode !== 0 || result.stdout.trim().length === 0) {
+    throw new Error(
+      `failed to resolve GitLab default branch: ${result.stderr.trim() || 'empty response'}`,
+    );
+  }
+  try {
+    const parsed = JSON.parse(result.stdout) as { default_branch?: string };
+    if (typeof parsed.default_branch !== 'string' || parsed.default_branch.length === 0) {
+      throw new Error('default_branch missing or empty in glab api response');
+    }
+    return parsed.default_branch;
+  } catch (err) {
+    throw new Error(
+      `failed to resolve GitLab default branch: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
 interface NormalizedPr {
   number: number;
   url: string;
@@ -98,6 +153,12 @@ function lookupGithubPr(head: string, cwd: string, repo?: string): NormalizedPr 
 }
 
 function createGithubPr(args: Input, head: string, cwd: string): NormalizedPr {
+  // Caller guarantees base is resolved (default-branch lookup happens in
+  // execute() before dispatch). Assert here to satisfy the type narrower —
+  // a missing base at this point indicates a logic bug in the caller.
+  if (args.base === undefined) {
+    throw new Error('createGithubPr called without resolved base — caller bug');
+  }
   const createCmd = [
     'gh',
     'pr',
@@ -187,6 +248,10 @@ function lookupGitlabMr(head: string, cwd: string, repo?: string): NormalizedPr 
 }
 
 function createGitlabMr(args: Input, head: string, cwd: string): NormalizedPr {
+  // Caller guarantees base is resolved — see comment in createGithubPr.
+  if (args.base === undefined) {
+    throw new Error('createGitlabMr called without resolved base — caller bug');
+  }
   const createCmd = [
     'glab',
     'mr',
@@ -261,6 +326,12 @@ const prCreateHandler: HandlerDef = {
       const cwd = projectDir();
       const head = args.head ?? getCurrentBranch(cwd);
       const platform = await detectPlatform(cwd);
+      // Resolve `base` from the repo's default branch when omitted (#159).
+      // `createGithub*/createGitlab*` both read from `args.base`, so we
+      // mutate the parsed args in place — keeps both downstream paths simple.
+      if (args.base === undefined || args.base.length === 0) {
+        args.base = getDefaultBranch(platform, args.repo, cwd);
+      }
       const pr =
         platform === 'github'
           ? createGithubPr(args, head, cwd)
