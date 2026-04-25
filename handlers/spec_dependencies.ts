@@ -1,7 +1,7 @@
 import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
-import { parseIssueRef, parseSections, type IssueRef } from '../lib/spec_parser';
+import { findBoldLabelDependencies, parseIssueRef, parseSections, type IssueRef } from '../lib/spec_parser';
 import { detectPlatformForRef, parseRepoSlug, gitlabApiIssue } from '../lib/glab';
 
 const inputSchema = z.object({
@@ -80,27 +80,8 @@ function parseDependenciesSection(section: string, currentSlug: string | null): 
   return deps;
 }
 
-/**
- * Fallback extractor for stories that embed dependencies as a bold label
- * (e.g. `**Dependencies:** Stories 1.1 (#86), 2.1 (#87)`) inside another
- * section like `## Metadata`, rather than in a dedicated `## Dependencies`
- * H2 section.
- *
- * Returns the content following the first `**Dependencies:**` label in any
- * section, up to the next bold label, next H2-equivalent break, or end of
- * that section's content.
- */
-function findBoldLabelDependencies(sections: Record<string, string>): string {
-  // Content after **Dependencies:** up to: next bold label (possibly on a
-  // bulleted line, e.g. `- **Reviewer:**`), next H2, or end of section.
-  const labelRe =
-    /\*\*Dependencies:?\*\*\s*(.+?)(?=\n\s*(?:[-*]\s+)?\*\*[A-Z][A-Za-z ]*:?\*\*|\n##\s|\n*$)/s;
-  for (const sec of Object.values(sections)) {
-    const m = labelRe.exec(sec);
-    if (m && m[1].trim()) return m[1].trim();
-  }
-  return '';
-}
+// findBoldLabelDependencies lives in lib/spec_parser so spec_validate_structure
+// can apply the same fallback rule. See SUB_ISSUE_SECTION_KEYS / lib comment.
 
 const specDependenciesHandler: HandlerDef = {
   name: 'spec_dependencies',

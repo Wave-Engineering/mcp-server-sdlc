@@ -132,3 +132,37 @@ export function findSubIssueSection(sections: Record<string, string>): string | 
   }
   return null;
 }
+
+/**
+ * Match a `**Dependencies:**` (or `**Dependencies**`) bold label inside any
+ * section body, capturing its content up to the next bold label or end of
+ * section.
+ *
+ * Used by both `spec_dependencies` (for ref extraction) and
+ * `spec_validate_structure` (for presence detection) so the two tools agree
+ * on what counts as "declared dependencies." Without this, an issue with
+ * `**Dependencies:** #5, #6` inside `## Metadata` extracts refs via
+ * `spec_dependencies` but reports `has_dependencies: false` from
+ * `spec_validate_structure` — a real inconsistency users hit during the
+ * KAHUNA Dev Spec /prepwaves flow (2026-04-24).
+ *
+ * The `\n##\s` lookahead alternative is inert when this regex runs against
+ * `parseSections` output (H2 lines have already been stripped as section
+ * keys). It's preserved for callers who feed in raw markdown.
+ *
+ * Prefer calling `findBoldLabelDependencies` over using the regex directly.
+ */
+export const BOLD_LABEL_DEPENDENCIES_REGEX =
+  /\*\*Dependencies:?\*\*\s*(.+?)(?=\n\s*(?:[-*]\s+)?\*\*[A-Z][A-Za-z ]*:?\*\*|\n##\s|\n*$)/s;
+
+/**
+ * Return the content following the first `**Dependencies:**` label across
+ * any section. Empty string when the label is absent or has no content.
+ */
+export function findBoldLabelDependencies(sections: Record<string, string>): string {
+  for (const sec of Object.values(sections)) {
+    const m = BOLD_LABEL_DEPENDENCIES_REGEX.exec(sec);
+    if (m && m[1].trim()) return m[1].trim();
+  }
+  return '';
+}
