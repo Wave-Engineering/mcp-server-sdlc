@@ -732,28 +732,344 @@ Build the `lib/adapters/` skeleton with empty implementations + extract platform
 
 ---
 
-#### Stories 1.3–1.9: Canary `pr_*` migrations (parallel waves)
+#### Story 1.3: Migrate `pr_create`
 
-Each follows the migration template (Section 5.6).
+**Wave:** 1.3
+**Repository:** `Wave-Engineering/mcp-server-sdlc`
+**Dependencies:** Story 1.2
 
-**Story body template:**
-> **Migrate `pr_<method>` to `lib/adapters/pr-<method>-{github,gitlab}.ts`**
->
-> Implement `prMethod()` in `PlatformAdapter`. Lift GitHub logic from `handlers/pr_<method>.ts` into `lib/adapters/pr-<method>-github.ts`; lift GitLab logic into `lib/adapters/pr-<method>-gitlab.ts`. Refactor handler to ~50-line dispatch. Move tests to colocated adapter test files.
+Migrate `pr_create` to the adapter pair, removing inline platform branching and direct subprocess calls from the handler.
 
-**Acceptance Criteria template (per story):**
-- [ ] `lib/adapters/pr-<method>-github.ts` exists; returns `AdapterResult<PrMethodResponse>` [R-05]
-- [ ] `lib/adapters/pr-<method>-gitlab.ts` exists; returns `AdapterResult<PrMethodResponse>` (or `platform_unsupported` for asymmetric features) [R-05, R-03]
-- [ ] `handlers/pr_<method>.ts` is ≤80 lines; no platform branching; no direct subprocess calls
-- [ ] Colocated tests: `lib/adapters/pr-<method>-github.test.ts` + `lib/adapters/pr-<method>-gitlab.test.ts` [R-15]
-- [ ] Existing `tests/pr_<method>.test.ts` integration tests pass unchanged [R-11]
-- [ ] **`pr_<method>.ts` removed from `scripts/ci/migration-allowlist.txt`** — gate-grep now enforces against this handler
+**Implementation Steps:**
+
+1. Add `prCreate(args: PrCreateArgs): Promise<AdapterResult<PrCreateResponse>>` signature to `PlatformAdapter` in `lib/adapters/types.ts` (if not already present from Story 1.2 scaffold)
+2. Create `lib/adapters/pr-create-github.ts` — lift the GitHub-path logic from `handlers/pr_create.ts`; refactor to return `AdapterResult<PrCreateResponse>`
+3. Create `lib/adapters/pr-create-gitlab.ts` — lift the GitLab-path logic from `handlers/pr_create.ts`; refactor to return `AdapterResult<PrCreateResponse>`
+4. Wire `prCreate` into `lib/adapters/github.ts` and `lib/adapters/gitlab.ts` assemblers
+5. Refactor `handlers/pr_create.ts` to ~50 lines: input validation via Zod + `getAdapter({repo}).prCreate(args)` dispatch + MCP envelope wrap
+6. Move handler-level subprocess-boundary mocks from `tests/pr_create.test.ts` into colocated `lib/adapters/pr-create-{github,gitlab}.test.ts` files; preserve the integration-level `tests/pr_create.test.ts` for behavior regression
+7. Remove `pr_create.ts` from `scripts/ci/migration-allowlist.txt`
+8. Run `validate.sh` (gate-greps now enforce against `pr_create.ts`) and `bun test` — all 1378+ tests pass
+
+**Test Procedures:**
+
+*Unit Tests:*
+
+| Test Name | Purpose | File Location |
+|-----------|---------|---------------|
+| `pr-create-github — gh CLI invocation matches expected argv` | Subprocess-boundary mock for GitHub path | `lib/adapters/pr-create-github.test.ts` |
+| `pr-create-github — parses gh PR view response` | Output parsing correctness | `lib/adapters/pr-create-github.test.ts` |
+| `pr-create-github — returns AdapterResult on error` | Error-path discriminator | `lib/adapters/pr-create-github.test.ts` |
+| `pr-create-gitlab — glab CLI invocation matches expected argv` | Subprocess-boundary mock for GitLab path | `lib/adapters/pr-create-gitlab.test.ts` |
+| `pr-create-gitlab — parses glab MR response` | Output parsing correctness | `lib/adapters/pr-create-gitlab.test.ts` |
+
+*Integration/E2E Coverage:*
+- IT-01 — handler→adapter dispatch verified by mocking the adapter
+- IT-02 — adapter→subprocess argv shape verified via mock execSync
+- IT-04 — `tests/pr_create.test.ts` integration tests preserved unchanged
+- IT-05 — gate-greps in CI now active for `pr_create.ts`
+
+**Acceptance Criteria:**
+
+- [ ] `lib/adapters/pr-create-github.ts` exists; returns `AdapterResult<PrCreateResponse>` [R-05]
+- [ ] `lib/adapters/pr-create-gitlab.ts` exists; returns `AdapterResult<PrCreateResponse>` [R-05] (no asymmetric features identified for `pr_create`; if any surface during implementation, add `platform_unsupported` AC + regression test under [R-03] then)
+- [ ] `handlers/pr_create.ts` is ≤80 lines; no platform branching; no direct subprocess calls
+- [ ] Colocated tests: `lib/adapters/pr-create-github.test.ts` + `lib/adapters/pr-create-gitlab.test.ts` [R-15]
+- [ ] Existing `tests/pr_create.test.ts` integration tests pass unchanged [R-11]
+- [ ] `pr_create.ts` removed from `scripts/ci/migration-allowlist.txt` — gate-grep now enforces against this handler
 - [ ] Gate-greps pass on the touched handler [R-09, R-10]
-- [ ] Contract test still passes
+- [ ] Contract test still passes [R-04]
+- [ ] Full suite passes (1378+ tests)
 
-**Wave assignments:**
-- Wave 1.3: Stories 1.3 (`pr_create`), 1.4 (`pr_diff`), 1.5 (`pr_files`), 1.6 (`pr_list`) — 4 parallel
-- Wave 1.4: Stories 1.7 (`pr_status`), 1.8 (`pr_comment`), 1.9 (`pr_wait_ci`) — 3 parallel
+---
+
+#### Story 1.4: Migrate `pr_diff`
+
+**Wave:** 1.3
+**Repository:** `Wave-Engineering/mcp-server-sdlc`
+**Dependencies:** Story 1.2
+
+Migrate `pr_diff` to the adapter pair.
+
+**Implementation Steps:**
+
+1. Add `prDiff(args: PrDiffArgs): Promise<AdapterResult<PrDiffResponse>>` to `PlatformAdapter` in `lib/adapters/types.ts`
+2. Create `lib/adapters/pr-diff-github.ts` — lift GitHub logic from `handlers/pr_diff.ts`; return `AdapterResult<PrDiffResponse>`
+3. Create `lib/adapters/pr-diff-gitlab.ts` — lift GitLab logic; return `AdapterResult<PrDiffResponse>`
+4. Wire `prDiff` into `lib/adapters/github.ts` and `lib/adapters/gitlab.ts` assemblers
+5. Refactor `handlers/pr_diff.ts` to ~50 lines of validation + dispatch
+6. Move subprocess-boundary mocks to colocated adapter test files
+7. Remove `pr_diff.ts` from `scripts/ci/migration-allowlist.txt`
+8. Run `validate.sh` + `bun test` — all 1378+ tests pass
+
+**Test Procedures:**
+
+*Unit Tests:*
+
+| Test Name | Purpose | File Location |
+|-----------|---------|---------------|
+| `pr-diff-github — gh CLI invocation matches expected argv` | Subprocess-boundary mock | `lib/adapters/pr-diff-github.test.ts` |
+| `pr-diff-github — parses unified diff output` | Output parsing | `lib/adapters/pr-diff-github.test.ts` |
+| `pr-diff-github — handles 10000-line truncation` | Safety-valve regression | `lib/adapters/pr-diff-github.test.ts` |
+| `pr-diff-gitlab — glab CLI invocation matches expected argv` | Subprocess-boundary mock | `lib/adapters/pr-diff-gitlab.test.ts` |
+| `pr-diff-gitlab — parses unified diff output` | Output parsing | `lib/adapters/pr-diff-gitlab.test.ts` |
+
+*Integration/E2E Coverage:*
+- IT-01, IT-02, IT-04, IT-05
+
+**Acceptance Criteria:**
+
+- [ ] `lib/adapters/pr-diff-github.ts` exists; returns `AdapterResult<PrDiffResponse>` [R-05]
+- [ ] `lib/adapters/pr-diff-gitlab.ts` exists; returns `AdapterResult<PrDiffResponse>` [R-05]
+- [ ] `handlers/pr_diff.ts` is ≤80 lines; no platform branching; no direct subprocess calls
+- [ ] Colocated tests exist [R-15]
+- [ ] Existing `tests/pr_diff.test.ts` integration tests pass unchanged [R-11]
+- [ ] `pr_diff.ts` removed from `scripts/ci/migration-allowlist.txt`
+- [ ] Gate-greps pass on the touched handler [R-09, R-10]
+- [ ] Contract test still passes [R-04]
+- [ ] Full suite passes (1378+ tests)
+
+---
+
+#### Story 1.5: Migrate `pr_files`
+
+**Wave:** 1.3
+**Repository:** `Wave-Engineering/mcp-server-sdlc`
+**Dependencies:** Story 1.2
+
+Migrate `pr_files` to the adapter pair.
+
+**Implementation Steps:**
+
+1. Add `prFiles(args: PrFilesArgs): Promise<AdapterResult<PrFilesResponse>>` to `PlatformAdapter`
+2. Create `lib/adapters/pr-files-github.ts` — lift GitHub logic from `handlers/pr_files.ts`
+3. Create `lib/adapters/pr-files-gitlab.ts` — lift GitLab logic
+4. Wire into adapter assemblers
+5. Refactor `handlers/pr_files.ts` to ~50-line dispatch
+6. Move tests to colocated adapter test files
+7. Remove `pr_files.ts` from `scripts/ci/migration-allowlist.txt`
+8. Run `validate.sh` + `bun test`
+
+**Test Procedures:**
+
+*Unit Tests:*
+
+| Test Name | Purpose | File Location |
+|-----------|---------|---------------|
+| `pr-files-github — gh CLI invocation matches expected argv` | Subprocess-boundary mock | `lib/adapters/pr-files-github.test.ts` |
+| `pr-files-github — parses files-changed JSON response` | Output parsing | `lib/adapters/pr-files-github.test.ts` |
+| `pr-files-gitlab — glab CLI invocation matches expected argv` | Subprocess-boundary mock | `lib/adapters/pr-files-gitlab.test.ts` |
+| `pr-files-gitlab — parses MR diffs response` | Output parsing | `lib/adapters/pr-files-gitlab.test.ts` |
+
+*Integration/E2E Coverage:*
+- IT-01, IT-02, IT-04, IT-05
+
+**Acceptance Criteria:**
+
+- [ ] `lib/adapters/pr-files-github.ts` exists; returns `AdapterResult<PrFilesResponse>` [R-05]
+- [ ] `lib/adapters/pr-files-gitlab.ts` exists; returns `AdapterResult<PrFilesResponse>` [R-05]
+- [ ] `handlers/pr_files.ts` is ≤80 lines; no platform branching; no direct subprocess calls
+- [ ] Colocated tests exist [R-15]
+- [ ] Existing `tests/pr_files.test.ts` integration tests pass unchanged [R-11]
+- [ ] `pr_files.ts` removed from `scripts/ci/migration-allowlist.txt`
+- [ ] Gate-greps pass on the touched handler [R-09, R-10]
+- [ ] Contract test still passes [R-04]
+- [ ] Full suite passes (1378+ tests)
+
+---
+
+#### Story 1.6: Migrate `pr_list`
+
+**Wave:** 1.3
+**Repository:** `Wave-Engineering/mcp-server-sdlc`
+**Dependencies:** Story 1.2
+
+Migrate `pr_list` to the adapter pair.
+
+**Implementation Steps:**
+
+1. Add `prList(args: PrListArgs): Promise<AdapterResult<PrListResponse>>` to `PlatformAdapter`
+2. Create `lib/adapters/pr-list-github.ts` — lift GitHub logic from `handlers/pr_list.ts`
+3. Create `lib/adapters/pr-list-gitlab.ts` — lift GitLab logic
+4. Wire into adapter assemblers
+5. Refactor `handlers/pr_list.ts` to ~50-line dispatch
+6. Move tests to colocated adapter test files
+7. Remove `pr_list.ts` from `scripts/ci/migration-allowlist.txt`
+8. Run `validate.sh` + `bun test`
+
+**Test Procedures:**
+
+*Unit Tests:*
+
+| Test Name | Purpose | File Location |
+|-----------|---------|---------------|
+| `pr-list-github — gh CLI invocation matches expected argv` | Subprocess-boundary mock | `lib/adapters/pr-list-github.test.ts` |
+| `pr-list-github — parses PR list JSON response` | Output parsing | `lib/adapters/pr-list-github.test.ts` |
+| `pr-list-github — supports state + author filters` | Filter argv translation | `lib/adapters/pr-list-github.test.ts` |
+| `pr-list-gitlab — glab CLI invocation matches expected argv` | Subprocess-boundary mock | `lib/adapters/pr-list-gitlab.test.ts` |
+| `pr-list-gitlab — parses MR list response` | Output parsing | `lib/adapters/pr-list-gitlab.test.ts` |
+
+*Integration/E2E Coverage:*
+- IT-01, IT-02, IT-04, IT-05
+
+**Acceptance Criteria:**
+
+- [ ] `lib/adapters/pr-list-github.ts` exists; returns `AdapterResult<PrListResponse>` [R-05]
+- [ ] `lib/adapters/pr-list-gitlab.ts` exists; returns `AdapterResult<PrListResponse>` [R-05]
+- [ ] `handlers/pr_list.ts` is ≤80 lines; no platform branching; no direct subprocess calls
+- [ ] Colocated tests exist [R-15]
+- [ ] Existing `tests/pr_list.test.ts` integration tests pass unchanged [R-11]
+- [ ] `pr_list.ts` removed from `scripts/ci/migration-allowlist.txt`
+- [ ] Gate-greps pass on the touched handler [R-09, R-10]
+- [ ] Contract test still passes [R-04]
+- [ ] Full suite passes (1378+ tests)
+
+---
+
+#### Story 1.7: Migrate `pr_status`
+
+**Wave:** 1.4
+**Repository:** `Wave-Engineering/mcp-server-sdlc`
+**Dependencies:** Story 1.2
+
+Migrate `pr_status` to the adapter pair. Note: `pr_status.ts` line 218 has the implicit `mr.pipeline?.status ?? mr.head_pipeline?.status` fallthrough that drops CI state — this story is the opportunity to make that explicit.
+
+**Implementation Steps:**
+
+1. Add `prStatus(args: PrStatusArgs): Promise<AdapterResult<PrStatusResponse>>` to `PlatformAdapter`
+2. Create `lib/adapters/pr-status-github.ts` — lift GitHub logic from `handlers/pr_status.ts`; preserve the `aggregateGithubChecks` normalization
+3. Create `lib/adapters/pr-status-gitlab.ts` — lift GitLab logic; make the pipeline-status fallthrough EXPLICIT (when both `pipeline?.status` and `head_pipeline?.status` are undefined, return a typed "no pipeline data" outcome rather than silently producing `summary: 'none'`)
+4. Wire into adapter assemblers
+5. Refactor `handlers/pr_status.ts` to ~50-line dispatch
+6. Move tests to colocated adapter test files; add a regression test for the pipeline-status fallthrough fix
+7. Remove `pr_status.ts` from `scripts/ci/migration-allowlist.txt`
+8. Run `validate.sh` + `bun test`
+
+**Test Procedures:**
+
+*Unit Tests:*
+
+| Test Name | Purpose | File Location |
+|-----------|---------|---------------|
+| `pr-status-github — parses state + mergeStateStatus + checks` | Aggregate response | `lib/adapters/pr-status-github.test.ts` |
+| `pr-status-github — aggregateGithubChecks counts pass/fail/pending` | Check normalization | `lib/adapters/pr-status-github.test.ts` |
+| `pr-status-gitlab — parses state + detailed_merge_status` | Aggregate response | `lib/adapters/pr-status-gitlab.test.ts` |
+| `pr-status-gitlab — pipeline-status fallthrough is explicit` | Regression for line 218 silent loss | `lib/adapters/pr-status-gitlab.test.ts` |
+
+*Integration/E2E Coverage:*
+- IT-01, IT-02, IT-04, IT-05
+
+**Acceptance Criteria:**
+
+- [ ] `lib/adapters/pr-status-github.ts` exists; returns `AdapterResult<PrStatusResponse>` [R-05]
+- [ ] `lib/adapters/pr-status-gitlab.ts` exists; returns `AdapterResult<PrStatusResponse>` [R-05]
+- [ ] `handlers/pr_status.ts` is ≤80 lines; no platform branching; no direct subprocess calls
+- [ ] Colocated tests exist [R-15]
+- [ ] GitLab pipeline-status fallthrough is explicit (typed "no pipeline data" outcome, not silent `summary: 'none'`)
+- [ ] Existing `tests/pr_status.test.ts` integration tests pass unchanged [R-11]
+- [ ] `pr_status.ts` removed from `scripts/ci/migration-allowlist.txt`
+- [ ] Gate-greps pass on the touched handler [R-09, R-10]
+- [ ] Contract test still passes [R-04]
+- [ ] Full suite passes (1378+ tests)
+
+---
+
+#### Story 1.8: Migrate `pr_comment`
+
+**Wave:** 1.4
+**Repository:** `Wave-Engineering/mcp-server-sdlc`
+**Dependencies:** Story 1.2
+
+Migrate `pr_comment` to the adapter pair.
+
+**Implementation Steps:**
+
+1. Add `prComment(args: PrCommentArgs): Promise<AdapterResult<PrCommentResponse>>` to `PlatformAdapter`
+2. Create `lib/adapters/pr-comment-github.ts` — lift GitHub logic from `handlers/pr_comment.ts`
+3. Create `lib/adapters/pr-comment-gitlab.ts` — lift GitLab logic
+4. Wire into adapter assemblers
+5. Refactor `handlers/pr_comment.ts` to ~50-line dispatch
+6. Move tests to colocated adapter test files
+7. Remove `pr_comment.ts` from `scripts/ci/migration-allowlist.txt`
+8. Run `validate.sh` + `bun test`
+
+**Test Procedures:**
+
+*Unit Tests:*
+
+| Test Name | Purpose | File Location |
+|-----------|---------|---------------|
+| `pr-comment-github — gh CLI invocation matches expected argv` | Subprocess-boundary mock | `lib/adapters/pr-comment-github.test.ts` |
+| `pr-comment-github — multi-line comment via tempfile` | --body-file regression | `lib/adapters/pr-comment-github.test.ts` |
+| `pr-comment-gitlab — glab CLI invocation matches expected argv` | Subprocess-boundary mock | `lib/adapters/pr-comment-gitlab.test.ts` |
+| `pr-comment-gitlab — multi-line comment handling` | Body escaping regression | `lib/adapters/pr-comment-gitlab.test.ts` |
+
+*Integration/E2E Coverage:*
+- IT-01, IT-02, IT-04, IT-05
+
+**Acceptance Criteria:**
+
+- [ ] `lib/adapters/pr-comment-github.ts` exists; returns `AdapterResult<PrCommentResponse>` [R-05]
+- [ ] `lib/adapters/pr-comment-gitlab.ts` exists; returns `AdapterResult<PrCommentResponse>` [R-05]
+- [ ] `handlers/pr_comment.ts` is ≤80 lines; no platform branching; no direct subprocess calls
+- [ ] Colocated tests exist [R-15]
+- [ ] Existing `tests/pr_comment.test.ts` integration tests pass unchanged [R-11]
+- [ ] `pr_comment.ts` removed from `scripts/ci/migration-allowlist.txt`
+- [ ] Gate-greps pass on the touched handler [R-09, R-10]
+- [ ] Contract test still passes [R-04]
+- [ ] Full suite passes (1378+ tests)
+
+---
+
+#### Story 1.9: Migrate `pr_wait_ci`
+
+**Wave:** 1.4
+**Repository:** `Wave-Engineering/mcp-server-sdlc`
+**Dependencies:** Story 1.2
+
+Migrate `pr_wait_ci` to the adapter pair. Note: this handler has the gh<2.50 `--json statusCheckRollup` pattern from #220 + the all-skipped decide() fix from #221 — both must be preserved verbatim in the GitHub adapter. The async polling loop stays platform-agnostic.
+
+**Implementation Steps:**
+
+1. Add `prWaitCi(args: PrWaitCiArgs): Promise<AdapterResult<PrWaitCiResponse>>` to `PlatformAdapter`
+2. Create `lib/adapters/pr-wait-ci-github.ts` — lift GitHub logic from `handlers/pr_wait_ci.ts`; preserve `gh pr view --json statusCheckRollup` pattern + `classifyRollupItem` + the all-skipped `decide()` fix
+3. Create `lib/adapters/pr-wait-ci-gitlab.ts` — lift GitLab logic
+4. Keep the polling loop as a `lib/` module — it's platform-agnostic
+5. Wire into adapter assemblers
+6. Refactor `handlers/pr_wait_ci.ts` to ~50-line dispatch
+7. Move tests to colocated adapter test files; preserve the 19→38 test growth from #220/#221
+8. Remove `pr_wait_ci.ts` from `scripts/ci/migration-allowlist.txt`
+9. Run `validate.sh` + `bun test`
+
+**Test Procedures:**
+
+*Unit Tests:*
+
+| Test Name | Purpose | File Location |
+|-----------|---------|---------------|
+| `pr-wait-ci-github — uses gh pr view --json statusCheckRollup` | gh<2.50 compat regression | `lib/adapters/pr-wait-ci-github.test.ts` |
+| `pr-wait-ci-github — classifyRollupItem cases (CheckRun + StatusContext)` | 14 case coverage | `lib/adapters/pr-wait-ci-github.test.ts` |
+| `pr-wait-ci-github — all-skipped does not deadlock decide()` | #221 regression | `lib/adapters/pr-wait-ci-github.test.ts` |
+| `pr-wait-ci-gitlab — glab API pipeline polling` | Subprocess-boundary mock | `lib/adapters/pr-wait-ci-gitlab.test.ts` |
+| `pr-wait-ci-gitlab — pipeline status normalization` | Output parsing | `lib/adapters/pr-wait-ci-gitlab.test.ts` |
+
+*Integration/E2E Coverage:*
+- IT-01, IT-02, IT-04, IT-05
+
+**Acceptance Criteria:**
+
+- [ ] `lib/adapters/pr-wait-ci-github.ts` exists; returns `AdapterResult<PrWaitCiResponse>` [R-05]
+- [ ] `lib/adapters/pr-wait-ci-gitlab.ts` exists; returns `AdapterResult<PrWaitCiResponse>` [R-05]
+- [ ] `handlers/pr_wait_ci.ts` is ≤80 lines; no platform branching; no direct subprocess calls
+- [ ] Polling loop stays in `lib/` (platform-agnostic) — not duplicated per platform
+- [ ] gh<2.50 compat preserved (no `gh pr checks --json` regression)
+- [ ] All-skipped decide() fix preserved (#221 regression)
+- [ ] Colocated tests exist [R-15]
+- [ ] Existing `tests/pr_wait_ci.test.ts` integration tests pass unchanged [R-11]
+- [ ] `pr_wait_ci.ts` removed from `scripts/ci/migration-allowlist.txt`
+- [ ] Gate-greps pass on the touched handler [R-09, R-10]
+- [ ] Contract test still passes [R-04]
+- [ ] Full suite passes (1378+ tests)
 
 ---
 
@@ -763,11 +1079,49 @@ Each follows the migration template (Section 5.6).
 **Repository:** `Wave-Engineering/mcp-server-sdlc`
 **Dependencies:** Story 1.2
 
-Same template. Critical: this handler is the most-recent contributor of leak inventory (`skip_train` silent ignore on GitLab). The GitLab adapter MUST return `platform_unsupported` for `skip_train: true`.
+Migrate `pr_merge` to the adapter pair. **Critical**: this handler is the most-recent contributor of leak inventory — `skip_train` is silently ignored on GitLab today. The GitLab adapter MUST return `platform_unsupported` for `skip_train: true`, demonstrating the typed-asymmetry pattern that justifies this entire retrofit.
 
-**Additional acceptance criteria:**
-- [ ] `lib/adapters/pr-merge-gitlab.ts:prMerge` returns `{platform_unsupported: true, hint: 'merge trains are auto-managed by GitLab; skip_train is GitHub-merge-queue-only'}` when `args.skip_train === true` [R-03]
-- [ ] Standard template ACs above
+**Implementation Steps:**
+
+1. Add `prMerge(args: PrMergeArgs): Promise<AdapterResult<PrMergeResponse>>` to `PlatformAdapter`
+2. Create `lib/adapters/pr-merge-github.ts` — lift GitHub logic from `handlers/pr_merge.ts`; preserve aggregate response shape from #225 (`enrolled`, `merged`, `merge_method`, `queue`, `pr_state`, `warnings`); preserve merge-queue detection via `lib/merge_queue_detect.ts` (which stays where it is per Section 5.3)
+3. Create `lib/adapters/pr-merge-gitlab.ts` — lift GitLab logic; for `args.skip_train === true` return `{platform_unsupported: true, hint: 'merge trains are auto-managed by GitLab; skip_train is GitHub-merge-queue-only'}` instead of silently ignoring the flag
+4. Wire `prMerge` into adapter assemblers
+5. Refactor `handlers/pr_merge.ts` to ~50-line dispatch
+6. Move tests to colocated adapter test files; preserve all 23 existing pr_merge tests + add `platform_unsupported` regression test for GitLab+skip_train
+7. Remove `pr_merge.ts` from `scripts/ci/migration-allowlist.txt`
+8. Run `validate.sh` + `bun test`
+
+**Test Procedures:**
+
+*Unit Tests:*
+
+| Test Name | Purpose | File Location |
+|-----------|---------|---------------|
+| `pr-merge-github — direct merge returns aggregate envelope` | #225 shape preservation | `lib/adapters/pr-merge-github.test.ts` |
+| `pr-merge-github — queue path returns enrolled+OPEN` | #225 honesty preservation | `lib/adapters/pr-merge-github.test.ts` |
+| `pr-merge-github — skip_train + enforced queue emits warning` | #224 fold preservation | `lib/adapters/pr-merge-github.test.ts` |
+| `pr-merge-github — use_merge_queue + skip_train precedence warning` | #225 F3 preservation | `lib/adapters/pr-merge-github.test.ts` |
+| `pr-merge-gitlab — direct merge returns aggregate envelope` | Cross-platform aggregate | `lib/adapters/pr-merge-gitlab.test.ts` |
+| `pr-merge-gitlab — skip_train returns platform_unsupported` | Typed asymmetry exemplar | `lib/adapters/pr-merge-gitlab.test.ts` |
+
+*Integration/E2E Coverage:*
+- IT-01, IT-02, IT-04, IT-05
+- MV-02 (post-Phase-1 manual verification of `platform_unsupported` on GitLab)
+
+**Acceptance Criteria:**
+
+- [ ] `lib/adapters/pr-merge-github.ts` exists; returns `AdapterResult<PrMergeResponse>` with #225 aggregate shape preserved [R-05]
+- [ ] `lib/adapters/pr-merge-gitlab.ts` exists; returns `AdapterResult<PrMergeResponse>` for normal flow [R-05]
+- [ ] **`lib/adapters/pr-merge-gitlab.ts:prMerge` returns `{platform_unsupported: true, hint: 'merge trains are auto-managed by GitLab; skip_train is GitHub-merge-queue-only'}` when `args.skip_train === true`** [R-03]
+- [ ] `handlers/pr_merge.ts` is ≤80 lines; no platform branching; no direct subprocess calls
+- [ ] All 23 existing pr_merge tests pass unchanged [R-11]
+- [ ] New regression test: GitLab+skip_train returns `platform_unsupported` [R-03]
+- [ ] Colocated tests exist [R-15]
+- [ ] `pr_merge.ts` removed from `scripts/ci/migration-allowlist.txt`
+- [ ] Gate-greps pass on the touched handler [R-09, R-10]
+- [ ] Contract test still passes [R-04]
+- [ ] Full suite passes (1378+ tests)
 
 ---
 
@@ -777,13 +1131,55 @@ Same template. Critical: this handler is the most-recent contributor of leak inv
 **Repository:** `Wave-Engineering/mcp-server-sdlc`
 **Dependencies:** Story 1.10
 
-`pr_merge_wait` currently imports `performMerge` from `pr_merge.ts`. After Story 1.10, that import goes away — `pr_merge_wait` calls `getAdapter().prMerge(args)` directly via the migration.
+Migrate `pr_merge_wait` to the adapter pair. The polling logic (`pollUntilMerged`) is platform-agnostic and stays in a `lib/` module. The state-fetch helper at `lib/pr_state.ts` directly calls `execSync('gh pr view ...')` and `gitlabApiMr()` today — this story migrates it to a proper adapter pair so the gate-grep's spirit holds (closes architect F2).
 
-**Additional acceptance criteria:**
+**Implementation Steps:**
+
+1. Add `prMergeWait(args: PrMergeWaitArgs): Promise<AdapterResult<PrMergeWaitResponse>>` to `PlatformAdapter`
+2. Add `fetchPrState(args: FetchPrStateArgs): Promise<AdapterResult<PrStateInfo>>` to `PlatformAdapter` (hybrid sub-call; needed by both `pr_merge_wait` and any future state-polling consumer)
+3. Create `lib/adapters/pr-merge-wait-github.ts` and `lib/adapters/pr-merge-wait-gitlab.ts` — lift handler logic; both call the new `fetchPrState` adapter method via `getAdapter()`
+4. Create `lib/adapters/fetch-pr-state-github.ts` and `lib/adapters/fetch-pr-state-gitlab.ts` — lift the subprocess calls from `lib/pr_state.ts` into adapter form
+5. Refactor `lib/pr_state.ts` to delegate to the new adapter (or delete entirely + update remaining importers). After this story, `lib/pr_state.ts` contains zero direct subprocess calls
+6. `handlers/pr_merge_wait.ts` no longer imports `performMerge` from `pr_merge.ts` — instead calls `getAdapter().prMerge(args)` directly; polling loop calls `getAdapter().fetchPrState(args)` directly
+7. Wire `prMergeWait` and `fetchPrState` into adapter assemblers
+8. Refactor `handlers/pr_merge_wait.ts` to ~50-line dispatch (validation + `getAdapter().prMergeWait(args)`)
+9. Move tests to colocated adapter test files
+10. Remove `pr_merge_wait.ts` from `scripts/ci/migration-allowlist.txt`
+11. Run `validate.sh` + `bun test`
+
+**Test Procedures:**
+
+*Unit Tests:*
+
+| Test Name | Purpose | File Location |
+|-----------|---------|---------------|
+| `pr-merge-wait-github — direct merge short-circuits polling` | #225 short-circuit preservation | `lib/adapters/pr-merge-wait-github.test.ts` |
+| `pr-merge-wait-github — queue merge polls until MERGED` | #225 polling behavior | `lib/adapters/pr-merge-wait-github.test.ts` |
+| `pr-merge-wait-github — already-merged detect-and-skip` | #225 short-circuit preservation | `lib/adapters/pr-merge-wait-github.test.ts` |
+| `pr-merge-wait-github — fetch_error mid-poll preserves "after enrollment"` | #225 F2 preservation | `lib/adapters/pr-merge-wait-github.test.ts` |
+| `pr-merge-wait-github — timeout returns clean error` | Timeout regression | `lib/adapters/pr-merge-wait-github.test.ts` |
+| `pr-merge-wait-gitlab — same as github but via glab` | Cross-platform parity | `lib/adapters/pr-merge-wait-gitlab.test.ts` |
+| `fetch-pr-state-github — gh pr view --json state,url,mergeCommit` | Subprocess-boundary mock | `lib/adapters/fetch-pr-state-github.test.ts` |
+| `fetch-pr-state-gitlab — glab api MR state` | Subprocess-boundary mock | `lib/adapters/fetch-pr-state-gitlab.test.ts` |
+
+*Integration/E2E Coverage:*
+- IT-01, IT-02, IT-04, IT-05
+
+**Acceptance Criteria:**
+
+- [ ] `lib/adapters/pr-merge-wait-github.ts` exists; returns `AdapterResult<PrMergeWaitResponse>` [R-05]
+- [ ] `lib/adapters/pr-merge-wait-gitlab.ts` exists; returns `AdapterResult<PrMergeWaitResponse>` [R-05]
+- [ ] `lib/adapters/fetch-pr-state-github.ts` and `lib/adapters/fetch-pr-state-gitlab.ts` exist [R-05]
+- [ ] `handlers/pr_merge_wait.ts` is ≤80 lines; no platform branching; no direct subprocess calls
 - [ ] `handlers/pr_merge_wait.ts` no longer imports `performMerge` from `pr_merge.ts`
-- [ ] Polling logic (`pollUntilMerged`) stays as a `lib/` module — it's platform-agnostic
-- [ ] **Migrate `lib/pr_state.ts` to adapter pair**: create `lib/adapters/fetch-pr-state-github.ts` + `lib/adapters/fetch-pr-state-gitlab.ts`; refactor `lib/pr_state.ts` to delegate to them (or delete + update importers); `lib/pr_state.ts` itself contains zero direct subprocess calls post-story (closes the gap that `lib/pr_state.ts` is in `lib/`, not `handlers/`, so the gate-grep won't catch its subprocess calls) [R-10 spirit]
-- [ ] Standard template ACs
+- [ ] **Polling logic (`pollUntilMerged`) stays as a `lib/` module — it's platform-agnostic; not duplicated per platform**
+- [ ] **Migrate `lib/pr_state.ts` to adapter pair**: `lib/pr_state.ts` itself contains zero direct subprocess calls post-story (closes the gap that `lib/pr_state.ts` is in `lib/`, not `handlers/`, so the gate-grep won't catch its subprocess calls) [R-10 spirit, architect F2]
+- [ ] All 16 existing pr_merge_wait tests pass unchanged [R-11]
+- [ ] Colocated tests exist [R-15]
+- [ ] `pr_merge_wait.ts` removed from `scripts/ci/migration-allowlist.txt`
+- [ ] Gate-greps pass on the touched handler [R-09, R-10]
+- [ ] Contract test still passes [R-04]
+- [ ] Full suite passes (1378+ tests)
 
 ---
 
