@@ -257,6 +257,278 @@ describe('wave_previous_merged handler', () => {
     expect(parsed.previous_wave_id).toBe(null);
     expect(parsed.all_merged).toBe(true);
     expect(parsed.open_issues).toEqual([]);
+    // #223 contract: deferred_issues present in the early-return shape too,
+    // so callers can rely on the field being there regardless of which path
+    // produced the response.
+    expect(parsed.deferred_issues).toEqual([]);
+  });
+
+  // Regression guard for the regex word-boundary fix surfaced in code review:
+  // `#N` should only match at a word boundary so a stray `abc#123` in a
+  // description doesn't accidentally extract 123.
+  test('regex_word_boundary — embedded "abc#420" does NOT extract 420', async () => {
+    const plan = {
+      phases: [
+        {
+          waves: [
+            { id: 'w1', issues: [{ number: 420 }] },
+            { id: 'w2', issues: [] },
+          ],
+        },
+      ],
+    };
+    const state = {
+      current_wave: 'w2',
+      waves: { w1: { status: 'completed' }, w2: { status: 'in_progress' } },
+      deferrals: [
+        {
+          wave: 'w1',
+          // No leading `Defer #420` — the only `#420` here is embedded in
+          // the alphanumeric token `abc#420`, which the word-boundary guard
+          // must exclude. Without the guard, this would falsely filter #420.
+          description: 'Some context: abc#420 ref in unrelated text',
+          risk: 'low',
+          status: 'accepted',
+        },
+      ],
+    };
+    await setupFixture(plan, state);
+    execMockFn = (cmd: string) => {
+      if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
+      return ghClosureResponse({ state: 'OPEN' });
+    };
+    const result = await handler.execute({});
+    const parsed = parseResult(result);
+    expect(parsed.all_merged).toBe(false);
+    expect(parsed.open_issues).toEqual([420]); // #420 NOT extracted, still counts
+    expect(parsed.deferred_issues).toEqual([]);
+  });
+
+  // ----- accepted-deferral filtering (#223) -----
+  // Canonical fixture: cc-workflow's deferrals look like
+  //   { wave: "wave-3a", description: "Defer #420 (...)", risk: "low", status: "accepted" }
+  // The deferred issue number is embedded as `#N` in the free-form description
+  // (the Python writer in claudecode-workflow has no structured issue field).
+  // wave_previous_merged should skip those issues when computing all_merged.
+
+  test('accepted_deferral — issue filtered from open_issues, all_merged stays true', async () => {
+    const plan = {
+      phases: [
+        {
+          waves: [
+            { id: 'w1', issues: [{ number: 100 }, { number: 420 }] },
+            { id: 'w2', issues: [] },
+          ],
+        },
+      ],
+    };
+    const state = {
+      current_wave: 'w2',
+      waves: { w1: { status: 'completed' }, w2: { status: 'in_progress' } },
+      deferrals: [
+        {
+          wave: 'w1',
+          description: 'Defer #420 (story title) — blocked on external dep',
+          risk: 'low',
+          status: 'accepted',
+        },
+      ],
+    };
+    await setupFixture(plan, state);
+    execMockFn = (cmd: string) => {
+      if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
+      if (cmd.includes('num=420')) {
+        throw new Error('Stub rejection: gh should NOT be called for accepted-deferred issue #420');
+      }
+      // Issue 100 closes cleanly via merged PR.
+      return ghClosureResponse({ state: 'CLOSED', mergedPRs: [true] });
+    };
+    const result = await handler.execute({});
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.all_merged).toBe(true);
+    expect(parsed.open_issues).toEqual([]);
+    expect(parsed.deferred_issues).toEqual([420]);
+  });
+
+  test('pending_deferral — issue NOT filtered (only accepted is the contract)', async () => {
+    const plan = {
+      phases: [
+        {
+          waves: [
+            { id: 'w1', issues: [{ number: 420 }] },
+            { id: 'w2', issues: [] },
+          ],
+        },
+      ],
+    };
+    const state = {
+      current_wave: 'w2',
+      waves: { w1: { status: 'completed' }, w2: { status: 'in_progress' } },
+      deferrals: [
+        {
+          wave: 'w1',
+          description: 'Defer #420 — under discussion',
+          risk: 'low',
+          status: 'pending', // not yet accepted
+        },
+      ],
+    };
+    await setupFixture(plan, state);
+    execMockFn = (cmd: string) => {
+      if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
+      return ghClosureResponse({ state: 'OPEN' }); // still open
+    };
+    const result = await handler.execute({});
+    const parsed = parseResult(result);
+    expect(parsed.all_merged).toBe(false);
+    expect(parsed.open_issues).toEqual([420]); // pending deferrals don't filter
+    expect(parsed.deferred_issues).toEqual([]);
+  });
+
+  test('wrong_wave_deferral — issue NOT filtered when deferral is for a different wave', async () => {
+    const plan = {
+      phases: [
+        {
+          waves: [
+            { id: 'w1', issues: [{ number: 420 }] },
+            { id: 'w2', issues: [] },
+          ],
+        },
+      ],
+    };
+    const state = {
+      current_wave: 'w2',
+      waves: { w1: { status: 'completed' }, w2: { status: 'in_progress' } },
+      deferrals: [
+        {
+          // Accepted, mentions #420, but for a DIFFERENT wave.
+          wave: 'wave-99',
+          description: 'Defer #420 — was accepted in another wave context',
+          risk: 'low',
+          status: 'accepted',
+        },
+      ],
+    };
+    await setupFixture(plan, state);
+    execMockFn = (cmd: string) => {
+      if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
+      return ghClosureResponse({ state: 'OPEN' });
+    };
+    const result = await handler.execute({});
+    const parsed = parseResult(result);
+    expect(parsed.all_merged).toBe(false);
+    expect(parsed.open_issues).toEqual([420]);
+    expect(parsed.deferred_issues).toEqual([]);
+  });
+
+  test('multi_N_in_description — all referenced wave-issues filtered', async () => {
+    const plan = {
+      phases: [
+        {
+          waves: [
+            { id: 'w1', issues: [{ number: 420 }, { number: 421 }, { number: 100 }] },
+            { id: 'w2', issues: [] },
+          ],
+        },
+      ],
+    };
+    const state = {
+      current_wave: 'w2',
+      waves: { w1: { status: 'completed' }, w2: { status: 'in_progress' } },
+      deferrals: [
+        {
+          wave: 'w1',
+          // Single deferral mentioning two issue numbers (rare but possible).
+          description: 'Defer #420 and #421 — same root cause, blocked together',
+          risk: 'medium',
+          status: 'accepted',
+        },
+      ],
+    };
+    await setupFixture(plan, state);
+    execMockFn = (cmd: string) => {
+      if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
+      if (cmd.includes('num=420') || cmd.includes('num=421')) {
+        throw new Error('Stub rejection: deferred issues should not be queried');
+      }
+      return ghClosureResponse({ state: 'CLOSED', mergedPRs: [true] });
+    };
+    const result = await handler.execute({});
+    const parsed = parseResult(result);
+    expect(parsed.all_merged).toBe(true);
+    expect(parsed.open_issues).toEqual([]);
+    expect(parsed.deferred_issues.sort()).toEqual([420, 421]);
+  });
+
+  test('no_N_in_description — no filtering happens (description without #N is harmless)', async () => {
+    const plan = {
+      phases: [
+        {
+          waves: [
+            { id: 'w1', issues: [{ number: 420 }] },
+            { id: 'w2', issues: [] },
+          ],
+        },
+      ],
+    };
+    const state = {
+      current_wave: 'w2',
+      waves: { w1: { status: 'completed' }, w2: { status: 'in_progress' } },
+      deferrals: [
+        {
+          wave: 'w1',
+          description: 'general scope deferral, no specific issue mentioned',
+          risk: 'low',
+          status: 'accepted',
+        },
+      ],
+    };
+    await setupFixture(plan, state);
+    execMockFn = (cmd: string) => {
+      if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
+      return ghClosureResponse({ state: 'OPEN' });
+    };
+    const result = await handler.execute({});
+    const parsed = parseResult(result);
+    expect(parsed.all_merged).toBe(false);
+    expect(parsed.open_issues).toEqual([420]);
+    expect(parsed.deferred_issues).toEqual([]);
+  });
+
+  test('mixed — some open, some closed, some deferred', async () => {
+    const plan = {
+      phases: [
+        {
+          waves: [
+            { id: 'w1', issues: [{ number: 1 }, { number: 2 }, { number: 420 }] },
+            { id: 'w2', issues: [] },
+          ],
+        },
+      ],
+    };
+    const state = {
+      current_wave: 'w2',
+      waves: { w1: { status: 'completed' }, w2: { status: 'in_progress' } },
+      deferrals: [
+        { wave: 'w1', description: 'Defer #420 (...)', risk: 'low', status: 'accepted' },
+      ],
+    };
+    await setupFixture(plan, state);
+    execMockFn = (cmd: string) => {
+      if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
+      if (cmd.includes('num=420')) {
+        throw new Error('Stub rejection: deferred #420 should not be queried');
+      }
+      if (cmd.includes('num=1')) return ghClosureResponse({ state: 'CLOSED', mergedPRs: [true] });
+      if (cmd.includes('num=2')) return ghClosureResponse({ state: 'OPEN' });
+      return ghClosureResponse({ state: 'OPEN' });
+    };
+    const result = await handler.execute({});
+    const parsed = parseResult(result);
+    expect(parsed.all_merged).toBe(false);
+    expect(parsed.open_issues).toEqual([2]); // only the genuinely open issue
+    expect(parsed.deferred_issues).toEqual([420]);
   });
 
   test('handles_missing_state_files — returns structured error', async () => {

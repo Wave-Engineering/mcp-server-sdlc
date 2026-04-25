@@ -42,9 +42,47 @@ interface WaveState {
   status?: string;
 }
 
+// One deferral entry from `state.deferrals[]`. Schema is owned by the Python
+// `wave_status` CLI in claudecode-workflow (see `src/wave_status/deferrals.py`):
+//   { wave: <wave_id>, description: <free-form>, risk: low|medium|high, status: pending|accepted }
+// The deferred issue number is conventionally embedded in `description` as a
+// `#N` reference (e.g. "Defer #420 (story title) — reason"). There is no
+// structured `issue_number` field on disk today.
+interface Deferral {
+  wave?: string;
+  description?: string;
+  risk?: string;
+  status?: string;
+}
+
 interface StateData {
   current_wave?: string | null;
   waves?: Record<string, WaveState>;
+  deferrals?: Deferral[];
+}
+
+// Extract the set of issue numbers covered by accepted deferrals against the
+// given wave. The `#N` pattern matches the established convention in
+// cc-workflow's deferrals (canonical fixture: `"Defer #420 (test...): ..."`).
+// The negative lookbehind `(?<!\w)` ensures we only match `#N` at a word
+// boundary — `abc#123` or markdown anchors `[link](#123-section)` will not
+// extract `123`. Multiple `#N` references in one description are all
+// collected; the caller also intersects against the wave's planned issues
+// as a second safety net.
+//
+// Why filter only ACCEPTED (not pending): an accepted deferral is the
+// completion contract for the wave — the team explicitly agreed the issue
+// wouldn't merge in this wave. Pending deferrals are still under discussion
+// and SHOULD continue to count as open. See #223 + lesson_wave_status_commands.md.
+function deferredIssueNumbers(state: StateData, waveId: string): Set<number> {
+  const out = new Set<number>();
+  for (const d of state.deferrals ?? []) {
+    if (d.status !== 'accepted' || d.wave !== waveId) continue;
+    for (const m of (d.description ?? '').matchAll(/(?<!\w)#(\d+)/g)) {
+      out.add(parseInt(m[1], 10));
+    }
+  }
+  return out;
 }
 
 function flatWaveIds(plan: PlanData): string[] {
@@ -201,6 +239,7 @@ const wavePreviousMergedHandler: HandlerDef = {
                 previous_wave_id: null,
                 all_merged: true,
                 open_issues: [],
+                deferred_issues: [],
               }),
             },
           ],
@@ -238,8 +277,17 @@ const wavePreviousMergedHandler: HandlerDef = {
         };
       }
       const openIssues: number[] = [];
+      const deferredIssues = deferredIssueNumbers(state, prevId);
+      const deferredFiltered: number[] = [];
 
       for (const issue of prevWave.issues ?? []) {
+        // Accepted-deferred issues are part of the wave's completion contract
+        // — skip them entirely (no closure check, not added to open_issues).
+        // See #223.
+        if (deferredIssues.has(issue.number)) {
+          deferredFiltered.push(issue.number);
+          continue;
+        }
         try {
           const info =
             platform === 'github'
@@ -262,6 +310,10 @@ const wavePreviousMergedHandler: HandlerDef = {
               previous_wave_id: prevId,
               all_merged: openIssues.length === 0,
               open_issues: openIssues,
+              // Issues filtered out of the closure check because they're
+              // covered by an accepted deferral against this wave (#223).
+              // Surfaced so callers can see the wave-completion contract.
+              deferred_issues: deferredFiltered,
             }),
           },
         ],
