@@ -91,6 +91,39 @@ To install or upgrade the probe manually:
 pip install --user 'git+https://github.com/Wave-Engineering/commutativity-probe.git@v0.1.0'
 ```
 
+## Merge tools: `pr_merge` vs `pr_merge_wait`
+
+Two tools, deliberately split by what the caller cares about:
+
+| Tool | Returns | Use when |
+|---|---|---|
+| `pr_merge` | Eager — `enrolled:true` always; `merged` reflects the moment-of-call truth (`true` for direct merge, `false` for queue path until the queue lands). | You need the platform to accept the merge, then keep working. Don't care exactly when the commit lands. |
+| `pr_merge_wait` | Blocking — guarantees `merged:true, pr_state:"MERGED"` on success, or a timeout error. | You need the commit observable on `main` before the next step (e.g. `git pull`, post-merge CI, downstream wave work). |
+
+Both return the same aggregate envelope:
+
+```json
+{
+  "ok": true,
+  "number": 42,
+  "enrolled": true,
+  "merged": false,
+  "merge_method": "merge_queue",
+  "queue": { "enabled": true, "position": null, "enforced": true },
+  "pr_state": "OPEN",
+  "url": "https://github.com/org/repo/pull/42",
+  "warnings": []
+}
+```
+
+### `skip_train` and merge-queue-enforced repos
+
+When a repo enforces a merge queue via ruleset, GitHub ignores `skip_train`. Both tools detect this upfront and silently drop the flag, surfacing a `warnings[]` entry rather than erroring. On non-enforced repos `skip_train:true` honors the flag (direct merge, no queue fallback) — useful when `commutativity_verify` has proven the merge safe.
+
+### Migrating callers
+
+Pre-`v1.7.0` callers expected `pr_merge` to return `merged:true` after enrolling in the queue (eager-but-misleading). The new aggregate response always reflects the truth: `merged:false` until the commit is on main. Callers that need the old "wait for it" behavior should switch to `pr_merge_wait`.
+
 ## Tool Reference
 
 See [docs/tool-reference.md](docs/tool-reference.md) _(coming soon)_.
