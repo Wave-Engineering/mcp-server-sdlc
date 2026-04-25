@@ -6,7 +6,9 @@ import { execSync } from 'child_process';
 import { writeFileSync } from 'fs';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
-import { detectPlatform, gitlabApiMr } from '../lib/glab.js';
+import { detectPlatform, parseRepoSlug } from '../lib/glab.js';
+import { detectMergeQueue, type MergeQueueInfo } from '../lib/merge_queue_detect.js';
+import { fetchGithubPrState, fetchGitlabMrState } from '../lib/pr_state.js';
 
 // Codebase convention: child_process.execSync (29/36 handlers). Tests mock it
 // via `mock.module('child_process', ...)` — see tests/pr_merge.test.ts.
@@ -28,6 +30,33 @@ const inputSchema = z.object({
 });
 
 type Input = z.infer<typeof inputSchema>;
+type Platform = 'github' | 'gitlab';
+type MergeMethod = 'direct_squash' | 'merge_queue';
+type PrStateLabel = 'OPEN' | 'MERGED';
+
+interface QueueState {
+  enabled: boolean;
+  position: number | null;
+  enforced: boolean;
+}
+
+interface AggregateResponse {
+  ok: true;
+  number: number;
+  enrolled: boolean;
+  merged: boolean;
+  merge_method: MergeMethod;
+  queue: QueueState;
+  pr_state: PrStateLabel;
+  url: string;
+  merge_commit_sha?: string;
+  warnings: string[];
+}
+
+interface FailureResponse {
+  ok: false;
+  error: string;
+}
 
 interface ExecError extends Error {
   stdout?: Buffer | string;
@@ -47,33 +76,23 @@ function bufToString(b: unknown): string {
   return String(b);
 }
 
-/**
- * Extract a failure message + stderr from a thrown exec error. Both real
- * `execSync` errors (Buffer stderr) and test mocks (plain Error) are handled.
- */
 function extractFailure(err: unknown): FailureInfo {
   if (err instanceof Error) {
     const e = err as ExecError;
     const stderr = bufToString(e.stderr);
     const stdout = bufToString(e.stdout);
     const message = stderr.trim() || stdout.trim() || err.message;
-    // When tests mock by throwing new Error('...merge queue...'), stderr is
-    // empty but the merge-queue phrase lives in err.message. Fall back to
-    // err.message so the merge-queue detector can see it.
     return { message, stderr: stderr || err.message };
   }
   const text = String(err);
   return { message: text, stderr: text };
 }
 
-/**
- * Heuristic for detecting GitHub merge-queue enforcement. Phrasings seen in
- * the wild include:
- *   - "merge strategy for main is set by the merge queue"
- *   - "the merge queue is required"
- *   - "changes must be made through a merge queue"
- * We match case-insensitively on "merge queue" to tolerate phrasing drift.
- */
+// Heuristic for detecting GitHub merge-queue enforcement from stderr. Phrasings
+// seen in the wild: "merge strategy for main is set by the merge queue", "the
+// merge queue is required", "changes must be made through a merge queue". Match
+// case-insensitive on "merge queue" to tolerate phrasing drift. Used as a
+// safety net when up-front GraphQL detection returns a false-negative.
 function stderrIndicatesMergeQueue(text: string): boolean {
   return /merge\s*queue/i.test(text);
 }
@@ -82,27 +101,14 @@ function exec(cmd: string): string {
   return execSync(cmd, { encoding: 'utf8' });
 }
 
-/**
- * Escape a value for safe inclusion inside a single-quoted shell argument.
- * Used only for single-line squash messages; multi-line messages go via file.
- */
 function shellEscape(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 function writeTempMessageFile(message: string): string {
-  // /tmp is cleaned by the OS; we intentionally do not delete the file to avoid
-  // complicating the fs-module surface already mocked by tests (writeFileSync only).
   const path = `/tmp/pr-merge-msg-${Date.now()}-${Math.floor(Math.random() * 1e6)}.txt`;
   writeFileSync(path, message);
   return path;
-}
-
-function parseSlugOpts(slug: string | undefined): { owner?: string; repo?: string } | undefined {
-  if (slug === undefined) return undefined;
-  const idx = slug.indexOf('/');
-  if (idx <= 0 || idx === slug.length - 1) return undefined;
-  return { owner: slug.slice(0, idx), repo: slug.slice(idx + 1) };
 }
 
 function buildGithubMergeCommand(
@@ -115,7 +121,6 @@ function buildGithubMergeCommand(
   if (auto) parts.push('--auto');
   if (squashMessage !== undefined && squashMessage.length > 0) {
     if (squashMessage.includes('\n')) {
-      // Multi-line body: write to a temp file and pass via --body-file.
       const tempFile = writeTempMessageFile(squashMessage);
       parts.push('--body-file', shellEscape(tempFile));
     } else {
@@ -143,116 +148,159 @@ function buildGitlabMergeCommand(
     '--yes',
   ];
   if (squashMessage !== undefined && squashMessage.length > 0) {
-    // glab exposes --squash-message (inline only). Single-quoted args
-    // preserve newlines in POSIX shells.
     parts.push('--squash-message', shellEscape(squashMessage));
   }
-  if (repo !== undefined) {
-    parts.push('-R', repo);
-  }
-  return parts.join(' ');
+  return repo !== undefined ? `${parts.join(' ')} -R ${repo}` : parts.join(' ');
 }
 
-interface GithubPrViewResponse {
-  mergeCommit?: { oid?: string } | null;
-  url?: string;
+// Resolve the repo slug for queue detection. Prefer the explicit input; fall
+// back to the cwd remote; null if neither yields a usable slug. When null,
+// queue detection is skipped (treated as no queue) and the legacy stderr
+// fallback remains the only path into the queue.
+function resolveRepoSlug(args: Input): string | null {
+  if (args.repo !== undefined) return args.repo;
+  return parseRepoSlug();
 }
 
-function repoFlag(repo: string | undefined): string {
-  return repo !== undefined ? ` --repo ${repo}` : '';
+function emptyQueue(): QueueState {
+  return { enabled: false, position: null, enforced: false };
 }
 
-function fetchGithubPrMergeInfo(
-  number: number,
-  repo?: string,
-): { url: string; merge_commit_sha?: string } {
-  const raw = exec(`gh pr view ${number} --json mergeCommit,url${repoFlag(repo)}`);
-  const parsed = JSON.parse(raw) as GithubPrViewResponse;
+function queueFromInfo(info: MergeQueueInfo): QueueState {
   return {
-    url: parsed.url ?? '',
-    merge_commit_sha: parsed.mergeCommit?.oid,
+    enabled: info.enabled,
+    enforced: info.enforced,
+    // queue.position is reserved for future enrichment via the mergeQueue.entries
+    // GraphQL field. Today we leave it null (a documented valid value per #225)
+    // because the position is racy and would require a follow-up query for every
+    // merge; the cost isn't justified by current callers.
+    position: null,
   };
 }
 
-function fetchGithubPrUrl(number: number, repo?: string): string {
-  const raw = exec(`gh pr view ${number} --json url${repoFlag(repo)}`);
-  const parsed = JSON.parse(raw) as { url?: string };
-  return parsed.url ?? '';
-}
-
-function fetchGitlabMrMergeInfo(
-  number: number,
-  repo?: string,
-): { url: string; merge_commit_sha?: string } {
-  const mr = gitlabApiMr(number, parseSlugOpts(repo));
-  return {
-    url: mr.web_url ?? '',
-    merge_commit_sha: mr.merge_commit_sha ?? undefined,
-  };
-}
-
-interface MergeSuccess {
-  ok: true;
+function aggregateOk(args: {
   number: number;
+  enrolled: boolean;
   merged: boolean;
-  merge_method: 'direct_squash' | 'merge_queue';
+  method: MergeMethod;
+  queue: QueueState;
   url: string;
-  merge_commit_sha?: string;
-  queue_position?: number;
+  mergeCommitSha?: string;
+  warnings: string[];
+}): AggregateResponse {
+  return {
+    ok: true,
+    number: args.number,
+    enrolled: args.enrolled,
+    merged: args.merged,
+    merge_method: args.method,
+    queue: args.queue,
+    pr_state: args.merged ? 'MERGED' : 'OPEN',
+    url: args.url,
+    merge_commit_sha: args.mergeCommitSha,
+    warnings: args.warnings,
+  };
 }
 
-interface MergeFailure {
-  ok: false;
-  error: string;
-}
-
-function mergeGithub(args: Input): MergeSuccess | MergeFailure {
-  // Forced merge-queue path.
+// Decide the merge intent given user input + detected queue state. Returns
+// the effective method and any warnings to surface. Pre-detection of an
+// enforced queue lets us skip the legacy "try-direct-then-fallback-on-stderr"
+// dance — saving a guaranteed-to-fail exec — while folding in #224's
+// skip_train graceful-degrade behavior.
+function decideIntent(
+  args: Input,
+  mq: MergeQueueInfo,
+): { useQueue: boolean; warnings: string[] } {
+  const warnings: string[] = [];
   if (args.use_merge_queue === true) {
-    const cmd = buildGithubMergeCommand(args.number, true, args.squash_message, args.repo);
-    try {
-      exec(cmd);
-    } catch (err) {
-      const fail = extractFailure(err);
-      return {
-        ok: false,
-        error: `gh pr merge --auto failed: ${fail.message}`,
-      };
+    if (args.skip_train === true) {
+      // The two flags are mutually contradictory. use_merge_queue is the
+      // explicit caller intent, so it wins, but skip_train must not be
+      // silently dropped per the #224/#225 contract.
+      warnings.push(
+        'skip_train ignored — use_merge_queue:true takes precedence; merge proceeded via merge_queue strategy',
+      );
     }
-    const url = fetchGithubPrUrl(args.number, args.repo);
+    return { useQueue: true, warnings };
+  }
+  if (mq.enforced && args.skip_train === true) {
+    warnings.push(
+      'skip_train ignored — merge queue enforced; merge proceeded via merge_queue strategy',
+    );
+    return { useQueue: true, warnings };
+  }
+  if (mq.enforced) {
+    return { useQueue: true, warnings };
+  }
+  return { useQueue: false, warnings };
+}
+
+function mergeGithubViaQueue(
+  args: Input,
+  queue: QueueState,
+  warnings: string[],
+): AggregateResponse | FailureResponse {
+  const cmd = buildGithubMergeCommand(args.number, true, args.squash_message, args.repo);
+  try {
+    exec(cmd);
+  } catch (err) {
     return {
-      ok: true,
-      number: args.number,
-      merged: true,
-      merge_method: 'merge_queue',
-      url,
+      ok: false,
+      error: `gh pr merge --auto failed: ${extractFailure(err).message}`,
     };
   }
+  // Queue enrollment is eager: gh returns immediately, the PR remains OPEN
+  // until the queue rebases + reruns CI + lands. Honest reporting per #225:
+  // enrolled but not yet merged.
+  const info = fetchGithubPrState(args.number, args.repo);
+  return aggregateOk({
+    number: args.number,
+    enrolled: true,
+    merged: info.state === 'merged',
+    method: 'merge_queue',
+    queue,
+    url: info.url,
+    mergeCommitSha: info.mergeCommitSha,
+    warnings,
+  });
+}
 
-  // Direct-squash merge (no merge-queue enrollment).
-  const directCmd = buildGithubMergeCommand(args.number, false, args.squash_message, args.repo);
+function mergeGithubDirect(
+  args: Input,
+  queue: QueueState,
+  warnings: string[],
+): AggregateResponse | FailureResponse {
+  const directCmd = buildGithubMergeCommand(
+    args.number,
+    false,
+    args.squash_message,
+    args.repo,
+  );
   try {
     exec(directCmd);
-    const info = fetchGithubPrMergeInfo(args.number, args.repo);
-    return {
-      ok: true,
+    const info = fetchGithubPrState(args.number, args.repo);
+    return aggregateOk({
       number: args.number,
+      enrolled: true,
       merged: true,
-      merge_method: 'direct_squash',
+      method: 'direct_squash',
+      queue,
       url: info.url,
-      merge_commit_sha: info.merge_commit_sha,
-    };
+      mergeCommitSha: info.mergeCommitSha,
+      warnings,
+    });
   } catch (err) {
     const fail = extractFailure(err);
-    // When skip_train is set, commutativity analysis has proven the merge is safe.
-    // Do not fall back to the merge queue — surface the error directly.
     if (args.skip_train === true) {
       return {
         ok: false,
         error: `gh pr merge failed (skip_train): ${fail.message}`,
       };
     }
-    if (!stderrIndicatesMergeQueue(fail.stderr) && !stderrIndicatesMergeQueue(fail.message)) {
+    if (
+      !stderrIndicatesMergeQueue(fail.stderr) &&
+      !stderrIndicatesMergeQueue(fail.message)
+    ) {
       return {
         ok: false,
         error: `gh pr merge failed: ${fail.message}`,
@@ -260,29 +308,45 @@ function mergeGithub(args: Input): MergeSuccess | MergeFailure {
     }
   }
 
-  // Merge-queue fallback (only reached when skip_train is not set).
+  // Stderr-fallback path: detection thought no queue, but the API rejected
+  // the direct merge with a queue-related error. Promote the queue state so
+  // the response reflects what we just learned.
+  const fallbackQueue: QueueState = { enabled: true, position: null, enforced: true };
   const autoCmd = buildGithubMergeCommand(args.number, true, args.squash_message, args.repo);
   try {
     exec(autoCmd);
   } catch (err) {
-    const fail = extractFailure(err);
     return {
       ok: false,
-      error: `gh pr merge --auto failed after merge-queue fallback: ${fail.message}`,
+      error: `gh pr merge --auto failed after merge-queue fallback: ${extractFailure(err).message}`,
     };
   }
-  const url = fetchGithubPrUrl(args.number, args.repo);
-  return {
-    ok: true,
+  const info = fetchGithubPrState(args.number, args.repo);
+  return aggregateOk({
     number: args.number,
-    merged: true,
-    merge_method: 'merge_queue',
-    url,
-  };
+    enrolled: true,
+    merged: info.state === 'merged',
+    method: 'merge_queue',
+    queue: fallbackQueue,
+    url: info.url,
+    mergeCommitSha: info.mergeCommitSha,
+    warnings,
+  });
 }
 
-function mergeGitlab(args: Input): MergeSuccess | MergeFailure {
-  // GitLab has no merge-queue concept; always direct.
+function mergeGithub(args: Input): AggregateResponse | FailureResponse {
+  const slug = resolveRepoSlug(args);
+  const mqInfo = slug !== null ? detectMergeQueue(slug) : { enabled: false, enforced: false };
+  const queue = queueFromInfo(mqInfo);
+  const intent = decideIntent(args, mqInfo);
+
+  return intent.useQueue
+    ? mergeGithubViaQueue(args, queue, intent.warnings)
+    : mergeGithubDirect(args, queue, intent.warnings);
+}
+
+function mergeGitlab(args: Input): AggregateResponse | FailureResponse {
+  // GitLab has no merge-queue concept; queue stays empty.
   const cmd = buildGitlabMergeCommand(args.number, args.squash_message, args.repo);
   try {
     exec(cmd);
@@ -292,23 +356,36 @@ function mergeGitlab(args: Input): MergeSuccess | MergeFailure {
       error: `glab mr merge failed: ${extractFailure(err).message}`,
     };
   }
-  const info = fetchGitlabMrMergeInfo(args.number, args.repo);
-  return {
-    ok: true,
+  const info = fetchGitlabMrState(args.number, args.repo);
+  return aggregateOk({
     number: args.number,
-    merged: true,
-    merge_method: 'direct_squash',
+    enrolled: true,
+    merged: info.state === 'merged',
+    method: 'direct_squash',
+    queue: emptyQueue(),
     url: info.url,
-    merge_commit_sha: info.merge_commit_sha,
-  };
+    mergeCommitSha: info.mergeCommitSha,
+    warnings: [],
+  });
+}
+
+export function performMerge(
+  platform: Platform,
+  args: Input,
+): AggregateResponse | FailureResponse {
+  return platform === 'github' ? mergeGithub(args) : mergeGitlab(args);
 }
 
 const prMergeHandler: HandlerDef = {
   name: 'pr_merge',
   description:
-    'Merge a PR/MR with squash + delete source branch. Auto-detects merge-queue enforcement on GitHub and falls back to --auto mode. ' +
-    'Set skip_train=true to bypass merge queue enrollment when commutativity analysis (commutativity_verify) has proven the merge is safe. ' +
-    'Supports custom multi-line squash messages.',
+    'Merge a PR/MR with squash + delete source branch. Returns the AGGREGATE state — ' +
+    '{enrolled, merged, merge_method, queue:{enabled,position,enforced}, pr_state, warnings} — ' +
+    'so the caller decides what "merged" means for their use case. On a merge-queue-enforced repo ' +
+    'the response is eager: enrolled=true, merged=false, pr_state="OPEN" (the PR is queued, not yet ' +
+    'on main). For "block until commit lands on main", use pr_merge_wait. ' +
+    'skip_train=true bypasses the queue when commutativity_verify has proven the merge safe, except ' +
+    'on queue-enforced repos where the flag is silently dropped (warning emitted).',
   inputSchema,
   async execute(rawArgs: unknown) {
     let args: Input;
@@ -323,7 +400,7 @@ const prMergeHandler: HandlerDef = {
 
     try {
       const platform = detectPlatform();
-      const result = platform === 'github' ? mergeGithub(args) : mergeGitlab(args);
+      const result = performMerge(platform, args);
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(result) }],
       };
