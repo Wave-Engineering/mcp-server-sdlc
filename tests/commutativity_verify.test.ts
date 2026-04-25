@@ -1,6 +1,10 @@
 import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
 
-type Responder = string | (() => string);
+// Responder returns a string (probe stdout) when called. The function form
+// receives the full cmd so tests can REJECT wrong-shape argv loudly per
+// `lesson_origin_ops_pitfalls.md` — substring-only matching gave us false
+// confidence twice this session (glab `--jq`, bare-hex `--color`).
+type Responder = string | ((cmd: string) => string);
 
 let execRegistry: Array<{ match: string; respond: Responder }> = [];
 let execCalls: string[] = [];
@@ -11,7 +15,7 @@ function mockExec(cmd: string, opts?: { timeout?: number; cwd?: string }): strin
   lastExecOpts = opts;
   for (const { match, respond } of execRegistry) {
     if (cmd.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
+      return typeof respond === 'function' ? respond(cmd) : respond;
     }
   }
   throw new Error(`Unexpected exec call: ${cmd}`);
@@ -29,6 +33,35 @@ function parseResult(result: { content: Array<{ type: string; text: string }> })
 
 function onExec(match: string, respond: Responder) {
   execRegistry.push({ match, respond });
+}
+
+// Throw a shaped error that mimics execSync on `command not found` via the
+// POSIX shell exit-127 signal ONLY. Message intentionally generic so the
+// regex-arm of probeMissing can NOT also fire — keeps the test isolated to
+// status-detection per the false-confidence pitfall in
+// `lesson_origin_ops_pitfalls.md`. Used by the canonical PROBE_UNAVAILABLE
+// tests because exit-127 is the production path with execSync in shell mode.
+function throwBinaryMissing(): never {
+  const err = new Error('subprocess exited 127') as Error & { status?: number };
+  err.status = 127;
+  throw err;
+}
+
+// Throw a shaped error that mimics shells which don't propagate exit-127
+// cleanly but still print the canonical "command not found" message. The
+// message is the ONLY signal here (no status set) so this exercises the
+// regex-arm of probeMissing in isolation.
+function throwBinaryMissingShellMessage(): never {
+  throw new Error('/bin/sh: 1: commutativity-probe: not found');
+}
+
+// Throw a shaped error that mimics a probe that ran but exited non-zero
+// (a real probe bug). Distinct from binary-missing so we can prove the
+// handler does NOT blanket-convert all subprocess errors to PROBE_UNAVAILABLE.
+function throwProbeCrash(): never {
+  const err = new Error('commutativity-probe analyze: AnalysisError: tree-sitter parse failed') as Error & { status?: number };
+  err.status = 1;
+  throw err;
 }
 
 function probeJson(verdict: string, pairs: Array<{
@@ -207,11 +240,83 @@ describe('commutativity_verify handler', () => {
     expect(data.group_verdict).toBe('ORACLE_REQUIRED');
   });
 
-  // --- subprocess error ---
-  test('subprocess error — returns ok:false with error message', async () => {
-    onExec('commutativity-probe', () => {
-      throw new Error('commutativity-probe: command not found');
+  // --- probe binary missing (ENOENT / shell exit 127) → PROBE_UNAVAILABLE ---
+  test('pairwise mode: ENOENT (binary missing) → PROBE_UNAVAILABLE with mirrored timeout shape', async () => {
+    onExec('commutativity-probe', throwBinaryMissing);
+
+    const result = await handler.execute({
+      repo_path: '/repo',
+      base_ref: 'main',
+      changesets: [
+        { id: 'mr-1', head_ref: 'feature/1' },
+        { id: 'mr-2', head_ref: 'feature/2' },
+      ],
     });
+    const data = parseResult(result);
+
+    expect(data.ok).toBe(true);
+    expect(data.mode).toBe('pairwise');
+    expect(data.verdict).toBe('PROBE_UNAVAILABLE');
+    expect(data.group_verdict).toBe('PROBE_UNAVAILABLE'); // legacy alias
+    expect(data.pairs).toEqual([]);
+    expect(data.pairwise_results).toEqual([]);
+    expect(data.single_target_result).toBeUndefined();
+    const warnings = data.warnings as string[];
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('not found on PATH');
+    expect(warnings[0]).toContain('install-remote.sh');
+  });
+
+  test('single-target mode: ENOENT (binary missing) → PROBE_UNAVAILABLE with single_target_result populated', async () => {
+    onExec('commutativity-probe', throwBinaryMissing);
+
+    const result = await handler.execute({
+      repo_path: '/repo',
+      base_ref: 'main',
+      changesets: [{ id: 'kahuna', head_ref: 'kahuna/42-foo' }],
+    });
+    const data = parseResult(result);
+
+    expect(data.ok).toBe(true);
+    expect(data.mode).toBe('single_target');
+    expect(data.verdict).toBe('PROBE_UNAVAILABLE');
+    expect(data.group_verdict).toBe('PROBE_UNAVAILABLE');
+    expect(data.pairs).toEqual([]);
+    expect(data.pairwise_results).toBeUndefined();
+    const single = data.single_target_result as { verdict: string; changeset_id: string; head_ref: string };
+    expect(single.verdict).toBe('PROBE_UNAVAILABLE');
+    expect(single.changeset_id).toBe('kahuna');
+    expect(single.head_ref).toBe('kahuna/42-foo');
+  });
+
+  // --- isolation: shell-message-only path also yields PROBE_UNAVAILABLE ---
+  // Asserts the regex-arm of probeMissing fires independently of status===127.
+  // If only one arm of the OR were left wired, this test would catch it (the
+  // canonical throwBinaryMissing test would NOT — it sets status=127 and a
+  // message that does NOT match the regex on purpose).
+  test('shell-message-only (no status) — regex arm catches PROBE_UNAVAILABLE', async () => {
+    onExec('commutativity-probe', throwBinaryMissingShellMessage);
+
+    const result = await handler.execute({
+      repo_path: '/repo',
+      base_ref: 'main',
+      changesets: [
+        { id: 'mr-1', head_ref: 'feature/1' },
+        { id: 'mr-2', head_ref: 'feature/2' },
+      ],
+    });
+    const data = parseResult(result);
+
+    expect(data.ok).toBe(true);
+    expect(data.verdict).toBe('PROBE_UNAVAILABLE');
+  });
+
+  // --- regression: probe-crash (non-ENOENT) MUST stay {ok:false} (#218) ---
+  // Spec: only ENOENT becomes PROBE_UNAVAILABLE. Probe ran but exited
+  // non-zero (real probe bug, malformed input, tree-sitter failure, etc.)
+  // → still {ok:false} so we don't swallow real failures.
+  test('probe-crash (non-ENOENT subprocess error) — keeps {ok:false} contract', async () => {
+    onExec('commutativity-probe', throwProbeCrash);
 
     const result = await handler.execute({
       repo_path: '/repo',
@@ -225,6 +330,50 @@ describe('commutativity_verify handler', () => {
 
     expect(data.ok).toBe(false);
     expect(data.error as string).toContain('commutativity-probe failed');
+    expect(data.error as string).toContain('tree-sitter parse failed');
+    // Make sure we didn't synthesize a verdict for a real probe failure.
+    expect(data.verdict).toBeUndefined();
+    expect(data.group_verdict).toBeUndefined();
+  });
+
+  // --- argv-strictness: stub explicitly rejects wrong-shape commands ---
+  // Per `lesson_origin_ops_pitfalls.md`: substring-only matching gave us
+  // false confidence twice this session (glab `--jq`, bare-hex `--color`).
+  // The handler must always invoke the probe with `analyze` + `--json` +
+  // `--repo` + `--base`. If a refactor ever drops one of those flags, this
+  // test fires immediately rather than passing silently.
+  test('argv-strictness: stub rejects probe invocations missing required flags', async () => {
+    onExec('commutativity-probe', (cmd) => {
+      if (!/\bcommutativity-probe\s+analyze\b/.test(cmd)) {
+        throw new Error(`Stub rejection: missing 'analyze' subcommand: ${cmd}`);
+      }
+      if (!cmd.includes('--json')) {
+        throw new Error(`Stub rejection: missing --json flag: ${cmd}`);
+      }
+      // Word-boundary matches so a hypothetical future flag named --repository
+      // or --baseline can't satisfy these checks accidentally.
+      if (!/\s--repo\s/.test(cmd)) {
+        throw new Error(`Stub rejection: missing --repo flag: ${cmd}`);
+      }
+      if (!/\s--base\s/.test(cmd)) {
+        throw new Error(`Stub rejection: missing --base flag: ${cmd}`);
+      }
+      return probeJson('STRONG', [{
+        a: 'feature/1', b: 'feature/2', verdict: 'STRONG', reason: 'Disjoint',
+      }]);
+    });
+
+    const result = await handler.execute({
+      repo_path: '/repo',
+      base_ref: 'main',
+      changesets: [
+        { id: 'mr-1', head_ref: 'feature/1' },
+        { id: 'mr-2', head_ref: 'feature/2' },
+      ],
+    });
+    const data = parseResult(result);
+    expect(data.ok).toBe(true);
+    expect(data.verdict).toBe('STRONG');
   });
 
   // --- subprocess timeout ---
