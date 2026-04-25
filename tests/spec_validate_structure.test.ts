@@ -151,4 +151,72 @@ describe('spec_validate_structure handler', () => {
     expect(parsed.valid).toBe(true);
     expect(parsed.accepted_headings).toBeUndefined();
   });
+
+  // ---- #208: bold-label dependencies fallback (parity with spec_dependencies) ----
+
+  test('has_dependencies_true — explicit ## Dependencies H2 (regression)', async () => {
+    mockBody(
+      '## Changes\nc\n## Tests\nt\n## Acceptance Criteria\n- [ ] ok\n## Dependencies\n- #5\n',
+    );
+    const result = await handler.execute({ issue_ref: '#1' });
+    const parsed = parseResult(result);
+    expect(parsed.has_dependencies).toBe(true);
+  });
+
+  test('has_dependencies_true — bold-label fallback inside ## Metadata', async () => {
+    // Mirrors what /devspec upshift produces for stories: deps live as a
+    // **Dependencies:** label under ## Metadata, not in a dedicated H2.
+    mockBody(
+      '## Changes\nc\n## Tests\nt\n## Acceptance Criteria\n- [ ] ok\n' +
+      '## Metadata\n\n**Priority:** medium\n**Dependencies:** #86, #87\n',
+    );
+    const result = await handler.execute({ issue_ref: '#1' });
+    const parsed = parseResult(result);
+    expect(parsed.has_dependencies).toBe(true);
+  });
+
+  test('has_dependencies_true — bold-label fallback in arbitrary section', async () => {
+    mockBody(
+      '## Changes\nc\n## Tests\nt\n## Acceptance Criteria\n- [ ] ok\n' +
+      '## Notes\nSome prose.\n\n**Dependencies:** Wave-Engineering/foo#42\n',
+    );
+    const result = await handler.execute({ issue_ref: '#1' });
+    const parsed = parseResult(result);
+    expect(parsed.has_dependencies).toBe(true);
+  });
+
+  test('has_dependencies_false — neither ## Dependencies nor bold label present', async () => {
+    mockBody(
+      '## Changes\nc\n## Tests\nt\n## Acceptance Criteria\n- [ ] ok\n## Metadata\n**Priority:** low\n',
+    );
+    const result = await handler.execute({ issue_ref: '#1' });
+    const parsed = parseResult(result);
+    expect(parsed.has_dependencies).toBe(false);
+  });
+
+  test('explicit ## Dependencies still wins when both forms are present', async () => {
+    mockBody(
+      '## Changes\nc\n## Tests\nt\n## Acceptance Criteria\n- [ ] ok\n' +
+      '## Dependencies\n- #5\n## Metadata\n**Dependencies:** #6\n',
+    );
+    const result = await handler.execute({ issue_ref: '#1' });
+    const parsed = parseResult(result);
+    expect(parsed.has_dependencies).toBe(true);
+  });
+
+  test('changes/tests fallback NOT relaxed — bold-label scope is dependencies-only', async () => {
+    // **Tests:** inside another section must NOT count as has_tests.
+    // Implementation/test sections remain strict; only the dependencies
+    // metadata field gets the fallback.
+    mockBody(
+      '## Changes\nc\n## Acceptance Criteria\n- [ ] ok\n' +
+      '## Metadata\n**Tests:** see other repo\n**Dependencies:** #5\n',
+    );
+    const result = await handler.execute({ issue_ref: '#1' });
+    const parsed = parseResult(result);
+    expect(parsed.has_tests).toBe(false);
+    expect(parsed.has_dependencies).toBe(true);
+    expect(parsed.valid).toBe(false);
+    expect(parsed.missing_sections).toContain('tests');
+  });
 });

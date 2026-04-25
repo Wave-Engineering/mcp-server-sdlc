@@ -1,7 +1,7 @@
 import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
-import { parseIssueRef, parseSections, type IssueRef } from '../lib/spec_parser';
+import { findBoldLabelDependencies, parseIssueRef, parseSections, type IssueRef } from '../lib/spec_parser';
 import { detectPlatform, gitlabApiIssue } from '../lib/glab';
 
 const inputSchema = z.object({
@@ -39,7 +39,7 @@ function fetchBody(ref: IssueRef): string {
 const specValidateStructureHandler: HandlerDef = {
   name: 'spec_validate_structure',
   description:
-    'Check for presence of required sections in an issue spec. Accepts H2 heading aliases: `## Changes` or `## Implementation Steps`; `## Tests` or `## Test Procedures`; `## Acceptance Criteria`. Optional: `## Dependencies`. See docs/issue-body-grammar.md.',
+    'Check for presence of required sections in an issue spec. Accepts H2 heading aliases: `## Changes` or `## Implementation Steps`; `## Tests` or `## Test Procedures`; `## Acceptance Criteria`. Optional: `## Dependencies` (or a `**Dependencies:**` bold-label inside any other section, mirroring spec_dependencies). See docs/issue-body-grammar.md.',
   inputSchema,
   async execute(rawArgs: unknown) {
     let args: z.infer<typeof inputSchema>;
@@ -88,6 +88,16 @@ const specValidateStructureHandler: HandlerDef = {
         presence[`has_${canonical}`] = aliases.some(
           (alias) => sections[alias] && sections[alias].trim().length > 0,
         );
+      }
+      // Bold-label fallback for `has_dependencies` only (mirrors
+      // spec_dependencies' fallback). Stories that embed deps as
+      // `**Dependencies:** #5, #6` inside ## Metadata count as declared.
+      // The narrow scope is deliberate — implementation/test sections must
+      // remain strict because they carry semantic content, not metadata.
+      // Truthiness check matches the idiom in spec_dependencies (the helper
+      // returns `''` when no label is present or its content is empty).
+      if (!presence.has_dependencies && findBoldLabelDependencies(sections)) {
+        presence.has_dependencies = true;
       }
 
       const response: Record<string, unknown> = {
