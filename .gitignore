@@ -138,3 +138,10 @@ vite.config.ts.timestamp-*
 
 # Generated handler registry (codegen output, fresh on every build)
 handlers/_registry.ts
+
+# Claude Code env-local artifacts — per-user/per-machine state, never committed
+.claude/
+.claude-project.md
+.status-panel.html
+.wtf/
+CLAUDE.local.md
