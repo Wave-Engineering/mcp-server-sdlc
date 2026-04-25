@@ -1,7 +1,7 @@
 import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
-import { parseIssueRef, parseSections, type IssueRef } from '../lib/spec_parser';
+import { SUB_ISSUE_SECTION_KEYS, findSubIssueSection, parseIssueRef, parseSections, type IssueRef } from '../lib/spec_parser';
 import { detectPlatform, parseRepoSlug, gitlabApiIssue } from '../lib/glab';
 
 const inputSchema = z.object({
@@ -44,38 +44,9 @@ function normalizeRef(ref: string, currentSlug: string | null): string {
   return ref;
 }
 
-/**
- * Find which section of the parsed body contains the sub-issues.
- * Accepts (as normalized H2 heading keys):
- *   - Explicit: sub_issues, subissues, children, tasks, task_list
- *   - Wave-plan shape: waves, wave_map, phases, phased_implementation_plan,
- *     implementation_plan, stories, backlog
- *
- * The wave-plan aliases let `/devspec upshift`-generated Epic bodies
- * (which group `#NN` refs under `### Wave N` H3 headings inside a
- * `## Waves` H2) parse without requiring a rename.
- */
-const SUB_ISSUE_SECTION_KEYS = [
-  'sub_issues',
-  'subissues',
-  'children',
-  'tasks',
-  'task_list',
-  'waves',
-  'wave_map',
-  'phases',
-  'phased_implementation_plan',
-  'implementation_plan',
-  'stories',
-  'backlog',
-] as const;
-
-function findSubIssueSection(sections: Record<string, string>): string | null {
-  for (const k of SUB_ISSUE_SECTION_KEYS) {
-    if (sections[k]) return sections[k];
-  }
-  return null;
-}
+// Section-name aliases live in lib/spec_parser so wave_compute and
+// epic_sub_issues stay in lock-step. See SUB_ISSUE_SECTION_KEYS for the
+// canonical list and rationale.
 
 function parseTableRows(section: string, currentSlug: string | null): SubIssue[] {
   const lines = section.split('\n').map(l => l.trim());

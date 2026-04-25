@@ -92,3 +92,43 @@ export function parseIssueRef(ref: string): IssueRef | null {
   }
   return null;
 }
+
+/**
+ * Canonical list of normalized H2 heading keys an Epic body can use to
+ * declare its sub-issues. Both `epic_sub_issues` and `wave_compute` consume
+ * this so the two tools stay in lock-step about which section names parse.
+ *
+ *   - Explicit:        sub_issues, subissues, children, tasks, task_list
+ *   - Wave-plan shape: waves, wave_map, phases, phased_implementation_plan,
+ *                      implementation_plan, stories, backlog
+ *
+ * The wave-plan aliases let `/devspec upshift`-generated Epic bodies
+ * (which group `#NN` refs under `### Wave N` H3 headings inside a
+ * `## Waves` H2) parse without requiring a rename.
+ */
+export const SUB_ISSUE_SECTION_KEYS = [
+  'sub_issues',
+  'subissues',
+  'children',
+  'tasks',
+  'task_list',
+  'waves',
+  'wave_map',
+  'phases',
+  'phased_implementation_plan',
+  'implementation_plan',
+  'stories',
+  'backlog',
+] as const;
+
+/**
+ * Return the first matching section body from the parsed sections record,
+ * iterating in `SUB_ISSUE_SECTION_KEYS` order. Returns `null` when no key
+ * matches — callers should treat that as "no sub-issues declared".
+ */
+export function findSubIssueSection(sections: Record<string, string>): string | null {
+  for (const k of SUB_ISSUE_SECTION_KEYS) {
+    if (sections[k]) return sections[k];
+  }
+  return null;
+}

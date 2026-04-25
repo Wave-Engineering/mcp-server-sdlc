@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
-import { parseIssueRef, parseSections, type IssueRef } from '../lib/spec_parser';
+import { findSubIssueSection, parseIssueRef, parseSections, type IssueRef } from '../lib/spec_parser';
 import { computeWaves, type DepNode } from '../lib/dependency_graph';
 import { detectPlatform, parseRepoSlug, gitlabApiIssue } from '../lib/glab.js';
 import { execSync } from 'child_process';
@@ -165,12 +165,7 @@ const waveComputeHandler: HandlerDef = {
         ref.owner && ref.repo ? `${ref.owner}/${ref.repo}` : parseRepoSlug();
       const epicData = fetchIssue(ref);
       const epicSections = parseSections(epicData.body).sections;
-      const subIssuesSection =
-        epicSections.sub_issues ??
-        epicSections.subissues ??
-        epicSections.children ??
-        epicSections.tasks ??
-        '';
+      const subIssuesSection = findSubIssueSection(epicSections) ?? '';
 
       const subs = [
         ...parseTableSubIssues(subIssuesSection, slug),
