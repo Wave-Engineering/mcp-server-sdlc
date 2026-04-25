@@ -15,6 +15,7 @@ import type { ChecksSnapshot } from '../handlers/pr_wait_ci.ts';
 const mod = await import('../handlers/pr_wait_ci.ts');
 const handler = mod.default;
 const runWithDeps = mod.__runWithDeps;
+const classifyRollupItem = mod.classifyRollupItem;
 
 beforeEach(() => {
   execMockFn = () => '';
@@ -198,13 +199,14 @@ describe('pr_wait_ci handler', () => {
     execMockFn = (cmd: string) => {
       if (cmd.startsWith('git remote'))
         return 'https://github.com/org/repo.git\n';
-      if (cmd.startsWith('gh pr checks'))
-        return JSON.stringify([
-          { name: 'build', bucket: 'pass', state: 'SUCCESS' },
-          { name: 'test', bucket: 'pass', state: 'SUCCESS' },
-        ]);
       if (cmd.startsWith('gh pr view'))
-        return JSON.stringify({ url: 'https://github.com/org/repo/pull/5' });
+        return JSON.stringify({
+          url: 'https://github.com/org/repo/pull/5',
+          statusCheckRollup: [
+            { __typename: 'CheckRun', name: 'build', status: 'COMPLETED', conclusion: 'SUCCESS' },
+            { __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'SUCCESS' },
+          ],
+        });
       throw new Error(`unexpected exec: ${cmd}`);
     };
 
@@ -227,14 +229,15 @@ describe('pr_wait_ci handler', () => {
     execMockFn = (cmd: string) => {
       if (cmd.startsWith('git remote'))
         return 'https://github.com/org/repo.git\n';
-      if (cmd.startsWith('gh pr checks'))
-        return JSON.stringify([
-          { name: 'build', bucket: 'pass' },
-          { name: 'lint', bucket: 'fail' },
-          { name: 'test', bucket: 'pending' },
-        ]);
       if (cmd.startsWith('gh pr view'))
-        return JSON.stringify({ url: 'https://github.com/org/repo/pull/9' });
+        return JSON.stringify({
+          url: 'https://github.com/org/repo/pull/9',
+          statusCheckRollup: [
+            { __typename: 'CheckRun', name: 'build', status: 'COMPLETED', conclusion: 'SUCCESS' },
+            { __typename: 'CheckRun', name: 'lint', status: 'COMPLETED', conclusion: 'FAILURE' },
+            { __typename: 'CheckRun', name: 'test', status: 'IN_PROGRESS' },
+          ],
+        });
       throw new Error(`unexpected exec: ${cmd}`);
     };
 
@@ -326,15 +329,16 @@ describe('pr_wait_ci handler', () => {
 
   // --- cross-repo routing ---
 
-  test('route_with_repo — github threads --repo into gh pr checks and gh pr view', async () => {
+  test('route_with_repo — github threads --repo into the gh pr view call', async () => {
     execMockFn = (cmd: string) => {
       if (cmd.startsWith('git remote'))
         return 'https://github.com/cwd-org/cwd-repo.git\n';
-      if (cmd.startsWith('gh pr checks'))
-        return JSON.stringify([{ name: 'build', bucket: 'pass', state: 'SUCCESS' }]);
       if (cmd.startsWith('gh pr view'))
         return JSON.stringify({
           url: 'https://github.com/Wave-Engineering/mcp-server-sdlc/pull/5',
+          statusCheckRollup: [
+            { __typename: 'CheckRun', name: 'build', status: 'COMPLETED', conclusion: 'SUCCESS' },
+          ],
         });
       throw new Error(`unexpected exec: ${cmd}`);
     };
@@ -349,10 +353,11 @@ describe('pr_wait_ci handler', () => {
     expect(data.ok).toBe(true);
     expect(data.final_state).toBe('passed');
 
-    const checksCall = execCalls.find((c) => c.startsWith('gh pr checks')) ?? '';
-    expect(checksCall).toContain('--repo Wave-Engineering/mcp-server-sdlc');
     const viewCall = execCalls.find((c) => c.startsWith('gh pr view')) ?? '';
     expect(viewCall).toContain('--repo Wave-Engineering/mcp-server-sdlc');
+    // Regression guard for #220: snapshotGithub must not invoke the broken
+    // `gh pr checks --json` form, which fails on gh < ~2.50 (Ubuntu LTS).
+    expect(execCalls.some((c) => c.startsWith('gh pr checks'))).toBe(false);
   });
 
   test('route_with_repo — gitlab forwards slug into glab api URL path', async () => {
@@ -389,14 +394,17 @@ describe('pr_wait_ci handler', () => {
     expect(apiCall).not.toContain('cwd-org%2Fcwd-repo');
   });
 
-  test('regression_without_repo — gh pr checks/view do not contain --repo', async () => {
+  test('regression_without_repo — gh pr view does not contain --repo when omitted', async () => {
     execMockFn = (cmd: string) => {
       if (cmd.startsWith('git remote'))
         return 'https://github.com/org/repo.git\n';
-      if (cmd.startsWith('gh pr checks'))
-        return JSON.stringify([{ name: 'build', bucket: 'pass', state: 'SUCCESS' }]);
       if (cmd.startsWith('gh pr view'))
-        return JSON.stringify({ url: 'https://github.com/org/repo/pull/5' });
+        return JSON.stringify({
+          url: 'https://github.com/org/repo/pull/5',
+          statusCheckRollup: [
+            { __typename: 'CheckRun', name: 'build', status: 'COMPLETED', conclusion: 'SUCCESS' },
+          ],
+        });
       throw new Error(`unexpected exec: ${cmd}`);
     };
 
@@ -406,8 +414,6 @@ describe('pr_wait_ci handler', () => {
       timeout_sec: 10,
     });
 
-    const checksCall = execCalls.find((c) => c.startsWith('gh pr checks')) ?? '';
-    expect(checksCall).not.toContain('--repo');
     const viewCall = execCalls.find((c) => c.startsWith('gh pr view')) ?? '';
     expect(viewCall).not.toContain('--repo');
   });
@@ -426,6 +432,148 @@ describe('pr_wait_ci handler', () => {
     expect(execCalls).toHaveLength(0);
   });
 
+  // --- classifyRollupItem (pure mapper) — covers every branch of the table
+  // documented in the function's JSDoc. Pure tests so the mapping table can
+  // be exercised without a subprocess. ---
+
+  test('classifyRollupItem: CheckRun COMPLETED+SUCCESS → pass', () => {
+    expect(classifyRollupItem({ __typename: 'CheckRun', status: 'COMPLETED', conclusion: 'SUCCESS' })).toBe('pass');
+  });
+
+  test('classifyRollupItem: CheckRun COMPLETED+NEUTRAL → pass', () => {
+    expect(classifyRollupItem({ __typename: 'CheckRun', status: 'COMPLETED', conclusion: 'NEUTRAL' })).toBe('pass');
+  });
+
+  test('classifyRollupItem: CheckRun COMPLETED+FAILURE → fail', () => {
+    expect(classifyRollupItem({ __typename: 'CheckRun', status: 'COMPLETED', conclusion: 'FAILURE' })).toBe('fail');
+  });
+
+  test('classifyRollupItem: CheckRun COMPLETED+CANCELLED → fail (preserves prior cancel→fail mapping)', () => {
+    expect(classifyRollupItem({ __typename: 'CheckRun', status: 'COMPLETED', conclusion: 'CANCELLED' })).toBe('fail');
+  });
+
+  test('classifyRollupItem: CheckRun COMPLETED+TIMED_OUT → fail', () => {
+    expect(classifyRollupItem({ __typename: 'CheckRun', status: 'COMPLETED', conclusion: 'TIMED_OUT' })).toBe('fail');
+  });
+
+  test('classifyRollupItem: CheckRun COMPLETED+STARTUP_FAILURE → fail', () => {
+    expect(classifyRollupItem({ __typename: 'CheckRun', status: 'COMPLETED', conclusion: 'STARTUP_FAILURE' })).toBe('fail');
+  });
+
+  // ACTION_REQUIRED means a workflow paused for a human approval gate
+  // (e.g. environment protection rule). For autopilot callers (/scpmmr,
+  // wave-machine), it's terminal in the same way as a hard failure — the
+  // merge cannot proceed without manual intervention. Treating it as
+  // "pending" would silently burn the timeout budget waiting for a human.
+  test('classifyRollupItem: CheckRun COMPLETED+ACTION_REQUIRED → fail (deliberate; needs human, not patience)', () => {
+    expect(classifyRollupItem({ __typename: 'CheckRun', status: 'COMPLETED', conclusion: 'ACTION_REQUIRED' })).toBe('fail');
+  });
+
+  test('classifyRollupItem: CheckRun IN_PROGRESS → pending (status not COMPLETED)', () => {
+    expect(classifyRollupItem({ __typename: 'CheckRun', status: 'IN_PROGRESS' })).toBe('pending');
+  });
+
+  test('classifyRollupItem: CheckRun QUEUED → pending', () => {
+    expect(classifyRollupItem({ __typename: 'CheckRun', status: 'QUEUED' })).toBe('pending');
+  });
+
+  test('classifyRollupItem: CheckRun COMPLETED+SKIPPED → skipping (uncounted)', () => {
+    expect(classifyRollupItem({ __typename: 'CheckRun', status: 'COMPLETED', conclusion: 'SKIPPED' })).toBe('skipping');
+  });
+
+  test('classifyRollupItem: CheckRun COMPLETED+STALE → skipping (uncounted)', () => {
+    expect(classifyRollupItem({ __typename: 'CheckRun', status: 'COMPLETED', conclusion: 'STALE' })).toBe('skipping');
+  });
+
+  test('classifyRollupItem: StatusContext SUCCESS → pass', () => {
+    expect(classifyRollupItem({ __typename: 'StatusContext', state: 'SUCCESS' })).toBe('pass');
+  });
+
+  test('classifyRollupItem: StatusContext PENDING → pending', () => {
+    expect(classifyRollupItem({ __typename: 'StatusContext', state: 'PENDING' })).toBe('pending');
+  });
+
+  test('classifyRollupItem: StatusContext FAILURE → fail', () => {
+    expect(classifyRollupItem({ __typename: 'StatusContext', state: 'FAILURE' })).toBe('fail');
+  });
+
+  test('classifyRollupItem: StatusContext ERROR → fail', () => {
+    expect(classifyRollupItem({ __typename: 'StatusContext', state: 'ERROR' })).toBe('fail');
+  });
+
+  test('classifyRollupItem: unknown __typename → pending (defensive default)', () => {
+    expect(classifyRollupItem({ __typename: 'FutureCheckType', status: 'COMPLETED', conclusion: 'SUCCESS' })).toBe('pending');
+    expect(classifyRollupItem({})).toBe('pending');
+  });
+
+  // --- snapshotGithub end-to-end with mixed CheckRun + StatusContext ---
+  // Realistic payload mixing modern Actions + legacy commit statuses + a
+  // SKIPPED check (uncounted) and one failure so the loop terminates on the
+  // first poll. Verifies the count math in snapshotGithub.
+  test('execute — counts mixed CheckRun + StatusContext + SKIPPED correctly', async () => {
+    execMockFn = (cmd: string) => {
+      if (cmd.startsWith('git remote'))
+        return 'https://github.com/org/repo.git\n';
+      if (cmd.startsWith('gh pr view'))
+        return JSON.stringify({
+          url: 'https://github.com/org/repo/pull/77',
+          statusCheckRollup: [
+            { __typename: 'CheckRun', name: 'build', status: 'COMPLETED', conclusion: 'SUCCESS' },
+            { __typename: 'CheckRun', name: 'optional', status: 'COMPLETED', conclusion: 'SKIPPED' },
+            { __typename: 'StatusContext', context: 'codecov/patch', state: 'SUCCESS' },
+            { __typename: 'StatusContext', context: 'license/cla', state: 'PENDING' },
+            { __typename: 'CheckRun', name: 'lint', status: 'COMPLETED', conclusion: 'FAILURE' },
+          ],
+        });
+      throw new Error(`unexpected exec: ${cmd}`);
+    };
+
+    const result = await handler.execute({
+      number: 77,
+      poll_interval_sec: 5,
+      timeout_sec: 10,
+    });
+    const data = parseResult(result);
+    // Loop terminates on first poll because failed > 0.
+    expect(data.ok).toBe(true);
+    expect(data.final_state).toBe('failed');
+    const checks = data.checks as Record<string, number | string>;
+    expect(checks.passed).toBe(2);     // build + codecov
+    expect(checks.failed).toBe(1);     // lint
+    expect(checks.pending).toBe(1);    // license/cla
+    expect(checks.total).toBe(5);      // total INCLUDES the SKIPPED entry
+  });
+
+  // --- regression: stub explicitly REJECTS the broken `gh pr checks --json`
+  // form per `lesson_origin_ops_pitfalls.md`. If a future refactor ever brings
+  // back the gh-version-incompatible call, this test fires immediately. ---
+  test('argv-regression: stub rejects gh pr checks --json (broken on gh 2.45) — #220', async () => {
+    execMockFn = (cmd: string) => {
+      if (cmd.startsWith('git remote'))
+        return 'https://github.com/org/repo.git\n';
+      if (/^gh pr checks\b/.test(cmd) && cmd.includes('--json')) {
+        throw new Error(`Stub rejection (#220 regression): handler invoked broken \`gh pr checks --json\` form. Use \`gh pr view --json statusCheckRollup\` instead. cmd=${cmd}`);
+      }
+      if (cmd.startsWith('gh pr view'))
+        return JSON.stringify({
+          url: 'https://github.com/org/repo/pull/1',
+          statusCheckRollup: [
+            { __typename: 'CheckRun', name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' },
+          ],
+        });
+      throw new Error(`unexpected exec: ${cmd}`);
+    };
+
+    const result = await handler.execute({
+      number: 1,
+      poll_interval_sec: 5,
+      timeout_sec: 10,
+    });
+    const data = parseResult(result);
+    expect(data.ok).toBe(true);
+    expect(data.final_state).toBe('passed');
+  });
+
   test('strict_schema_accepts_repo — .strict() schema does not reject new field', async () => {
     // Proof that adding repo to a .strict() schema doesn't trigger InvalidParams
     // via the real MCP dispatch surface (handler.execute), not just the test seam.
@@ -434,11 +582,13 @@ describe('pr_wait_ci handler', () => {
     // error message. Here we just need the parse to succeed and the handler to
     // run — we don't care about the poll outcome.
     execMockFn = (cmd: string) => {
-      if (cmd.includes('gh pr checks')) {
-        return JSON.stringify([{ name: 'ci', bucket: 'pass', state: 'SUCCESS' }]);
-      }
       if (cmd.includes('gh pr view')) {
-        return JSON.stringify({ url: 'https://github.com/owner/repo/pull/1' });
+        return JSON.stringify({
+          url: 'https://github.com/owner/repo/pull/1',
+          statusCheckRollup: [
+            { __typename: 'CheckRun', name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' },
+          ],
+        });
       }
       return '';
     };

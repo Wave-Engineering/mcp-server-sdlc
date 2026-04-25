@@ -41,10 +41,66 @@ function exec(cmd: string): string {
   return execSync(cmd, { encoding: 'utf8' }).trim();
 }
 
-interface GithubCheck {
+// One item from `gh pr view --json statusCheckRollup`. Comes in two flavors:
+//   __typename: "CheckRun"      — modern checks (GitHub Actions, most third-party)
+//   __typename: "StatusContext" — legacy commit statuses from older integrations
+// We treat both, defaulting unknown __typename values to "pending" so an
+// unfamiliar shape can never make the loop decide prematurely.
+interface RollupItem {
+  __typename?: string;
   name?: string;
-  bucket?: string;
-  state?: string;
+  // CheckRun fields
+  status?: string;       // QUEUED | IN_PROGRESS | COMPLETED | WAITING | PENDING | REQUESTED
+  conclusion?: string;   // SUCCESS | FAILURE | NEUTRAL | CANCELLED | SKIPPED | TIMED_OUT | ACTION_REQUIRED | STALE | STARTUP_FAILURE | ''
+  // StatusContext fields
+  state?: string;        // SUCCESS | FAILURE | ERROR | PENDING
+}
+
+interface PrViewResponse {
+  url?: string;
+  statusCheckRollup?: RollupItem[];
+}
+
+type Bucket = 'pass' | 'fail' | 'pending' | 'skipping';
+
+/**
+ * Pure mapper from a single statusCheckRollup item to our bucket. Exported
+ * for unit tests so the mapping table can be exercised without a subprocess.
+ *
+ * Decision rules:
+ * - CheckRun NOT yet COMPLETED → pending (don't decide on incomplete check)
+ * - CheckRun COMPLETED with SUCCESS / NEUTRAL → pass
+ * - CheckRun COMPLETED with SKIPPED / STALE → skipping (uncounted, like before)
+ * - CheckRun COMPLETED with anything else → fail. Includes:
+ *     FAILURE, CANCELLED, TIMED_OUT, STARTUP_FAILURE — all genuine non-success
+ *     outcomes; CANCELLED → fail preserves the prior `bucket === 'cancel'`
+ *     mapping. Also includes ACTION_REQUIRED, which means a workflow paused
+ *     for a human approval gate (e.g. environment protection rule). For an
+ *     autopilot caller (/scpmmr, wave-machine), ACTION_REQUIRED is terminal
+ *     in the same way as a hard failure — the merge cannot proceed without
+ *     manual intervention. Mapping to "pending" would silently burn the
+ *     timeout budget waiting for a human.
+ * - StatusContext SUCCESS → pass
+ * - StatusContext PENDING / unset → pending
+ * - StatusContext FAILURE / ERROR → fail
+ * - Unknown __typename → pending (defensive; never decide on what we can't classify)
+ */
+export function classifyRollupItem(c: RollupItem): Bucket {
+  if (c.__typename === 'CheckRun') {
+    const status = (c.status ?? '').toUpperCase();
+    if (status !== 'COMPLETED') return 'pending';
+    const conclusion = (c.conclusion ?? '').toUpperCase();
+    if (conclusion === 'SUCCESS' || conclusion === 'NEUTRAL') return 'pass';
+    if (conclusion === 'SKIPPED' || conclusion === 'STALE') return 'skipping';
+    return 'fail';
+  }
+  if (c.__typename === 'StatusContext') {
+    const state = (c.state ?? '').toUpperCase();
+    if (state === 'SUCCESS') return 'pass';
+    if (state === 'PENDING' || state === '') return 'pending';
+    return 'fail';
+  }
+  return 'pending';
 }
 
 function repoFlag(repo: string | undefined): string {
@@ -58,29 +114,25 @@ function parseSlugOpts(slug: string | undefined): { owner?: string; repo?: strin
   return { owner: slug.slice(0, idx), repo: slug.slice(idx + 1) };
 }
 
+// `gh pr view --json statusCheckRollup,url` has shipped in gh for years and
+// works on all currently-supported Ubuntu LTS images. The previous impl used
+// `gh pr checks --json` which was added in a much later gh release and broke
+// pr_wait_ci on gh 2.45 (Ubuntu 24.04 default) — see #220.
 function snapshotGithub(number: number, repo?: string): ChecksSnapshot {
-  const raw = exec(`gh pr checks ${number} --json name,bucket,state${repoFlag(repo)}`);
-  const checks = JSON.parse(raw) as GithubCheck[];
+  const raw = exec(`gh pr view ${number} --json statusCheckRollup,url${repoFlag(repo)}`);
+  const view = JSON.parse(raw) as PrViewResponse;
+  const checks = view.statusCheckRollup ?? [];
 
   let passed = 0;
   let failed = 0;
   let pending = 0;
   for (const c of checks) {
-    const b = (c.bucket ?? '').toLowerCase();
+    const b = classifyRollupItem(c);
     if (b === 'pass') passed++;
-    else if (b === 'fail' || b === 'cancel') failed++;
+    else if (b === 'fail') failed++;
     else if (b === 'pending') pending++;
     // 'skipping' is not counted against any bucket
   }
-
-  const urlRaw = (() => {
-    try {
-      return exec(`gh pr view ${number} --json url${repoFlag(repo)}`);
-    } catch {
-      return '{"url":""}';
-    }
-  })();
-  const url = (JSON.parse(urlRaw) as { url?: string }).url ?? '';
 
   const total = checks.length;
   return {
@@ -89,7 +141,7 @@ function snapshotGithub(number: number, repo?: string): ChecksSnapshot {
     failed,
     pending,
     summary: `${passed}/${total} passed, ${failed} failed, ${pending} pending`,
-    url,
+    url: view.url ?? '',
   };
 }
 
