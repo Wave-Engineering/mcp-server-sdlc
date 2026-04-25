@@ -36,10 +36,17 @@ interface ProbeOutput {
   pairs: ProbePair[];
 }
 
-const VALID_VERDICTS = ['STRONG', 'MEDIUM', 'WEAK', 'ORACLE_REQUIRED'] as const;
+// Wire-side: verdicts the probe is allowed to emit. Validation against
+// probe stdout uses this set.
+const PROBE_VERDICTS = ['STRONG', 'MEDIUM', 'WEAK', 'ORACLE_REQUIRED'] as const;
+// Full union: includes envelope-only verdicts the handler synthesizes
+// (timeout → ORACLE_REQUIRED; binary missing → PROBE_UNAVAILABLE). Response
+// types and the public schema document this set.
+const VERDICTS = [...PROBE_VERDICTS, 'PROBE_UNAVAILABLE'] as const;
+type Verdict = (typeof VERDICTS)[number];
 
-function isValidVerdict(v: string): v is (typeof VALID_VERDICTS)[number] {
-  return (VALID_VERDICTS as readonly string[]).includes(v);
+function isProbeVerdict(v: string): v is (typeof PROBE_VERDICTS)[number] {
+  return (PROBE_VERDICTS as readonly string[]).includes(v);
 }
 
 /**
@@ -86,12 +93,45 @@ interface SingleTargetResult {
   head_ref: string;
 }
 
+// Build the "fail-safe verdict" envelope shared by the timeout path and the
+// probe-missing path. Both synthesize a verdict the probe never emitted, so
+// the body shape (mode, alias, mode-appropriate sub-result) must stay
+// consistent — divergence here would make callers' dispatch logic brittle.
+function buildFailSafeBody(
+  args: Input,
+  mode: Mode,
+  verdict: Verdict,
+  warning: string,
+): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    ok: true,
+    mode,
+    verdict,
+    group_verdict: verdict,
+    pairs: [],
+    warnings: [warning],
+  };
+  if (mode === 'pairwise') {
+    body.pairwise_results = [];
+  } else {
+    const cs = args.changesets[0];
+    body.single_target_result = {
+      verdict,
+      changeset_id: cs.id,
+      head_ref: cs.head_ref,
+    } satisfies SingleTargetResult;
+  }
+  return body;
+}
+
 const commutativityVerifyHandler: HandlerDef = {
   name: 'commutativity_verify',
   description:
     'Verify changeset commutativity / single-target safety from actual git diffs. ' +
     'Pairwise mode (≥2 changesets): decides whether the merge train pipeline is needed for a flight of MRs — call AFTER all MR pipelines in the flight pass (pr_wait_ci green) and BEFORE pr_merge. ' +
     'Single-target mode (1 changeset): KAHUNA composed-diff safety gate — is this branch safe to land in base_ref? ' +
+    'Verdict union: STRONG | MEDIUM | WEAK | ORACLE_REQUIRED (probe-emitted) | PROBE_UNAVAILABLE (handler-synthesized when the probe binary is missing from PATH; install via scripts/install-remote.sh). ' +
+    'PROBE_UNAVAILABLE shares the same body shape as a timeout (mode, verdict, group_verdict alias, pairs:[], warnings:[...], mode-appropriate single_target_result/pairwise_results) and should be treated as conservative-fail (sequential merge fallback) by callers. ' +
     'The response includes both mode-specific fields and legacy aliases (`group_verdict`, `pairs`) for backward compat.',
   inputSchema,
   async execute(rawArgs: unknown) {
@@ -129,36 +169,48 @@ const commutativityVerifyHandler: HandlerDef = {
       log.info('subprocess', { cmd: 'commutativity-probe', exit_code: 0, ms: Date.now() - subStart });
     } catch (err) {
       const subMs = Date.now() - subStart;
-      // Fail safe: any subprocess error → ORACLE_REQUIRED verdict with warning.
       const message = err instanceof Error ? err.message : String(err);
+      const code = (err as NodeJS.ErrnoException | undefined)?.code;
+      const status = (err as { status?: number } | undefined)?.status;
+
+      // Probe binary not on PATH → synthesize PROBE_UNAVAILABLE (#218). With
+      // execSync in shell mode (the call above), Node spawns `/bin/sh -c …`
+      // which always succeeds (sh is found), so an ENOENT spawn failure is
+      // unreachable here — the real signal is the shell exiting 127 ("command
+      // not found"). The message regex catches mocked errors and odd shells
+      // that don't propagate the status cleanly. NB: only the missing-binary
+      // case becomes PROBE_UNAVAILABLE — probe crashes / non-zero exits stay
+      // {ok: false} so real probe bugs surface.
+      const probeMissing = status === 127
+        || /commutativity-probe[^:]*:\s*(command )?not found/i.test(message);
+      if (probeMissing) {
+        log.warn('subprocess', { cmd: 'commutativity-probe', exit_code: status ?? -1, ms: subMs }, 'commutativity-probe binary not found on PATH');
+        const body = buildFailSafeBody(
+          args,
+          mode,
+          'PROBE_UNAVAILABLE',
+          'commutativity-probe binary not found on PATH; install via mcp-server-sdlc/scripts/install-remote.sh or `pip install --user git+https://github.com/Wave-Engineering/commutativity-probe.git@v0.1.0`',
+        );
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(body) }],
+        };
+      }
+
       // Real execSync timeouts set err.code === 'ETIMEDOUT'. Fall back to
       // substring match for mocked errors and older runtimes.
-      const code = (err as NodeJS.ErrnoException | undefined)?.code;
       const timedOut = code === 'ETIMEDOUT'
         || message.includes('ETIMEDOUT')
         || message.includes('timed out');
       if (timedOut) {
         log.warn('subprocess', { cmd: 'commutativity-probe', exit_code: -1, ms: subMs }, 'Subprocess timed out');
-        const timeoutBody: Record<string, unknown> = {
-          ok: true,
+        const body = buildFailSafeBody(
+          args,
           mode,
-          verdict: 'ORACLE_REQUIRED',
-          group_verdict: 'ORACLE_REQUIRED',
-          pairs: [],
-          warnings: [`Subprocess timed out after ${timeoutMs}ms. Failing safe to ORACLE_REQUIRED.`],
-        };
-        if (mode === 'pairwise') {
-          timeoutBody.pairwise_results = [];
-        } else {
-          const cs = args.changesets[0];
-          timeoutBody.single_target_result = {
-            verdict: 'ORACLE_REQUIRED',
-            changeset_id: cs.id,
-            head_ref: cs.head_ref,
-          } satisfies SingleTargetResult;
-        }
+          'ORACLE_REQUIRED',
+          `Subprocess timed out after ${timeoutMs}ms. Failing safe to ORACLE_REQUIRED.`,
+        );
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify(timeoutBody) }],
+          content: [{ type: 'text' as const, text: JSON.stringify(body) }],
         };
       }
       log.error('subprocess', { cmd: 'commutativity-probe', exit_code: -1, ms: subMs, stderr: message.slice(0, 200) });
@@ -180,12 +232,12 @@ const commutativityVerifyHandler: HandlerDef = {
     }
 
     // Validate the verdict value from the probe.
-    const verdict = isValidVerdict(probe.flight_verdict)
+    const verdict = isProbeVerdict(probe.flight_verdict)
       ? probe.flight_verdict
       : 'ORACLE_REQUIRED';
 
     const warnings: string[] = [];
-    if (!isValidVerdict(probe.flight_verdict)) {
+    if (!isProbeVerdict(probe.flight_verdict)) {
       warnings.push(`Unknown verdict '${probe.flight_verdict}' from probe — defaulting to ORACLE_REQUIRED`);
     }
 
@@ -195,7 +247,7 @@ const commutativityVerifyHandler: HandlerDef = {
     // single_target_result and pairwise_results populated.
     let pairs = mapPairIds(probe.pairs, refToId).map(p => ({
       ...p,
-      verdict: isValidVerdict(p.verdict) ? p.verdict : 'ORACLE_REQUIRED',
+      verdict: isProbeVerdict(p.verdict) ? p.verdict : 'ORACLE_REQUIRED',
     }));
     if (mode === 'single_target' && pairs.length > 0) {
       warnings.push(`Probe returned ${pairs.length} pair(s) for a single-target call — discarding (unexpected shape)`);
