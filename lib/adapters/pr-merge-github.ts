@@ -142,6 +142,7 @@ function aggregateOk(args: {
   url: string;
   mergeCommitSha?: string;
   warnings: string[];
+  queueFallback?: boolean;
 }): PrMergeResponse {
   return {
     number: args.number,
@@ -153,6 +154,7 @@ function aggregateOk(args: {
     url: args.url,
     merge_commit_sha: args.mergeCommitSha,
     warnings: args.warnings,
+    queue_fallback: args.queueFallback === true,
   };
 }
 
@@ -274,28 +276,39 @@ async function mergeGithubDirect(
     };
   } catch (err) {
     const fail = extractFailure(err);
-    if (args.skip_train === true) {
+    const indicatesQueue =
+      stderrIndicatesMergeQueue(fail.stderr) || stderrIndicatesMergeQueue(fail.message);
+    // skip_train callers opt out of the queue path when possible, but a
+    // queue-enforced repo (bug #280) will reject the direct merge with a
+    // queue-strategy error that detection missed. When the stderr matches,
+    // fold skip_train into the same fallback path as non-skip_train — emit
+    // the #224 "skip_train ignored" warning and re-invoke with --auto so the
+    // PR enrolls instead of surfacing a user-facing error.
+    if (args.skip_train === true && !indicatesQueue) {
       return {
         ok: false,
         code: 'gh_pr_merge_skip_train_failed',
         error: `gh pr merge failed (skip_train): ${fail.message}`,
       };
     }
-    if (
-      !stderrIndicatesMergeQueue(fail.stderr) &&
-      !stderrIndicatesMergeQueue(fail.message)
-    ) {
+    if (args.skip_train !== true && !indicatesQueue) {
       return {
         ok: false,
         code: 'gh_pr_merge_failed',
         error: `gh pr merge failed: ${fail.message}`,
       };
     }
+    if (args.skip_train === true) {
+      warnings.push(
+        'skip_train ignored — merge queue enforced; merge proceeded via merge_queue strategy',
+      );
+    }
   }
 
   // Stderr-fallback path: detection thought no queue, but the API rejected
   // the direct merge with a queue-related error. Promote the queue state so
-  // the response reflects what we just learned.
+  // the response reflects what we just learned. Mark `queue_fallback: true`
+  // so callers can log the silent retry (bug #280 / #294).
   const fallbackQueue: PrMergeQueueState = { enabled: true, position: null, enforced: true };
   const autoCmd = buildGithubMergeCommand(args.number, true, args.squash_message, args.repo);
   try {
@@ -319,6 +332,7 @@ async function mergeGithubDirect(
       url: info.url,
       mergeCommitSha: info.mergeCommitSha,
       warnings,
+      queueFallback: true,
     }),
   };
 }

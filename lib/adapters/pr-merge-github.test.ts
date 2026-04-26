@@ -124,6 +124,7 @@ describe('prMergeGithub — subprocess boundary', () => {
       url: 'https://github.com/org/repo/pull/42',
       merge_commit_sha: 'abc123def456',
       warnings: [],
+      queue_fallback: false,
     });
   });
 
@@ -309,5 +310,100 @@ describe('prMergeGithub — subprocess boundary', () => {
     const graphqlCall = findCall('gh api graphql');
     expect(graphqlCall).toContain('-F owner=Wave-Engineering');
     expect(graphqlCall).toContain('-F name=mcp-server-sdlc');
+  });
+
+  // =========================================================================
+  // Bug #280 / Story 2.0 (#294) — skip_train + queue-strategy error fallback
+  // =========================================================================
+
+  test('pr-merge-github — queue-strategy error triggers --auto fallback', async () => {
+    // Detection returns false-negative (no queue), skip_train:true requested,
+    // direct merge fails with queue-strategy error. Expected: retry with --auto
+    // rather than surface gh_pr_merge_skip_train_failed to the caller.
+    stubNoQueue();
+    let directCalled = false;
+    on('gh pr merge 280 --squash --delete-branch', () => {
+      if (!directCalled) {
+        directCalled = true;
+        throw mergeQueueError();
+      }
+      return '';
+    });
+    on(
+      'gh pr view 280 --json state,url,mergeCommit',
+      JSON.stringify({
+        state: 'OPEN',
+        url: 'https://github.com/org/repo/pull/280',
+        mergeCommit: null,
+      }),
+    );
+
+    const result = await prMergeGithub({ number: 280, skip_train: true });
+    expectOk(result);
+    expect(result.data.merge_method).toBe('merge_queue');
+    expect(result.data.enrolled).toBe(true);
+    expect(result.data.queue).toEqual({ enabled: true, position: null, enforced: true });
+    // The --auto retry must have fired after the queue-strategy error.
+    const autoCall = execCalls.find(
+      (c) => c.includes('gh pr merge 280') && c.includes('--auto'),
+    );
+    expect(autoCall).toBeDefined();
+    // skip_train warning must be emitted (folded from the #224 preservation).
+    expect(result.data.warnings.length).toBe(1);
+    expect(result.data.warnings[0]).toContain('skip_train ignored');
+    expect(result.data.warnings[0]).toContain('merge queue');
+  });
+
+  test('pr-merge-github — queue_fallback: true in response when fallback fires', async () => {
+    // Same scenario as above but focused on the new response-shape field.
+    stubNoQueue();
+    let directCalled = false;
+    on('gh pr merge 281 --squash --delete-branch', () => {
+      if (!directCalled) {
+        directCalled = true;
+        throw mergeQueueError();
+      }
+      return '';
+    });
+    on(
+      'gh pr view 281 --json state,url,mergeCommit',
+      JSON.stringify({
+        state: 'OPEN',
+        url: 'https://github.com/org/repo/pull/281',
+        mergeCommit: null,
+      }),
+    );
+
+    const result = await prMergeGithub({ number: 281, skip_train: true });
+    expectOk(result);
+    expect(result.data.queue_fallback).toBe(true);
+  });
+
+  test('pr-merge-github — no fallback when merge-admin succeeds', async () => {
+    // Happy path: skip_train:true + no queue enforcement + direct merge
+    // succeeds synchronously. queue_fallback must stay false — the field is a
+    // signal that the silent retry fired, not that skip_train was requested.
+    stubNoQueue();
+    on('gh pr merge 282 --squash --delete-branch', '');
+    on(
+      'gh pr view 282 --json state,url,mergeCommit',
+      JSON.stringify({
+        state: 'MERGED',
+        url: 'https://github.com/org/repo/pull/282',
+        mergeCommit: { oid: 'happy282' },
+      }),
+    );
+
+    const result = await prMergeGithub({ number: 282, skip_train: true });
+    expectOk(result);
+    expect(result.data.merge_method).toBe('direct_squash');
+    expect(result.data.merged).toBe(true);
+    expect(result.data.queue_fallback).toBe(false);
+    expect(result.data.warnings).toEqual([]);
+    // No --auto call on the happy path.
+    const autoCall = execCalls.find(
+      (c) => c.includes('gh pr merge 282') && c.includes('--auto'),
+    );
+    expect(autoCall).toBeUndefined();
   });
 });

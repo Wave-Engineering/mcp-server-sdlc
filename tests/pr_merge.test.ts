@@ -409,22 +409,44 @@ describe('pr_merge handler — aggregate response (#225)', () => {
     expect(directOnly).toBeUndefined();
   });
 
-  test('skip_train + non-enforced repo + queue stderr — surfaces error (no fallback)', async () => {
+  test('skip_train + non-enforced repo + queue stderr — silently falls back to --auto (bug #280)', async () => {
+    // Bug #280 / Story 2.0 (#294): when detection misses the queue upfront but
+    // gh rejects the direct merge with the queue-strategy error, fold
+    // skip_train into the same stderr-fallback path used for the non-skip_train
+    // case. Emit the #224 skip_train-ignored warning and set queue_fallback:true
+    // so callers can log the silent retry.
     onExec('git remote get-url origin', 'https://github.com/org/repo.git\n');
     stubNoQueue();
+    let directCalled = false;
     onExec('gh pr merge 202 --squash --delete-branch', () => {
-      throw mergeQueueError();
+      if (!directCalled) {
+        directCalled = true;
+        throw mergeQueueError();
+      }
+      return '';
     });
+    onExec(
+      'gh pr view 202 --json state,url,mergeCommit',
+      JSON.stringify({
+        state: 'OPEN',
+        url: 'https://github.com/org/repo/pull/202',
+        mergeCommit: null,
+      }),
+    );
 
     const result = await prMergeHandler.execute({ number: 202, skip_train: true });
     const data = parseResult(result);
 
-    expect(data.ok).toBe(false);
-    expect((data.error as string)).toContain('skip_train');
+    expect(data.ok).toBe(true);
+    expect(data.merge_method).toBe('merge_queue');
+    expect(data.queue_fallback).toBe(true);
+    const warnings = data.warnings as string[];
+    expect(warnings.length).toBe(1);
+    expect(warnings[0]).toContain('skip_train ignored');
     const autoCall = execCalls.find(
       c => c.includes('gh pr merge 202') && c.includes('--auto'),
     );
-    expect(autoCall).toBeUndefined();
+    expect(autoCall).toBeDefined();
   });
 
   // ===========================================================================
