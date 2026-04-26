@@ -2,8 +2,14 @@
 // See docs/handlers/origin-operations-guide.md for the canonical pattern,
 // gh ↔ glab field mappings, and normalized response schemas.
 
+import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
+
+// Codebase convention: child_process.execSync (29/36 handlers, including
+// pr_merge). Tests mock it via `mock.module('child_process', ...)`. This
+// handler was migrated from Bun's spawn API for uniformity (#238) so the
+// adapter retrofit can stub the subprocess boundary in one place.
 
 const inputSchema = z.object({
   title: z.string().min(1, 'title must be a non-empty string'),
@@ -32,22 +38,42 @@ interface RunResult {
   stderr: string;
 }
 
+interface ExecError extends Error {
+  stdout?: Buffer | string;
+  stderr?: Buffer | string;
+  status?: number;
+}
+
+function bufToString(b: unknown): string {
+  if (b === undefined || b === null) return '';
+  if (typeof b === 'string') return b;
+  if (typeof (b as Buffer).toString === 'function') return (b as Buffer).toString();
+  return String(b);
+}
+
+function shellEscape(value: string): string {
+  // Single-quote the arg and escape any embedded single quotes — same form
+  // as pr_merge.ts / pr_list.ts. Safe for arbitrary user-supplied strings
+  // (titles, bodies, branch names) when the shell is invoked.
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+// Convert execSync's exception-on-non-zero contract into the result-bag
+// shape the rest of the handler already consumes. Keeps downstream branching
+// (which checks exitCode and stdout/stderr) untouched after the migration.
 function run(cmd: string[], cwd: string): RunResult {
-  // Explicitly pass `env` so subprocess PATH reflects the current
-  // `process.env.PATH` — Bun.spawnSync otherwise snapshots env at process
-  // start, which breaks tests that inject fake gh/glab/git via PATH stubs.
-  const proc = Bun.spawnSync({
-    cmd,
-    cwd,
-    stdout: 'pipe',
-    stderr: 'pipe',
-    env: { ...process.env },
-  });
-  return {
-    exitCode: proc.exitCode ?? -1,
-    stdout: new TextDecoder().decode(proc.stdout),
-    stderr: new TextDecoder().decode(proc.stderr),
-  };
+  const shellCmd = cmd.map(shellEscape).join(' ');
+  try {
+    const stdout = execSync(shellCmd, { cwd, encoding: 'utf8' });
+    return { exitCode: 0, stdout, stderr: '' };
+  } catch (err) {
+    const e = err as ExecError;
+    return {
+      exitCode: typeof e.status === 'number' ? e.status : -1,
+      stdout: bufToString(e.stdout),
+      stderr: bufToString(e.stderr) || (err instanceof Error ? err.message : String(err)),
+    };
+  }
 }
 
 // Platform detection from the project's git remote. The .claude-project.md
