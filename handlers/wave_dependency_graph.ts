@@ -1,11 +1,16 @@
+// Wave-family handler — adapter-dispatching shell. Subprocess + platform
+// branching live in lib/adapters/fetch-issue-{github,gitlab}.ts (Story 2.1,
+// #295); dependency-graph parsing + topology live in
+// lib/wave-dependency-graph.ts (Story 2.9, #303). This handler is dispatch +
+// envelope only.
+
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
-import { parseIssueRef, parseSections, type IssueRef } from '../lib/spec_parser';
-import { buildGraph, computeWaves, type DepNode } from '../lib/dependency_graph';
-import { detectPlatform } from '../lib/shared/detect-platform.js';
+import { parseIssueRef, type IssueRef } from '../lib/spec_parser';
 import { parseRepoSlug } from '../lib/shared/parse-repo-slug.js';
-import { gitlabApiIssue } from '../lib/glab.js';
-import { execSync } from 'child_process';
+import { getAdapter } from '../lib/adapters/index.js';
+import type { IssueFetcher } from '../lib/wave-compute.js';
+import { computeDependencyGraph } from '../lib/wave-dependency-graph.js';
 
 const inputSchema = z
   .object({
@@ -17,74 +22,12 @@ const inputSchema = z
     'provide exactly one of issue_refs or epic_ref',
   );
 
-function fetchIssue(ref: IssueRef): { body: string; title: string } {
-  const platform = detectPlatform();
-  if (platform === 'github') {
-    const repoArg = ref.owner && ref.repo ? `--repo ${ref.owner}/${ref.repo}` : '';
-    const cmd = `gh issue view ${ref.number} ${repoArg} --json body,title`.trim();
-    const raw = execSync(cmd, { encoding: 'utf8' });
-    const parsed = JSON.parse(raw) as { body?: string; title: string };
-    return { body: parsed.body ?? '', title: parsed.title };
-  }
-  const result = gitlabApiIssue(ref.number, ref.owner && ref.repo ? { owner: ref.owner, repo: ref.repo } : undefined);
-  return { body: result.description ?? '', title: result.title };
+function envelope(payload: unknown) {
+  return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
 }
 
-function normalizeRef(ref: string, currentSlug: string | null): string {
-  const urlM =
-    /https?:\/\/(?:github\.com|gitlab\.com)\/([^\s/]+)\/([^\s/]+)\/(?:-\/)?issues\/(\d+)/.exec(
-      ref,
-    );
-  if (urlM) return `${urlM[1]}/${urlM[2]}#${urlM[3]}`;
-  const crossM = /^([^/\s#]+)\/([^/\s#]+)#(\d+)$/.exec(ref);
-  if (crossM) return ref;
-  const shortM = /^#?(\d+)$/.exec(ref);
-  if (shortM) return currentSlug ? `${currentSlug}#${shortM[1]}` : `#${shortM[1]}`;
-  return ref;
-}
-
-function parseDependencies(section: string, currentSlug: string | null): string[] {
-  if (!section || /^none\b/i.test(section.trim())) return [];
-  const found = new Set<string>();
-  const urlRe =
-    /https?:\/\/(?:github\.com|gitlab\.com)\/([^\s/]+)\/([^\s/]+)\/(?:-\/)?issues\/(\d+)/g;
-  let m: RegExpExecArray | null;
-  while ((m = urlRe.exec(section)) !== null) {
-    found.add(`${m[1]}/${m[2]}#${m[3]}`);
-  }
-  const crossRe = /\b([^\s/#]+)\/([^\s/#]+)#(\d+)\b/g;
-  while ((m = crossRe.exec(section)) !== null) {
-    if (m[1].startsWith('http') || m[1].includes('.')) continue;
-    found.add(`${m[1]}/${m[2]}#${m[3]}`);
-  }
-  const shortRe = /(?<![/\w])#(\d+)\b/g;
-  while ((m = shortRe.exec(section)) !== null) {
-    found.add(currentSlug ? `${currentSlug}#${m[1]}` : `#${m[1]}`);
-  }
-  return Array.from(found);
-}
-
-function resolveIssueList(
-  issueRefs: string[] | undefined,
-  epicRef: string | undefined,
-  slug: string | null,
-): string[] {
-  if (issueRefs) return issueRefs.map(r => normalizeRef(r, slug));
-  if (!epicRef) return [];
-  const ref = parseIssueRef(epicRef);
-  if (!ref) return [];
-  const epic = fetchIssue(ref);
-  const sections = parseSections(epic.body).sections;
-  const subSection =
-    sections.sub_issues ?? sections.subissues ?? sections.children ?? sections.tasks ?? '';
-  const refs: string[] = [];
-  const re = /(?:^|\s)([^/\s#]+\/[^/\s#]+#\d+|https?:\/\/\S+\/issues\/\d+|#\d+)/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(subSection)) !== null) {
-    refs.push(normalizeRef(m[1], slug));
-  }
-  const seen = new Set<string>();
-  return refs.filter(r => !seen.has(r) && (seen.add(r), true));
+function repoSlug(ref: IssueRef): string | undefined {
+  return ref.owner && ref.repo ? `${ref.owner}/${ref.repo}` : undefined;
 }
 
 const waveDependencyGraphHandler: HandlerDef = {
@@ -96,16 +39,23 @@ const waveDependencyGraphHandler: HandlerDef = {
     try {
       args = inputSchema.parse(rawArgs);
     } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error }) }],
-      };
+      return envelope({ ok: false, error: err instanceof Error ? err.message : String(err) });
     }
 
+    // Adapter-backed fetcher: throws on error so the lib's per-sub try/catch
+    // (failures → warnings; epic failure → outer catch) is preserved verbatim.
+    const fetchIssue: IssueFetcher = async (r: IssueRef) => {
+      const repo = repoSlug(r);
+      const result = await getAdapter({ repo }).fetchIssue({ number: r.number, repo });
+      if ('platform_unsupported' in result) throw new Error(result.hint);
+      if (!result.ok) throw new Error(result.error);
+      return { body: result.data.body, title: result.data.title };
+    };
+
     try {
-      // When invoked with an epic_ref, resolve bare `#N` refs against the
-      // EPIC's repo (fallback to cwd slug for bare epic refs). When invoked
-      // with issue_refs directly, there's no epic context — use cwd slug.
+      // Resolve bare `#N` refs against the EPIC's repo (fallback to cwd slug
+      // for bare epic refs). When invoked with issue_refs directly, there's no
+      // epic context — use cwd slug.
       let slug: string | null = parseRepoSlug();
       if (args.epic_ref) {
         const epicParsed = parseIssueRef(args.epic_ref);
@@ -113,100 +63,15 @@ const waveDependencyGraphHandler: HandlerDef = {
           slug = `${epicParsed.owner}/${epicParsed.repo}`;
         }
       }
-      const refs = resolveIssueList(args.issue_refs, args.epic_ref, slug);
-      if (refs.length === 0) {
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: JSON.stringify({
-                ok: true,
-                nodes: [],
-                edges: [],
-                fetched_count: 0,
-              }),
-            },
-          ],
-        };
-      }
-
-      const nodes: DepNode[] = [];
-      const failures: string[] = [];
-      let fetchedCount = 0;
-
-      for (const ref of refs) {
-        const parsed = parseIssueRef(ref);
-        if (!parsed) continue;
-        try {
-          const data = fetchIssue(parsed);
-          const sections = parseSections(data.body).sections;
-          // Use the sub-issue's own repo slug for its deps, not the epic's.
-          const refSlug =
-            parsed.owner && parsed.repo ? `${parsed.owner}/${parsed.repo}` : slug;
-          nodes.push({
-            ref,
-            title: data.title,
-            depends_on: parseDependencies(sections.dependencies ?? '', refSlug),
-          });
-          fetchedCount++;
-        } catch (err) {
-          const errorMsg = err instanceof Error ? err.message : String(err);
-          failures.push(`failed to fetch ${ref}: ${errorMsg}`);
-        }
-      }
-
-      // If ALL fetches failed, return ok: false
-      if (fetchedCount === 0 && refs.length > 0) {
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: JSON.stringify({
-                ok: false,
-                error: `all ${refs.length} spec fetches failed: ${failures[0] ?? 'unknown error'}`,
-                issue_count: refs.length,
-                fetched_count: 0,
-              }),
-            },
-          ],
-        };
-      }
-
-      const graph = buildGraph(nodes);
-      const waveResult = computeWaves(nodes);
-      const response: {
-        ok: true;
-        nodes: typeof graph.nodes;
-        edges: typeof graph.edges;
-        reason: string;
-        fetched_count: number;
-        warnings?: string[];
-      } = {
-        ok: true,
-        nodes: graph.nodes,
-        edges: graph.edges,
-        reason: waveResult.reason,
-        fetched_count: fetchedCount,
-      };
-
-      // Add warnings if SOME fetches failed
-      if (failures.length > 0) {
-        response.warnings = failures;
-      }
-
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(response),
-          },
-        ],
-      };
+      const result = await computeDependencyGraph(
+        args.issue_refs,
+        args.epic_ref,
+        slug,
+        fetchIssue,
+      );
+      return envelope(result);
     } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error }) }],
-      };
+      return envelope({ ok: false, error: err instanceof Error ? err.message : String(err) });
     }
   },
 };

@@ -12,7 +12,6 @@
 ci_wait_run.ts
 ibm.ts
 wave_ci_trust_level.ts
-wave_dependency_graph.ts
 wave_finalize.ts
 wave_init.ts
 wave_previous_merged.ts
