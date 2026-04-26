@@ -2,16 +2,27 @@ import { describe, test, expect, mock, beforeEach } from 'bun:test';
 
 // --- Mock child_process.execSync at module level ---
 // We intercept execSync via a registry so individual tests can override calls.
+//
+// pr_diff now dispatches through the platform adapter (Story 1.4 / #241), and
+// the GitHub adapter calls subprocess via `runArgv` which shell-escapes its
+// argv (`'gh' 'pr' 'diff' '42'`). The `unquote` shim strips that quoting so
+// test match-keys can stay as plain `gh pr diff 42` strings — same pattern
+// adopted by tests/pr_create.test.ts in PR #266.
 
 let execRegistry: Array<{ match: string; value: string }> = [];
 let execError: Error | null = null;
 let execCalls: string[] = [];
 
+function unquote(cmd: string): string {
+  return cmd.replace(/'([^']*)'/g, '$1');
+}
+
 function mockExec(cmd: string): string {
   execCalls.push(cmd);
   if (execError) throw execError;
+  const flat = unquote(cmd);
   for (const { match, value } of execRegistry) {
-    if (cmd.includes(match)) return value;
+    if (cmd.includes(match) || flat.includes(match)) return value;
   }
   throw new Error(`Unexpected exec call: ${cmd}`);
 }
@@ -259,10 +270,10 @@ describe('pr_diff handler', () => {
     const data = parseResult(result.content);
     expect(data.ok).toBe(true);
 
-    const diffCall = execCalls.find((c) => c.startsWith('gh pr diff 42')) ?? '';
-    expect(diffCall).toContain('--repo Wave-Engineering/mcp-server-sdlc');
-    const viewCall = execCalls.find((c) => c.startsWith('gh pr view 42')) ?? '';
-    expect(viewCall).toContain('--repo Wave-Engineering/mcp-server-sdlc');
+    const diffCall = execCalls.find((c) => unquote(c).startsWith('gh pr diff 42')) ?? '';
+    expect(unquote(diffCall)).toContain('--repo Wave-Engineering/mcp-server-sdlc');
+    const viewCall = execCalls.find((c) => unquote(c).startsWith('gh pr view 42')) ?? '';
+    expect(unquote(viewCall)).toContain('--repo Wave-Engineering/mcp-server-sdlc');
   });
 
   test('route_with_repo — gitlab forwards slug into glab mr diff + glab api path', async () => {
@@ -280,8 +291,8 @@ describe('pr_diff handler', () => {
     const data = parseResult(result.content);
     expect(data.ok).toBe(true);
 
-    const diffCall = execCalls.find((c) => c.startsWith('glab mr diff 11')) ?? '';
-    expect(diffCall).toContain('--repo target-org/target-repo');
+    const diffCall = execCalls.find((c) => unquote(c).startsWith('glab mr diff 11')) ?? '';
+    expect(unquote(diffCall)).toContain('--repo target-org/target-repo');
     const apiCall = execCalls.find((c) => c.includes('glab api projects/')) ?? '';
     expect(apiCall).toContain('target-org%2Ftarget-repo');
     expect(apiCall).not.toContain('cwd-org%2Fcwd-repo');
@@ -297,10 +308,10 @@ describe('pr_diff handler', () => {
 
     await prDiffHandler.execute({ number: 7 });
 
-    const diffCall = execCalls.find((c) => c.startsWith('gh pr diff 7')) ?? '';
-    expect(diffCall).not.toContain('--repo');
-    const viewCall = execCalls.find((c) => c.startsWith('gh pr view 7')) ?? '';
-    expect(viewCall).not.toContain('--repo');
+    const diffCall = execCalls.find((c) => unquote(c).startsWith('gh pr diff 7')) ?? '';
+    expect(unquote(diffCall)).not.toContain('--repo');
+    const viewCall = execCalls.find((c) => unquote(c).startsWith('gh pr view 7')) ?? '';
+    expect(unquote(viewCall)).not.toContain('--repo');
   });
 
   test('invalid_slug_early_error — returns ok:false with zero exec calls', async () => {

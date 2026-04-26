@@ -15,6 +15,7 @@
 
 import type { PlatformAdapter } from './types.js';
 import { prCreateGithub } from './pr-create-github.js';
+import { prDiffGithub } from './pr-diff-github.js';
 
 const stubMethod = async (_args: unknown) => ({
   platform_unsupported: true as const,
@@ -26,7 +27,7 @@ export const githubAdapter: PlatformAdapter = {
   prMerge: stubMethod,
   prMergeWait: stubMethod,
   prStatus: stubMethod,
-  prDiff: stubMethod,
+  prDiff: prDiffGithub,
   prComment: stubMethod,
   prFiles: stubMethod,
   prList: stubMethod,

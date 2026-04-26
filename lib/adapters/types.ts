@@ -66,8 +66,19 @@ export type PrMergeWaitArgs = unknown;
 export type PrMergeWaitResponse = unknown;
 export type PrStatusArgs = unknown;
 export type PrStatusResponse = unknown;
-export type PrDiffArgs = unknown;
-export type PrDiffResponse = unknown;
+export interface PrDiffArgs {
+  number: number;
+  repo?: string;
+}
+
+export interface PrDiffResponse {
+  number: number;
+  diff: string;
+  line_count: number;
+  file_count: number;
+  url: string;
+  truncated: boolean;
+}
 export type PrCommentArgs = unknown;
 export type PrCommentResponse = unknown;
 export type PrFilesArgs = unknown;

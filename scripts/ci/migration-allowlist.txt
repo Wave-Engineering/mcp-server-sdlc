@@ -20,7 +20,6 @@ ibm.ts
 label_create.ts
 label_list.ts
 pr_comment.ts
-pr_diff.ts
 pr_files.ts
 pr_list.ts
 pr_merge.ts
