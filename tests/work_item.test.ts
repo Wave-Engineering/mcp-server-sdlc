@@ -1,79 +1,117 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, mock, beforeEach } from 'bun:test';
 
-// ---- Mocks ----------------------------------------------------------------
-// We intercept child_process.execSync and fs.writeFileSync so no OS calls happen.
+// Integration coverage for the work_item handler post-Story-2.17 (#311).
+//
+// work_item now dispatches through the platform adapter; per-platform adapters
+// call subprocess via `runArgv`, which shell-escapes its argv (e.g.
+// `'gh' 'issue' 'create' '--title' 'X'`). The `unquote` shim strips that
+// quoting so test match-keys can stay as plain `gh issue create` strings —
+// same pattern adopted by tests/label_list.test.ts / tests/label_create.test.ts.
+//
+// Argv-shape assertions live in the colocated adapter tests
+// (lib/adapters/work-item-{github,gitlab}.test.ts). This file owns:
+//   - schema validation
+//   - handler envelope shape
+//   - cross-platform dispatch via detect-platform
+//   - #281 regression (cross-platform asymmetry)
 
-let lastExecCall = '';
-let execMockFn: (cmd: string) => string = () => 'https://github.com/org/repo/issues/42\n';
+interface MockExecError extends Error {
+  stderr?: string;
+  stdout?: string;
+  status?: number;
+}
+
+let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
+let execCalls: string[] = [];
+
+function unquote(cmd: string): string {
+  return cmd.replace(/'([^']*)'/g, '$1');
+}
 
 const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  lastExecCall = cmd;
-  return execMockFn(cmd);
+  execCalls.push(cmd);
+  const flat = unquote(cmd);
+  for (const { match, respond } of execRegistry) {
+    if (cmd.includes(match) || flat.includes(match)) {
+      return typeof respond === 'function' ? respond() : respond;
+    }
+  }
+  throw new Error(`Unexpected exec: ${cmd}`);
 });
 
-const mockWriteFileSync = mock((_path: unknown, _data: unknown) => undefined);
-
-// Patch modules before importing the handler
 mock.module('child_process', () => ({ execSync: mockExecSync }));
-mock.module('fs', () => ({ writeFileSync: mockWriteFileSync }));
 
-// Now import handler (after mocks are in place)
 const { default: handler } = await import('../handlers/work_item.ts');
 
-// ---- Helpers ----------------------------------------------------------------
-function resetMocks() {
-  lastExecCall = '';
-  mockExecSync.mockClear();
-  mockWriteFileSync.mockClear();
+function parseResult(content: Array<{ type: string; text: string }>) {
+  return JSON.parse(content[0].text) as Record<string, unknown>;
 }
 
-function setOriginUrl(url: string) {
-  execMockFn = (cmd: string) => {
-    if (cmd.startsWith('git remote get-url')) return url + '\n';
-    return 'https://github.com/org/repo/issues/42\n';
-  };
+function onExec(match: string, respond: string | (() => string)): void {
+  execRegistry.push({ match, respond });
 }
 
-function setGitlabOrigin() {
-  execMockFn = (cmd: string) => {
-    if (cmd.startsWith('git remote get-url')) return 'git@gitlab.com:org/repo.git\n';
-    return 'https://gitlab.com/org/repo/-/issues/7\n';
-  };
-}
-
-// ---- Tests -----------------------------------------------------------------
+beforeEach(() => {
+  execRegistry = [];
+  execCalls = [];
+});
 
 describe('work_item handler', () => {
-  beforeEach(resetMocks);
-  afterEach(resetMocks);
+  test('handler exports valid HandlerDef shape', () => {
+    expect(handler.name).toBe('work_item');
+    expect(typeof handler.execute).toBe('function');
+  });
 
-  // ---- routes_issue_to_gh_issue_create ------------------------------------
-  test('routes_issue_to_gh_issue_create — GitHub issue types use gh issue create', async () => {
-    setOriginUrl('https://github.com/org/repo.git');
+  // ---- schema validation ----
+
+  test('schema rejects unknown type', async () => {
+    const result = await handler.execute({ type: 'not-a-type', title: 'X' });
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(false);
+    expect(String(data.error)).toMatch(/type/);
+  });
+
+  test('schema rejects empty title', async () => {
+    const result = await handler.execute({ type: 'story', title: '' });
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(false);
+    expect(String(data.error)).toMatch(/title/);
+  });
+
+  // ---- github: issue types ----
+
+  test('github — type:story dispatches to gh issue create', async () => {
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
+    onExec('gh issue create', 'https://github.com/org/repo/issues/42\n');
+
     const result = await handler.execute({ type: 'story', title: 'My story', body: 'details' });
-    const calls = mockExecSync.mock.calls.map(c => c[0] as string);
-    const createCall = calls.find(c => c.includes('gh issue create'));
-    expect(createCall).toBeDefined();
-    expect(createCall).toContain('gh issue create');
-    expect(createCall).toContain('My story');
-    const parsed = JSON.parse((result.content[0] as { type: string; text: string }).text);
-    expect(parsed.ok).toBe(true);
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(true);
+    expect(data.number).toBe(42);
+    expect(data.url).toBe('https://github.com/org/repo/issues/42');
+
+    const call = execCalls.find((c) => unquote(c).includes('gh issue create')) ?? '';
+    expect(call).toContain("'--title' 'My story'");
+    expect(call).toContain("'--label' 'type::story'");
   });
 
-  test('routes_issue_to_gh_issue_create — bug type also uses gh issue create', async () => {
-    setOriginUrl('https://github.com/org/repo.git');
-    await handler.execute({ type: 'bug', title: 'A bug' });
-    const calls = mockExecSync.mock.calls.map(c => c[0] as string);
-    expect(calls.some(c => c.includes('gh issue create'))).toBe(true);
+  test('github — type:bug auto-merges type::bug label', async () => {
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
+    onExec('gh issue create', 'https://github.com/org/repo/issues/7\n');
+
+    await handler.execute({ type: 'bug', title: 'A bug', labels: ['priority::high'] });
+
+    const call = execCalls.find((c) => unquote(c).includes('gh issue create')) ?? '';
+    expect(call).toContain("'--label' 'type::bug'");
+    expect(call).toContain("'--label' 'priority::high'");
   });
 
-  // ---- routes_pr_to_gh_pr_create ------------------------------------------
-  test('routes_pr_to_gh_pr_create — GitHub PR uses gh pr create', async () => {
-    setOriginUrl('https://github.com/org/repo.git');
-    execMockFn = (cmd: string) => {
-      if (cmd.startsWith('git remote get-url')) return 'https://github.com/org/repo.git\n';
-      return 'https://github.com/org/repo/pull/99\n';
-    };
+  // ---- github: PR ----
+
+  test('github — type:pr dispatches to gh pr create with head/base/draft', async () => {
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
+    onExec('gh pr create', 'https://github.com/org/repo/pull/99\n');
+
     const result = await handler.execute({
       type: 'pr',
       title: 'My PR',
@@ -81,104 +119,104 @@ describe('work_item handler', () => {
       base_branch: 'main',
       draft: true,
     });
-    const calls = mockExecSync.mock.calls.map(c => c[0] as string);
-    const prCall = calls.find(c => c.includes('gh pr create'));
-    expect(prCall).toBeDefined();
-    expect(prCall).toContain('--head feature/1-foo');
-    expect(prCall).toContain('--base main');
-    expect(prCall).toContain('--draft');
-    const parsed = JSON.parse((result.content[0] as { type: string; text: string }).text);
-    expect(parsed.ok).toBe(true);
-    expect(parsed.number).toBe(99);
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(true);
+    expect(data.number).toBe(99);
+
+    const call = execCalls.find((c) => unquote(c).includes('gh pr create')) ?? '';
+    expect(call).toContain("'--head' 'feature/1-foo'");
+    expect(call).toContain("'--base' 'main'");
+    expect(call).toContain('--draft');
   });
 
-  // ---- routes_mr_to_glab_mr_create ----------------------------------------
-  test('routes_mr_to_glab_mr_create — GitLab MR uses glab mr create', async () => {
-    setGitlabOrigin();
+  // ---- #281 regression: cross-platform asymmetry ----
+
+  test("github — type:'mr' returns platform_unsupported (regression for #281)", async () => {
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
+
+    const result = await handler.execute({ type: 'mr', title: 'Wrong platform' });
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(false);
+    expect(data.platform_unsupported).toBe(true);
+    expect(String(data.error)).toContain('type="pr"');
+    // Verify NO `glab` sub-command was attempted (only `git remote get-url`).
+    const glabCalls = execCalls.filter((c) => unquote(c).includes('glab'));
+    expect(glabCalls.length).toBe(0);
+  });
+
+  test("gitlab — type:'pr' returns platform_unsupported (regression for #281)", async () => {
+    onExec('git remote get-url origin', 'git@gitlab.com:org/repo.git');
+
+    const result = await handler.execute({ type: 'pr', title: 'Wrong platform' });
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(false);
+    expect(data.platform_unsupported).toBe(true);
+    expect(String(data.error)).toContain('type="mr"');
+    // Verify NO `gh` sub-command was attempted.
+    const ghCalls = execCalls.filter((c) => {
+      const flat = unquote(c);
+      return flat.startsWith('gh ') || flat.includes(' gh ');
+    });
+    expect(ghCalls.length).toBe(0);
+  });
+
+  // ---- gitlab: issue types ----
+
+  test('gitlab — type:story dispatches to glab issue create with -R and CSV labels', async () => {
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab issue create', 'https://gitlab.com/org/repo/-/issues/5\n');
+
+    const result = await handler.execute({
+      type: 'story',
+      title: 'GL story',
+      labels: ['team::alpha'],
+      repo: 'foo/bar',
+    });
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(true);
+    expect(data.number).toBe(5);
+
+    const call = execCalls.find((c) => unquote(c).includes('glab issue create')) ?? '';
+    expect(call).toContain("'--title' 'GL story'");
+    expect(call).toContain("'--label' 'type::story,team::alpha'");
+    expect(call).toContain("'-R' 'foo/bar'");
+  });
+
+  // ---- gitlab: MR ----
+
+  test('gitlab — type:mr dispatches to glab mr create with source/target branches', async () => {
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab mr create', 'https://gitlab.com/org/repo/-/merge_requests/12\n');
+
     const result = await handler.execute({
       type: 'mr',
       title: 'My MR',
       head_branch: 'feature/2-bar',
       base_branch: 'main',
     });
-    const calls = mockExecSync.mock.calls.map(c => c[0] as string);
-    const mrCall = calls.find(c => c.includes('glab mr create'));
-    expect(mrCall).toBeDefined();
-    expect(mrCall).toContain('--source-branch feature/2-bar');
-    expect(mrCall).toContain('--target-branch main');
-    const parsed = JSON.parse((result.content[0] as { type: string; text: string }).text);
-    expect(parsed.ok).toBe(true);
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(true);
+    expect(data.number).toBe(12);
+
+    const call = execCalls.find((c) => unquote(c).includes('glab mr create')) ?? '';
+    expect(call).toContain("'--source-branch' 'feature/2-bar'");
+    expect(call).toContain("'--target-branch' 'main'");
   });
 
-  // ---- merges_type_label --------------------------------------------------
-  test('merges_type_label — automatic type::* label merged with caller labels', async () => {
-    setOriginUrl('https://github.com/org/repo.git');
-    await handler.execute({ type: 'epic', title: 'Big epic', labels: ['priority::high'] });
-    const calls = mockExecSync.mock.calls.map(c => c[0] as string);
-    const createCall = calls.find(c => c.includes('gh issue create'));
-    expect(createCall).toBeDefined();
-    expect(createCall).toContain('type::epic');
-    expect(createCall).toContain('priority::high');
-  });
+  // ---- error surface ----
 
-  test('merges_type_label — pr type gets no automatic type label', async () => {
-    setOriginUrl('https://github.com/org/repo.git');
-    execMockFn = (cmd: string) => {
-      if (cmd.startsWith('git remote get-url')) return 'https://github.com/org/repo.git\n';
-      return 'https://github.com/org/repo/pull/5\n';
-    };
-    await handler.execute({ type: 'pr', title: 'Patch', labels: ['size::S'] });
-    const calls = mockExecSync.mock.calls.map(c => c[0] as string);
-    const prCall = calls.find(c => c.includes('gh pr create'));
-    expect(prCall).toBeDefined();
-    expect(prCall).not.toContain('type::pr');
-    expect(prCall).toContain('size::S');
-  });
+  test('github — returns ok:false on subprocess failure', async () => {
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
+    onExec('gh issue create', () => {
+      const err: MockExecError = new Error('gh not authenticated') as MockExecError;
+      err.stderr = 'gh: not authenticated';
+      err.status = 1;
+      throw err;
+    });
 
-  // ---- pr_fields_ignored_for_issue ----------------------------------------
-  test('pr_fields_ignored_for_issue — head_branch not passed to issue create', async () => {
-    setOriginUrl('https://github.com/org/repo.git');
-    await handler.execute({ type: 'chore', title: 'Cleanup', head_branch: 'feature/9-foo' });
-    const calls = mockExecSync.mock.calls.map(c => c[0] as string);
-    const createCall = calls.find(c => c.includes('gh issue create'));
-    expect(createCall).toBeDefined();
-    expect(createCall).not.toContain('--head');
-    expect(createCall).not.toContain('feature/9-foo');
-  });
-
-  // ---- routes_gitlab_issue ------------------------------------------------
-  test('routes_gitlab_issue — GitLab issue types use glab issue create', async () => {
-    setGitlabOrigin();
-    const result = await handler.execute({ type: 'story', title: 'GL story', labels: ['team::alpha'] });
-    const calls = mockExecSync.mock.calls.map(c => c[0] as string);
-    const createCall = calls.find(c => c.includes('glab issue create'));
-    expect(createCall).toBeDefined();
-    expect(createCall).toContain('GL story');
-    expect(createCall).toContain('type::story');
-    const parsed = JSON.parse((result.content[0] as { type: string; text: string }).text);
-    expect(parsed.ok).toBe(true);
-  });
-
-  // ---- error handling -----------------------------------------------------
-  test('returns ok:false on exec failure', async () => {
-    execMockFn = (cmd: string) => {
-      if (cmd.startsWith('git remote get-url')) return 'https://github.com/org/repo.git\n';
-      throw new Error('gh: command not found');
-    };
     const result = await handler.execute({ type: 'bug', title: 'Boom' });
-    const parsed = JSON.parse((result.content[0] as { type: string; text: string }).text);
-    expect(parsed.ok).toBe(false);
-    expect(parsed.error).toContain('gh: command not found');
-  });
-
-  // ---- body written to temp file ------------------------------------------
-  test('writes body to temp file before exec', async () => {
-    setOriginUrl('https://github.com/org/repo.git');
-    await handler.execute({ type: 'docs', title: 'Update readme', body: 'Some body text' });
-    expect(mockWriteFileSync.mock.calls.length).toBeGreaterThan(0);
-    const writtenPath = mockWriteFileSync.mock.calls[0][0] as string;
-    const writtenBody = mockWriteFileSync.mock.calls[0][1] as string;
-    expect(writtenPath).toMatch(/^\/tmp\/wi-body-\d+\.md$/);
-    expect(writtenBody).toBe('Some body text');
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(false);
+    expect(String(data.error)).toContain('gh issue create failed');
   });
 });
