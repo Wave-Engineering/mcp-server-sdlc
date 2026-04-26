@@ -46,9 +46,11 @@ function stubNoQueue() {
 }
 
 function stubEnforcedQueue() {
+  // Match the actual GitHub GraphQL response shape: detection asks for
+  // `__typename` — see #258 fix in lib/merge_queue_detect.ts.
   onExec(
     'gh api graphql',
-    JSON.stringify({ data: { repository: { mergeQueue: { mergeMethod: 'SQUASH' } } } }),
+    JSON.stringify({ data: { repository: { mergeQueue: { __typename: 'MergeQueue' } } } }),
   );
 }
 
@@ -281,6 +283,56 @@ describe('pr_merge_wait — handler integration', () => {
     }
     // Critical: zero polling sleeps on the direct path.
     expect(clock.sleepCount()).toBe(0);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Regression #258 Bug 2: pr_merge_wait must NOT trust pr_merge's merged:true
+  // when the underlying gh pr merge actually only enrolled (queue / auto-merge).
+  // Pre-fix: pr_merge.ts:286 hardcoded merged:true on direct exec exit 0, then
+  // pr_merge_wait short-circuited at line 179-182 — caller saw merged:true but
+  // the PR was actually still OPEN (or in #257's case, closed without merging).
+  // Post-fix: pr_merge reports merged:false; pr_merge_wait polls until landing.
+  test('regression #258: direct path returns merged:false → pr_merge_wait polls until landing', async () => {
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git\n');
+    stubNoQueue(); // detection misses (e.g. branch-level queue, like the real repo)
+
+    // Pre-state (detect-and-skip): OPEN.
+    // Post-direct-merge view (inside pr_merge): STILL OPEN — gh enrolled, didn't merge.
+    // Polling: OPEN, OPEN, MERGED.
+    let viewCallCount = 0;
+    onExec('gh pr view 257 --json state,url,mergeCommit', () => {
+      viewCallCount += 1;
+      if (viewCallCount >= 5) {
+        return JSON.stringify({
+          state: 'MERGED',
+          url: 'https://github.com/org/repo/pull/257',
+          mergeCommit: { oid: 'eventually-merged' },
+        });
+      }
+      return JSON.stringify({
+        state: 'OPEN',
+        url: 'https://github.com/org/repo/pull/257',
+        mergeCommit: null,
+      });
+    });
+    // Direct merge command exits 0 without throwing — gh decided to enroll.
+    onExec('gh pr merge 257 --squash --delete-branch', '');
+
+    const clock = fakeClock();
+    const result = await executeWaitForTest({ number: 257 }, 'github', {
+      now: clock.now,
+      sleep: clock.sleep,
+      intervalMs: 1000,
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.merged).toBe(true);
+      expect(result.pr_state).toBe('MERGED');
+      expect(result.merge_commit_sha).toBe('eventually-merged');
+    }
+    // Critical: pr_merge_wait must have actually polled (not short-circuited).
+    expect(clock.sleepCount()).toBeGreaterThan(0);
   });
 
   test('queue path → polls until state flips to merged', async () => {

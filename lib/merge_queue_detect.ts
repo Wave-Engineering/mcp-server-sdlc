@@ -23,10 +23,6 @@ import { execSync } from 'child_process';
 export interface MergeQueueInfo {
   enabled: boolean;
   enforced: boolean;
-  // The queue's configured merge strategy ("SQUASH" | "MERGE" | "REBASE").
-  // Only present when enabled. Surfaced for caller introspection but not
-  // currently consumed by `pr_merge`.
-  method?: string;
 }
 
 const cache = new Map<string, MergeQueueInfo>();
@@ -45,7 +41,7 @@ const NO_QUEUE: MergeQueueInfo = { enabled: false, enforced: false };
 interface GraphqlResponse {
   data?: {
     repository?: {
-      mergeQueue?: { mergeMethod?: string } | null;
+      mergeQueue?: { __typename?: string } | null;
     };
   };
 }
@@ -74,9 +70,13 @@ export function detectMergeQueue(repo: string): MergeQueueInfo {
   }
 
   try {
+    // Ask only for `__typename` (always-valid built-in). Earlier versions
+    // requested `mergeMethod`, which doesn't exist on the MergeQueue type and
+    // made the entire query fail with `undefinedField` — silently caching
+    // {enabled:false} for every repo (the regression #258 documents).
     const query =
       'query($owner:String!,$name:String!)' +
-      '{repository(owner:$owner,name:$name){mergeQueue{mergeMethod}}}';
+      '{repository(owner:$owner,name:$name){mergeQueue{__typename}}}';
     const raw = execSync(
       `gh api graphql -f 'query=${query}' -F owner=${owner} -F name=${name}`,
       { encoding: 'utf8' },
@@ -84,7 +84,7 @@ export function detectMergeQueue(repo: string): MergeQueueInfo {
     const parsed = JSON.parse(raw) as GraphqlResponse;
     const mq = parsed.data?.repository?.mergeQueue;
     const result: MergeQueueInfo = mq
-      ? { enabled: true, enforced: true, method: mq.mergeMethod }
+      ? { enabled: true, enforced: true }
       : NO_QUEUE;
     cache.set(repo, result);
     return result;

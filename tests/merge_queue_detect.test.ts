@@ -24,11 +24,10 @@ describe('merge_queue_detect', () => {
 
   test('returns enabled+enforced when GraphQL reports a merge queue', () => {
     execMockFn = () =>
-      JSON.stringify({ data: { repository: { mergeQueue: { mergeMethod: 'SQUASH' } } } });
+      JSON.stringify({ data: { repository: { mergeQueue: { __typename: 'MergeQueue' } } } });
     const info = detectMergeQueue('Wave-Engineering/claudecode-workflow');
     expect(info.enabled).toBe(true);
     expect(info.enforced).toBe(true);
-    expect(info.method).toBe('SQUASH');
   });
 
   test('returns disabled when GraphQL reports null mergeQueue', () => {
@@ -36,12 +35,11 @@ describe('merge_queue_detect', () => {
     const info = detectMergeQueue('org/no-queue-repo');
     expect(info.enabled).toBe(false);
     expect(info.enforced).toBe(false);
-    expect(info.method).toBeUndefined();
   });
 
   test('caches result per repo for the process lifetime', () => {
     execMockFn = () =>
-      JSON.stringify({ data: { repository: { mergeQueue: { mergeMethod: 'MERGE' } } } });
+      JSON.stringify({ data: { repository: { mergeQueue: { __typename: 'MergeQueue' } } } });
     detectMergeQueue('org/repo-a');
     detectMergeQueue('org/repo-a');
     detectMergeQueue('org/repo-a');
@@ -54,7 +52,7 @@ describe('merge_queue_detect', () => {
     execMockFn = () => {
       n += 1;
       return JSON.stringify({
-        data: { repository: { mergeQueue: n === 1 ? { mergeMethod: 'SQUASH' } : null } },
+        data: { repository: { mergeQueue: n === 1 ? { __typename: 'MergeQueue' } : null } },
       });
     };
     const a = detectMergeQueue('org/repo-a');
@@ -112,5 +110,21 @@ describe('merge_queue_detect', () => {
     const queryFragment = execCalls[0].match(/'query=([^']+)'/)?.[1] ?? '';
     expect(queryFragment).not.toContain('Wave-Engineering');
     expect(queryFragment).not.toContain('mcp-server-sdlc');
+  });
+
+  // --- Regression: #258 Bug 3 ---
+
+  test('regression #258: GraphQL query selects __typename, not undefined fields', () => {
+    execMockFn = () => JSON.stringify({ data: { repository: { mergeQueue: null } } });
+    detectMergeQueue('Wave-Engineering/mcp-server-sdlc');
+    const queryFragment = execCalls[0].match(/'query=([^']+)'/)?.[1] ?? '';
+    // The original bug requested `mergeMethod`, which doesn't exist on
+    // GitHub's MergeQueue type and made every query fail with
+    // `undefinedField` → silently caching {enabled:false} for every repo.
+    expect(queryFragment).not.toContain('mergeMethod');
+    // Selection set must contain at least one valid field. __typename is the
+    // always-available built-in scalar; any other field would also work but
+    // __typename was the chosen replacement.
+    expect(queryFragment).toContain('__typename');
   });
 });

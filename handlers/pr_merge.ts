@@ -278,12 +278,18 @@ function mergeGithubDirect(
   );
   try {
     exec(directCmd);
+    // gh exit 0 doesn't mean "merged" — when a merge queue or auto-merge is
+    // configured at the repo/branch level, gh may have enrolled the PR rather
+    // than merged it synchronously. Read the actual state and report honestly
+    // so callers (especially pr_merge_wait) don't trust a stale "merged:true".
+    // See #258 for the regression history.
     const info = fetchGithubPrState(args.number, args.repo);
+    const actuallyMerged = info.state === 'merged';
     return aggregateOk({
       number: args.number,
       enrolled: true,
-      merged: true,
-      method: 'direct_squash',
+      merged: actuallyMerged,
+      method: actuallyMerged ? 'direct_squash' : 'merge_queue',
       queue,
       url: info.url,
       mergeCommitSha: info.mergeCommitSha,
