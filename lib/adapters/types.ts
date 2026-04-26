@@ -279,8 +279,34 @@ export type CiRunStatusArgs = unknown;
 export type CiRunStatusResponse = unknown;
 export type CiRunLogsArgs = unknown;
 export type CiRunLogsResponse = unknown;
-export type CiFailedJobsArgs = unknown;
-export type CiFailedJobsResponse = unknown;
+
+/**
+ * `ci_failed_jobs` args/response (Story 2.11, #305). Thin platform wrapper
+ * around `gh run view --json jobs` / `glab api projects/:id/pipelines/<id>/jobs`
+ * with identical `FailedJob[]` normalization on both sides.
+ *
+ * `run_id` is a positive integer — on GitHub it's the workflow run id,
+ * on GitLab the pipeline id.
+ */
+export interface CiFailedJobsArgs {
+  run_id: number;
+  repo?: string;
+}
+
+export interface FailedJob {
+  job_id: number;
+  name: string;
+  stage: string | null;
+  conclusion: string;
+  started_at: string | null;
+  finished_at: string | null;
+  url: string;
+}
+
+export interface CiFailedJobsResponse {
+  failed_jobs: FailedJob[];
+}
+
 export type CiRunsForBranchArgs = unknown;
 export type CiRunsForBranchResponse = unknown;
 

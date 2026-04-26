@@ -1,11 +1,11 @@
-// Origin Operations family handler.
-// See docs/handlers/origin-operations-guide.md for the canonical pattern,
-// gh ↔ glab field mappings, and normalized response schemas.
+// Origin Operations family handler — adapter-dispatching shell.
+// Subprocess + platform branching live in lib/adapters/ci-failed-jobs-{github,gitlab}.ts;
+// see docs/handlers/origin-operations-guide.md for the canonical pattern and
+// docs/platform-adapter-retrofit-devspec.md §5 for the contract.
 
-import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
-import { detectPlatform } from '../lib/shared/detect-platform.js';
+import { getAdapter } from '../lib/adapters/index.js';
 
 const inputSchema = z
   .object({
@@ -17,101 +17,8 @@ const inputSchema = z
   })
   .strict();
 
-type Input = z.infer<typeof inputSchema>;
-
-interface FailedJob {
-  job_id: number;
-  name: string;
-  stage: string | null;
-  conclusion: string;
-  started_at: string | null;
-  finished_at: string | null;
-  url: string;
-}
-
-function exec(cmd: string): string {
-  return execSync(cmd, { encoding: 'utf8' });
-}
-
-// GitHub job shape from `gh run view <id> --json jobs`.
-interface GithubJob {
-  databaseId?: number;
-  name?: string;
-  status?: string;
-  conclusion?: string;
-  startedAt?: string;
-  completedAt?: string;
-  url?: string;
-}
-
-// GitLab job shape from `glab api projects/:id/pipelines/<id>/jobs`.
-interface GitlabJob {
-  id?: number;
-  name?: string;
-  status?: string;
-  stage?: string;
-  started_at?: string | null;
-  finished_at?: string | null;
-  web_url?: string;
-}
-
-function normalizeGithubConclusion(raw: string | undefined): string {
-  // GitHub conclusion values: success, failure, cancelled, timed_out,
-  // action_required, neutral, skipped, stale, startup_failure.
-  if (!raw) return 'failure';
-  return raw;
-}
-
-function normalizeGitlabConclusion(raw: string | undefined): string {
-  // GitLab job status after filtering to `failed`. Map onto GitHub-style
-  // conclusions so `/jfail` can reason about both uniformly.
-  if (!raw) return 'failure';
-  if (raw === 'failed') return 'failure';
-  return raw;
-}
-
-function fetchGithubFailedJobs(runId: number, repo: string | undefined): FailedJob[] {
-  const repoFlag = repo ? ` --repo ${repo}` : '';
-  const raw = exec(`gh run view ${runId} --json jobs${repoFlag}`);
-  const parsed = JSON.parse(raw) as { jobs?: GithubJob[] };
-  const jobs = parsed.jobs ?? [];
-  const failed: FailedJob[] = [];
-  for (const j of jobs) {
-    if (j.status !== 'completed') continue;
-    if (j.conclusion === 'success') continue;
-    failed.push({
-      job_id: j.databaseId ?? 0,
-      name: j.name ?? '',
-      stage: null,
-      conclusion: normalizeGithubConclusion(j.conclusion),
-      started_at: j.startedAt ?? null,
-      finished_at: j.completedAt ?? null,
-      url: j.url ?? '',
-    });
-  }
-  return failed;
-}
-
-function fetchGitlabFailedJobs(runId: number, repo: string | undefined): FailedJob[] {
-  // When repo is provided, URL-encode it as the explicit project slug; otherwise
-  // fall back to `:id` which glab substitutes with the cwd project's numeric id.
-  const projectId = repo ? encodeURIComponent(repo) : ':id';
-  const raw = exec(`glab api projects/${projectId}/pipelines/${runId}/jobs`);
-  const parsed = JSON.parse(raw) as GitlabJob[];
-  const failed: FailedJob[] = [];
-  for (const j of parsed) {
-    if (j.status !== 'failed') continue;
-    failed.push({
-      job_id: j.id ?? 0,
-      name: j.name ?? '',
-      stage: j.stage ?? null,
-      conclusion: normalizeGitlabConclusion(j.status),
-      started_at: j.started_at ?? null,
-      finished_at: j.finished_at ?? null,
-      url: j.web_url ?? '',
-    });
-  }
-  return failed;
+function envelope(payload: unknown) {
+  return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
 }
 
 const ciFailedJobsHandler: HandlerDef = {
@@ -120,41 +27,25 @@ const ciFailedJobsHandler: HandlerDef = {
     'List failed jobs for a specific CI run with per-job reason summaries. Used by /jfail to know which jobs to pull logs for.',
   inputSchema,
   async execute(rawArgs: unknown) {
-    let args: Input;
+    let args;
     try {
       args = inputSchema.parse(rawArgs);
     } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error }) }],
-      };
+      return envelope({ ok: false, error: err instanceof Error ? err.message : String(err) });
     }
 
-    try {
-      const platform = detectPlatform();
-      const failed =
-        platform === 'github'
-          ? fetchGithubFailedJobs(args.run_id, args.repo)
-          : fetchGitlabFailedJobs(args.run_id, args.repo);
+    const adapter = getAdapter({ repo: args.repo });
+    const result = await adapter.ciFailedJobs(args);
 
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify({
-              ok: true,
-              run_id: args.run_id,
-              failed_jobs: failed,
-            }),
-          },
-        ],
-      };
-    } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error }) }],
-      };
+    // Per dev spec §4.4 step 4: surface `platform_unsupported` as a typed
+    // signal alongside `ok: true` — NOT as an error. The dispatch succeeded;
+    // the platform just doesn't have the concept. Callers branch on the
+    // discriminator instead of confusing it with a runtime failure.
+    if ('platform_unsupported' in result) {
+      return envelope({ ok: true, platform_unsupported: true, hint: result.hint });
     }
+    if (!result.ok) return envelope({ ok: false, error: result.error });
+    return envelope({ ok: true, run_id: args.run_id, ...result.data });
   },
 };
 
