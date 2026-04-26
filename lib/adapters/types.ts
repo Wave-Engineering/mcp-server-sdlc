@@ -119,8 +119,17 @@ export interface PrDiffResponse {
   url: string;
   truncated: boolean;
 }
-export type PrCommentArgs = unknown;
-export type PrCommentResponse = unknown;
+export interface PrCommentArgs {
+  number: number;
+  body: string;
+  repo?: string;
+}
+
+export interface PrCommentResponse {
+  number: number;
+  comment_id: number;
+  url: string;
+}
 export interface PrFilesArgs {
   number: number;
   repo?: string;

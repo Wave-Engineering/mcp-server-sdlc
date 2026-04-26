@@ -15,6 +15,7 @@
  */
 
 import type { PlatformAdapter } from './types.js';
+import { prCommentGitlab } from './pr-comment-gitlab.js';
 import { prCreateGitlab } from './pr-create-gitlab.js';
 import { prDiffGitlab } from './pr-diff-gitlab.js';
 import { prFilesGitlab } from './pr-files-gitlab.js';
@@ -32,7 +33,7 @@ export const gitlabAdapter: PlatformAdapter = {
   prMergeWait: stubMethod,
   prStatus: prStatusGitlab,
   prDiff: prDiffGitlab,
-  prComment: stubMethod,
+  prComment: prCommentGitlab,
   prFiles: prFilesGitlab,
   prList: prListGitlab,
   prWaitCi: stubMethod,
