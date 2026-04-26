@@ -88,8 +88,52 @@ export interface PrMergeResponse {
   merge_commit_sha?: string;
   warnings: string[];
 }
-export type PrMergeWaitArgs = unknown;
-export type PrMergeWaitResponse = unknown;
+export interface PrMergeWaitArgs {
+  number: number;
+  squash_message?: string;
+  use_merge_queue?: boolean;
+  skip_train?: boolean;
+  repo?: string;
+  timeout_sec?: number;
+}
+
+/**
+ * pr_merge_wait returns the same aggregate envelope as pr_merge with the
+ * "merged on main" guarantee: on success, `merged === true` and
+ * `pr_state === 'MERGED'`. Detect-and-skip emits a warning when the PR was
+ * already merged before invocation.
+ */
+export interface PrMergeWaitResponse {
+  number: number;
+  enrolled: boolean;
+  merged: boolean;
+  merge_method: PrMergeMethod;
+  queue: PrMergeQueueState;
+  pr_state: PrStateLabel;
+  url: string;
+  merge_commit_sha?: string;
+  warnings: string[];
+}
+
+/**
+ * Hybrid sub-call (Story 1.11). `fetchPrState` is the slim cross-platform
+ * PR/MR state fetcher used by both `prMergeWait` (polling until merged) and
+ * the per-platform `prMerge` adapters (post-merge URL/sha lookup). Returns
+ * only what the merge flow needs — state, url, sha — instead of the rich
+ * status payload `prStatus` returns.
+ */
+export interface FetchPrStateArgs {
+  number: number;
+  repo?: string;
+}
+
+export type PrState = 'open' | 'merged' | 'closed';
+
+export interface PrStateInfo {
+  state: PrState;
+  url: string;
+  mergeCommitSha?: string;
+}
 export interface PrStatusArgs {
   number: number;
   repo?: string;
@@ -257,6 +301,10 @@ export type SpecDependenciesResponse = unknown;
 // 1.12) produces the authoritative list of hybrid sub-calls; `fetchIssue` is
 // included here as the illustrative example. Adding/removing sub-calls is
 // expected during Phase 2 implementation.
+//
+// Story 1.11 added the FIRST real hybrid sub-call: `fetchPrState` — see
+// `FetchPrStateArgs` / `PrStateInfo` above. Used by `prMergeWait` and the
+// per-platform `prMerge` adapters.
 export type FetchIssueArgs = unknown;
 export type IssueData = unknown;
 
@@ -296,8 +344,12 @@ export interface PlatformAdapter {
   specAcceptanceCriteria(args: SpecAcceptanceCriteriaArgs): Promise<AdapterResult<SpecAcceptanceCriteriaResponse>>;
   specDependencies(args: SpecDependenciesArgs): Promise<AdapterResult<SpecDependenciesResponse>>;
 
-  // Hybrid sub-calls (illustrative; final set determined by Story 1.12 survey)
+  // Hybrid sub-calls (illustrative; final set determined by Story 1.12 survey).
+  // `fetchPrState` is the first real hybrid (Story 1.11) — consumed by
+  // `prMergeWait` and the per-platform `prMerge` adapters for state polling
+  // and post-merge URL/sha lookup.
   fetchIssue(args: FetchIssueArgs): Promise<AdapterResult<IssueData>>;
+  fetchPrState(args: FetchPrStateArgs): Promise<AdapterResult<PrStateInfo>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -334,6 +386,7 @@ export const PLATFORM_ADAPTER_METHODS = [
   'specAcceptanceCriteria',
   'specDependencies',
   'fetchIssue',
+  'fetchPrState',
 ] as const;
 
 export type PlatformAdapterMethod = (typeof PLATFORM_ADAPTER_METHODS)[number];

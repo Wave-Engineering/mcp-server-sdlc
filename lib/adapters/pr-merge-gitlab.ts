@@ -14,16 +14,18 @@
  * signal closes that leak so MCP callers can branch on the discriminator
  * instead of being lied to.
  *
- * The PR state fetcher (`fetchGitlabMrState`) stays in `lib/pr_state.ts` per
- * Dev Spec §5.3 — this adapter imports from it, it does NOT re-lift it.
+ * Story 1.11 (#248) routes the post-merge state lookup through
+ * `getAdapter().fetchPrState(...)` — the FIRST hybrid sub-call dispatched
+ * via the platform adapter — instead of importing `lib/pr_state.ts` directly.
  */
 
 import { execSync } from 'child_process';
-import { fetchGitlabMrState } from '../pr_state.js';
+import { getAdapter } from './index.js';
 import type {
   AdapterResult,
   PrMergeArgs,
   PrMergeResponse,
+  PrStateInfo,
 } from './types.js';
 
 interface ExecError extends Error {
@@ -112,7 +114,21 @@ export async function prMergeGitlab(
         error: `glab mr merge failed: ${extractFailure(err).message}`,
       };
     }
-    const info = fetchGitlabMrState(args.number, args.repo);
+    const stateResult = await getAdapter({ repo: args.repo }).fetchPrState({
+      number: args.number,
+      repo: args.repo,
+    });
+    if ('platform_unsupported' in stateResult) {
+      return {
+        ok: false,
+        code: 'fetch_pr_state_platform_unsupported',
+        error: `fetchPrState platform_unsupported: ${stateResult.hint}`,
+      };
+    }
+    if (!stateResult.ok) {
+      return { ok: false, code: stateResult.code, error: stateResult.error };
+    }
+    const info: PrStateInfo = stateResult.data;
     return {
       ok: true,
       data: {

@@ -1,96 +1,47 @@
 /**
- * Slim cross-platform PR/MR state fetcher.
+ * Slim cross-platform PR/MR state fetcher — DELEGATING SHIM (Story 1.11, #248).
  *
- * Used by `pr_merge` (for post-merge URL + sha lookup) and `pr_merge_wait`
- * (for polling until `state === 'merged'`). Intentionally narrower than
- * `handlers/pr_status.ts` — that handler returns rich check + mergeability
- * data; this lib returns only what the merge flow needs (state, url, sha).
+ * Pre-Story-1.11, this module owned the `gh pr view` and `glab api MR`
+ * subprocess calls directly. Story 1.11 lifted those into the platform
+ * adapter pair (`lib/adapters/fetch-pr-state-{github,gitlab}.ts`) — the FIRST
+ * hybrid sub-call on `PlatformAdapter`. This file now contains ZERO direct
+ * subprocess calls and exists only to:
  *
- * Why a separate lib instead of calling `pr_status` from `pr_merge_wait`:
- * - One exec call vs two (pr_status fetches checks separately).
- * - No JSON-of-JSON unwrap: handler responses are MCP envelopes wrapping
- *   JSON strings, awkward to consume from inside another handler.
- * - Decouples polling from rich-status concerns.
+ *   1. Preserve the legacy import surface for `tests/pr_state.test.ts`
+ *      (sync `fetchPrState`/`fetchGithubPrState`/`fetchGitlabMrState` API).
+ *   2. Re-export `PrState` / `PrStateInfo` for in-tree code that imported
+ *      them from this path historically.
  *
- * Handlers that need the full status (`pr_status`, `pr_wait_ci`) keep their
- * existing wider queries; this module is the minimal-surface alternative for
- * the merge-confirmation use case.
+ * Closes architect F2 (Phase 1 audit).
+ *
+ * Why a sync delegation surface (not just `getAdapter().fetchPrState(...)`):
+ * - Existing callers in `lib/adapters/pr-merge-{github,gitlab}.ts` and the
+ *   `pollUntilMerged` test seam expect a sync call. Wrapping those is a
+ *   wider blast radius than this story owns; the spec allows the file to
+ *   either delegate OR delete-and-update-importers.
+ * - The delegating sync helpers below import the per-platform `*Sync`
+ *   variants from the adapters directly, keeping subprocess calls in the
+ *   adapter layer (gate-grep happy) without forcing every caller to await.
+ *
+ * `lib/adapters/pr-merge-{github,gitlab}.ts` are migrated by this story to
+ * call `getAdapter().fetchPrState(...)` instead of these helpers — the
+ * remaining importers go through the routed adapter (the architecturally
+ * correct path). These shims stay as a public surface for `pr_state.test.ts`,
+ * which validates the underlying adapter sync helpers.
  */
 
-import { execSync } from 'child_process';
-import { gitlabApiMr } from './glab.js';
+import { fetchPrStateGithubSync } from './adapters/fetch-pr-state-github.js';
+import { fetchPrStateGitlabSync } from './adapters/fetch-pr-state-gitlab.js';
+import type { PrState, PrStateInfo } from './adapters/types.js';
 
-export type PrState = 'open' | 'merged' | 'closed';
-
-export interface PrStateInfo {
-  state: PrState;
-  url: string;
-  mergeCommitSha?: string;
-}
-
-interface GithubPrViewResponse {
-  state?: string;
-  url?: string;
-  mergeCommit?: { oid?: string } | null;
-}
-
-// Same charset as merge_queue_detect.ts and wave_previous_merged.ts — GitHub's
-// owner/repo grammar. Defended at the lib boundary (not just at handler entry)
-// so any future caller of fetchGithubPrState gets the same protection without
-// having to remember to validate themselves.
-const GITHUB_REPO_SLUG = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
-
-function repoFlag(repo: string | undefined): string {
-  if (repo === undefined) return '';
-  if (!GITHUB_REPO_SLUG.test(repo)) {
-    throw new Error(`fetchGithubPrState: invalid repo slug ${JSON.stringify(repo)}`);
-  }
-  return ` --repo ${repo}`;
-}
-
-function parseSlugOpts(
-  slug: string | undefined,
-): { owner?: string; repo?: string } | undefined {
-  if (slug === undefined) return undefined;
-  const idx = slug.indexOf('/');
-  if (idx <= 0 || idx === slug.length - 1) return undefined;
-  return { owner: slug.slice(0, idx), repo: slug.slice(idx + 1) };
-}
-
-function normalizeGithubState(raw: string): PrState {
-  const upper = raw.toUpperCase();
-  if (upper === 'MERGED') return 'merged';
-  if (upper === 'CLOSED') return 'closed';
-  return 'open';
-}
-
-function normalizeGitlabState(raw: string): PrState {
-  const lower = raw.toLowerCase();
-  if (lower === 'merged') return 'merged';
-  if (lower === 'closed') return 'closed';
-  return 'open';
-}
+export type { PrState, PrStateInfo };
 
 export function fetchGithubPrState(num: number, repo?: string): PrStateInfo {
-  const raw = execSync(
-    `gh pr view ${num} --json state,url,mergeCommit${repoFlag(repo)}`,
-    { encoding: 'utf8' },
-  );
-  const parsed = JSON.parse(raw) as GithubPrViewResponse;
-  return {
-    state: normalizeGithubState(parsed.state ?? ''),
-    url: parsed.url ?? '',
-    mergeCommitSha: parsed.mergeCommit?.oid,
-  };
+  return fetchPrStateGithubSync(num, repo);
 }
 
 export function fetchGitlabMrState(num: number, repo?: string): PrStateInfo {
-  const mr = gitlabApiMr(num, parseSlugOpts(repo));
-  return {
-    state: normalizeGitlabState(mr.state ?? ''),
-    url: mr.web_url ?? '',
-    mergeCommitSha: mr.merge_commit_sha ?? undefined,
-  };
+  return fetchPrStateGitlabSync(num, repo);
 }
 
 export function fetchPrState(
@@ -99,6 +50,6 @@ export function fetchPrState(
   repo?: string,
 ): PrStateInfo {
   return platform === 'github'
-    ? fetchGithubPrState(num, repo)
-    : fetchGitlabMrState(num, repo);
+    ? fetchPrStateGithubSync(num, repo)
+    : fetchPrStateGitlabSync(num, repo);
 }

@@ -14,12 +14,14 @@
  */
 
 import type { PlatformAdapter } from './types.js';
+import { fetchPrStateGithub } from './fetch-pr-state-github.js';
 import { prCommentGithub } from './pr-comment-github.js';
 import { prCreateGithub } from './pr-create-github.js';
 import { prDiffGithub } from './pr-diff-github.js';
 import { prFilesGithub } from './pr-files-github.js';
 import { prListGithub } from './pr-list-github.js';
 import { prMergeGithub } from './pr-merge-github.js';
+import { prMergeWaitGithub } from './pr-merge-wait-github.js';
 import { prStatusGithub } from './pr-status-github.js';
 import { prWaitCiGithub } from './pr-wait-ci-github.js';
 
@@ -31,7 +33,7 @@ const stubMethod = async (_args: unknown) => ({
 export const githubAdapter: PlatformAdapter = {
   prCreate: prCreateGithub,
   prMerge: prMergeGithub,
-  prMergeWait: stubMethod,
+  prMergeWait: prMergeWaitGithub,
   prStatus: prStatusGithub,
   prDiff: prDiffGithub,
   prComment: prCommentGithub,
@@ -53,4 +55,5 @@ export const githubAdapter: PlatformAdapter = {
   specAcceptanceCriteria: stubMethod,
   specDependencies: stubMethod,
   fetchIssue: stubMethod,
+  fetchPrState: fetchPrStateGithub,
 };
