@@ -13,7 +13,6 @@ ci_wait_run.ts
 dod_load_manifest.ts
 epic_sub_issues.ts
 ibm.ts
-spec_acceptance_criteria.ts
 spec_dependencies.ts
 wave_ci_trust_level.ts
 wave_compute.ts

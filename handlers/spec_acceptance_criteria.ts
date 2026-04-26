@@ -1,9 +1,13 @@
-import { execSync } from 'child_process';
+// Spec-family handler — adapter-dispatching shell.
+// Subprocess + platform branching live in lib/adapters/fetch-issue-{github,gitlab}.ts
+// (Story 2.1, #295); this handler consumes the normalized `AdapterIssue` shape
+// via `getAdapter().fetchIssue(...)`. Checklist-regex parsing stays here — it's
+// platform-agnostic.
+
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { parseIssueRef, parseSections, type IssueRef } from '../lib/spec_parser';
-import { detectPlatform } from '../lib/shared/detect-platform.js';
-import { gitlabApiIssue } from '../lib/glab.js';
+import { getAdapter } from '../lib/adapters/index.js';
 
 const inputSchema = z.object({
   issue_ref: z.string().min(1, 'issue_ref must be a non-empty string'),
@@ -15,22 +19,16 @@ interface ChecklistItem {
   position: number;
 }
 
-function fetchBody(ref: IssueRef): string {
-  const platform = detectPlatform();
-  if (platform === 'github') {
-    const repoArg = ref.owner && ref.repo ? `--repo ${ref.owner}/${ref.repo}` : '';
-    const cmd = `gh issue view ${ref.number} ${repoArg} --json body`.trim();
-    const raw = execSync(cmd, { encoding: 'utf8' });
-    return (JSON.parse(raw) as { body: string }).body ?? '';
-  }
-  const result = gitlabApiIssue(ref.number, ref.owner && ref.repo ? { owner: ref.owner, repo: ref.repo } : undefined);
-  return result.description ?? '';
+function envelope(payload: unknown) {
+  return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
 }
 
-/**
- * Parse markdown checklist items: `- [ ] text` or `- [x] text`.
- * Position is the order of appearance starting from 1.
- */
+function repoSlug(ref: IssueRef): string | undefined {
+  return ref.owner && ref.repo ? `${ref.owner}/${ref.repo}` : undefined;
+}
+
+// Parse markdown checklist items (`- [ ] text` / `- [x] text`). Position is
+// the order of appearance starting from 1.
 function parseChecklist(section: string): ChecklistItem[] {
   const items: ChecklistItem[] = [];
   if (!section) return items;
@@ -38,11 +36,7 @@ function parseChecklist(section: string): ChecklistItem[] {
   let m: RegExpExecArray | null;
   let position = 1;
   while ((m = re.exec(section)) !== null) {
-    items.push({
-      text: m[2].trim(),
-      checked: m[1].toLowerCase() === 'x',
-      position: position++,
-    });
+    items.push({ text: m[2].trim(), checked: m[1].toLowerCase() === 'x', position: position++ });
   }
   return items;
 }
@@ -56,52 +50,22 @@ const specAcceptanceCriteriaHandler: HandlerDef = {
     try {
       args = inputSchema.parse(rawArgs);
     } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error }) }],
-      };
+      return envelope({ ok: false, error: err instanceof Error ? err.message : String(err) });
     }
 
     const ref = parseIssueRef(args.issue_ref);
     if (!ref) {
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify({
-              ok: false,
-              error: `could not parse issue_ref: '${args.issue_ref}'`,
-            }),
-          },
-        ],
-      };
+      return envelope({ ok: false, error: `could not parse issue_ref: '${args.issue_ref}'` });
     }
 
-    try {
-      const body = fetchBody(ref);
-      const { sections } = parseSections(body);
-      const acSection = sections.acceptance_criteria ?? '';
-      const items = parseChecklist(acSection);
+    const repo = repoSlug(ref);
+    const result = await getAdapter({ repo }).fetchIssue({ number: ref.number, repo });
+    if ('platform_unsupported' in result) return envelope({ ok: false, error: result.hint });
+    if (!result.ok) return envelope({ ok: false, error: result.error });
 
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify({
-              ok: true,
-              issue_ref: args.issue_ref,
-              criteria: items,
-              count: items.length,
-            }),
-          },
-        ],
-      };
-    } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error }) }],
-      };
-    }
+    const { sections } = parseSections(result.data.body);
+    const items = parseChecklist(sections.acceptance_criteria ?? '');
+    return envelope({ ok: true, issue_ref: args.issue_ref, criteria: items, count: items.length });
   },
 };
 
