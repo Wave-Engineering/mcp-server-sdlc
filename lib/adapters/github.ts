@@ -14,6 +14,7 @@
  */
 
 import type { PlatformAdapter } from './types.js';
+import { fetchIssueGithub } from './fetch-issue-github.js';
 import { fetchPrStateGithub } from './fetch-pr-state-github.js';
 import { prCommentGithub } from './pr-comment-github.js';
 import { prCreateGithub } from './pr-create-github.js';
@@ -54,6 +55,6 @@ export const githubAdapter: PlatformAdapter = {
   specValidateStructure: stubMethod,
   specAcceptanceCriteria: stubMethod,
   specDependencies: stubMethod,
-  fetchIssue: stubMethod,
+  fetchIssue: fetchIssueGithub,
   fetchPrState: fetchPrStateGithub,
 };
