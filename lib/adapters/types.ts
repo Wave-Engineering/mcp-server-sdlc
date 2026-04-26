@@ -60,8 +60,34 @@ export interface PrCreateResponse {
   /** True when this call created the PR/MR; false when it pre-existed (idempotent path). */
   created: boolean;
 }
-export type PrMergeArgs = unknown;
-export type PrMergeResponse = unknown;
+export interface PrMergeArgs {
+  number: number;
+  squash_message?: string;
+  use_merge_queue?: boolean;
+  skip_train?: boolean;
+  repo?: string;
+}
+
+export type PrMergeMethod = 'direct_squash' | 'merge_queue';
+export type PrStateLabel = 'OPEN' | 'MERGED';
+
+export interface PrMergeQueueState {
+  enabled: boolean;
+  position: number | null;
+  enforced: boolean;
+}
+
+export interface PrMergeResponse {
+  number: number;
+  enrolled: boolean;
+  merged: boolean;
+  merge_method: PrMergeMethod;
+  queue: PrMergeQueueState;
+  pr_state: PrStateLabel;
+  url: string;
+  merge_commit_sha?: string;
+  warnings: string[];
+}
 export type PrMergeWaitArgs = unknown;
 export type PrMergeWaitResponse = unknown;
 export interface PrStatusArgs {
