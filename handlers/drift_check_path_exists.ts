@@ -1,3 +1,4 @@
+import { execSync } from 'child_process';
 import { isAbsolute, join } from 'path';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
@@ -15,18 +16,22 @@ function resolvePath(path: string): string {
   return isAbsolute(path) ? path : join(projectDir(), path);
 }
 
-async function probe(absPath: string): Promise<{ exists: boolean; kind: 'file' | 'directory' | null }> {
-  // Use Bun.spawnSync('stat', ...) to distinguish file vs directory
-  // without touching node:fs or child_process (both have mock collisions
-  // with sibling tests).
-  const proc = Bun.spawnSync({
-    cmd: ['stat', '-c', '%F', absPath],
-    stderr: 'pipe',
-  });
-  if (proc.exitCode !== 0) {
+function shellEscape(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function probe(absPath: string): { exists: boolean; kind: 'file' | 'directory' | null } {
+  // `stat -c %F` prints "regular file" / "directory" / "symbolic link" / etc.
+  // execSync throws on non-zero exit (i.e. path missing) — catch and report
+  // exists:false so callers don't need to distinguish missing from error.
+  const cmd = ['stat', '-c', '%F', absPath].map(shellEscape).join(' ');
+  let stdout: string;
+  try {
+    stdout = execSync(cmd, { encoding: 'utf8' });
+  } catch {
     return { exists: false, kind: null };
   }
-  const out = new TextDecoder().decode(proc.stdout).trim();
+  const out = stdout.trim();
   if (out === 'directory') return { exists: true, kind: 'directory' };
   // 'regular file', 'regular empty file', 'symbolic link' (resolved), etc.
   return { exists: true, kind: 'file' };
@@ -49,7 +54,7 @@ const driftCheckPathExistsHandler: HandlerDef = {
 
     try {
       const abs = resolvePath(args.path);
-      const result = await probe(abs);
+      const result = probe(abs);
 
       let exists = result.exists;
       if (exists && args.kind !== 'any' && result.kind !== args.kind) {
