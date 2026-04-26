@@ -1,26 +1,45 @@
 import { describe, test, expect, mock, beforeEach } from 'bun:test';
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
+// --- Mock child_process.execSync at module level ---
+//
+// label_create now dispatches through the platform adapter (Story 2.15 /
+// #309). The per-platform adapters call subprocess via `runArgv`, which
+// shell-escapes its argv (e.g. `'gh' 'label' 'create' 'bug' '--color' 'd73a4a'`).
+// The `unquote` shim strips that quoting so test match-keys can stay as plain
+// `gh label create ...` strings — same pattern adopted by tests/ci_failed_jobs.test.ts.
+//
+// Integration coverage: schema validation, handler envelope shape, cross-platform
+// dispatch (github → bare hex; gitlab → leading `#`), idempotent fallback
+// (duplicate → lookup → created:false).
+//
+// Subprocess-boundary argv assertions live in the colocated adapter tests
+// (lib/adapters/label-create-{github,gitlab}.test.ts).
 
 interface MockExecError extends Error {
   stderr?: string;
   stdout?: string;
+  status?: number;
 }
 
-function mockExec(cmd: string): string {
+let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
+let execCalls: string[] = [];
+
+function unquote(cmd: string): string {
+  return cmd.replace(/'([^']*)'/g, '$1');
+}
+
+const mockExecSync = mock((cmd: string, _opts?: unknown) => {
   execCalls.push(cmd);
+  const flat = unquote(cmd);
   for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match)) {
+    if (cmd.includes(match) || flat.includes(match)) {
       return typeof respond === 'function' ? respond() : respond;
     }
   }
-  throw new Error(`Unexpected exec call: ${cmd}`);
-}
+  throw new Error(`Unexpected exec: ${cmd}`);
+});
 
-mock.module('child_process', () => ({
-  execSync: (cmd: string, _opts?: unknown) => mockExec(cmd),
-}));
+mock.module('child_process', () => ({ execSync: mockExecSync }));
 
 const { default: handler } = await import('../handlers/label_create.ts');
 
@@ -72,9 +91,9 @@ describe('label_create handler', () => {
     expect(data.ok).toBe(false);
   });
 
-  // ---- github happy path ----
+  // ---- github end-to-end ----
 
-  test('github — creates new label, returns created:true', async () => {
+  test('github_end_to_end — creates new label, returns created:true', async () => {
     onExec('git remote get-url origin', 'https://github.com/org/repo.git');
     onExec('gh label create', '');
     const result = await handler.execute({
@@ -90,26 +109,12 @@ describe('label_create handler', () => {
     expect(data.description).toBe('Top priority');
   });
 
-  test('github — quotes name and description with shell-escape', async () => {
-    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
-    onExec('gh label create', '');
-    await handler.execute({
-      name: "needs-review's-input",
-      description: "It's important",
-      color: 'd73a4a',
-    });
-    const createCall = execCalls.find((c) => c.includes('gh label create')) ?? '';
-    expect(createCall).toContain(`'needs-review'\\''s-input'`);
-    expect(createCall).toContain(`'It'\\''s important'`);
-  });
-
-  // ---- github idempotent path ----
-
   test('github — idempotent: duplicate triggers lookup, returns created:false', async () => {
     onExec('git remote get-url origin', 'https://github.com/org/repo.git');
     onExec('gh label create', () => {
       const err: MockExecError = new Error('label already exists') as MockExecError;
       err.stderr = '! Label "bug" already exists\n';
+      err.status = 1;
       throw err;
     });
     onExec('gh label list', JSON.stringify([
@@ -134,6 +139,7 @@ describe('label_create handler', () => {
     onExec('gh label create', () => {
       const err: MockExecError = new Error('auth required') as MockExecError;
       err.stderr = 'gh: not authenticated\n';
+      err.status = 1;
       throw err;
     });
     const result = await handler.execute({ name: 'bug', color: 'd73a4a' });
@@ -142,17 +148,9 @@ describe('label_create handler', () => {
     expect(String(data.error)).toContain('gh label create failed');
   });
 
-  test('github — repo flag passed through to both create and lookup', async () => {
-    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
-    onExec('gh label create', '');
-    await handler.execute({ name: 'bug', color: 'd73a4a', repo: 'foo/bar' });
-    const createCall = execCalls.find((c) => c.includes('gh label create')) ?? '';
-    expect(createCall).toContain("--repo 'foo/bar'");
-  });
+  // ---- gitlab end-to-end ----
 
-  // ---- gitlab happy path ----
-
-  test('gitlab — creates new label, returns created:true', async () => {
+  test('gitlab_end_to_end — creates new label, returns created:true', async () => {
     onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
     onExec('glab label create', '');
     const result = await handler.execute({
@@ -166,41 +164,12 @@ describe('label_create handler', () => {
     expect(data.name).toBe('priority::high');
   });
 
-  test('gitlab — uses --name (not positional) for label name', async () => {
-    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    onExec('glab label create', '');
-    await handler.execute({ name: 'bug', color: 'd73a4a' });
-    const createCall = execCalls.find((c) => c.includes('glab label create')) ?? '';
-    expect(createCall).toContain("--name 'bug'");
-  });
-
-  test('gitlab — prepends `#` to color (GitLab REST API rejects bare hex)', async () => {
-    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    onExec('glab label create', '');
-    await handler.execute({ name: 'bug', color: 'd73a4a' });
-    const createCall = execCalls.find((c) => c.includes('glab label create')) ?? '';
-    expect(createCall).toContain("--color '#d73a4a'");
-    // Sanity: bare hex must NOT appear as a standalone color value (would
-    // mean we forgot the # prepend).
-    expect(createCall).not.toContain("--color 'd73a4a'");
-  });
-
-  test('github — passes color bare (gh accepts bare hex, no # prepend)', async () => {
-    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
-    onExec('gh label create', '');
-    await handler.execute({ name: 'bug', color: 'd73a4a' });
-    const createCall = execCalls.find((c) => c.includes('gh label create')) ?? '';
-    expect(createCall).toContain("--color 'd73a4a'");
-    expect(createCall).not.toContain("--color '#d73a4a'");
-  });
-
-  // ---- gitlab idempotent path ----
-
   test('gitlab — idempotent: duplicate triggers lookup, returns created:false', async () => {
     onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
     onExec('glab label create', () => {
       const err: MockExecError = new Error('label already exists') as MockExecError;
       err.stderr = 'Label already exists\n';
+      err.status = 1;
       throw err;
     });
     onExec('glab label list', JSON.stringify([
@@ -217,14 +186,6 @@ describe('label_create handler', () => {
     expect(data.color).toBe('aabbcc'); // # stripped
   });
 
-  test('gitlab — repo flag uses -R (glab convention, not --repo)', async () => {
-    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    onExec('glab label create', '');
-    await handler.execute({ name: 'bug', color: 'd73a4a', repo: 'foo/bar' });
-    const createCall = execCalls.find((c) => c.includes('glab label create')) ?? '';
-    expect(createCall).toContain("-R 'foo/bar'");
-  });
-
   // ---- color is optional ----
 
   test('color may be omitted', async () => {
@@ -233,38 +194,5 @@ describe('label_create handler', () => {
     const result = await handler.execute({ name: 'bug' });
     const data = parseResult(result.content);
     expect(data.ok).toBe(true);
-    const createCall = execCalls.find((c) => c.includes('gh label create')) ?? '';
-    expect(createCall).not.toContain('--color');
-  });
-
-  // ---- duplicate detection regex ----
-
-  test('"already exists" detection is case-insensitive', async () => {
-    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
-    onExec('gh label create', () => {
-      const err: MockExecError = new Error('') as MockExecError;
-      err.stderr = 'Label Already Exists in repo\n'; // mixed case
-      throw err;
-    });
-    onExec('gh label list', JSON.stringify([{ name: 'bug', description: '', color: '' }]));
-    const result = await handler.execute({ name: 'bug', color: 'd73a4a' });
-    const data = parseResult(result.content);
-    expect(data.ok).toBe(true);
-    expect(data.created).toBe(false);
-  });
-
-  test('"already exists" detection also matches against stdout (some CLI versions)', async () => {
-    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
-    onExec('gh label create', () => {
-      const err: MockExecError = new Error('') as MockExecError;
-      err.stdout = 'label already exists\n'; // on stdout, not stderr
-      err.stderr = '';
-      throw err;
-    });
-    onExec('gh label list', JSON.stringify([{ name: 'bug', description: '', color: '' }]));
-    const result = await handler.execute({ name: 'bug', color: 'd73a4a' });
-    const data = parseResult(result.content);
-    expect(data.ok).toBe(true);
-    expect(data.created).toBe(false);
   });
 });

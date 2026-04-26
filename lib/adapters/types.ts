@@ -428,8 +428,36 @@ export interface CiRunsForBranchResponse {
   runs: CiRunsForBranchRun[];
 }
 
-export type LabelCreateArgs = unknown;
-export type LabelCreateResponse = unknown;
+/**
+ * `label_create` args/response (Story 2.15, #309). Full-migration of the
+ * idempotent create-with-duplicate-lookup-fallback.
+ *
+ * Color asymmetry (per `lesson_origin_ops_pitfalls.md`):
+ * - `args.color` is bare 6-char hex (no leading `#`) — validated at the
+ *   handler schema level. Symmetric with the `gh label create --color` flag.
+ * - GitLab's REST API requires `#RRGGBB`; the `label-create-gitlab.ts` adapter
+ *   prepends the `#` on hand-off and strips it from the lookup payload so
+ *   consumers always see bare hex.
+ *
+ * `NormalizedLabel.created` discriminates the new-create path (`true`) from
+ * the idempotent-duplicate path (`false`, values reflect the pre-existing
+ * label on disk rather than what the caller asked for).
+ */
+export interface LabelCreateArgs {
+  name: string;
+  color?: string;
+  description?: string;
+  repo?: string;
+}
+
+export interface NormalizedLabel {
+  name: string;
+  description: string;
+  color: string;
+  created: boolean;
+}
+
+export type LabelCreateResponse = NormalizedLabel;
 export type LabelListArgs = unknown;
 export type LabelListResponse = unknown;
 export type WorkItemArgs = unknown;
@@ -509,7 +537,7 @@ export interface PlatformAdapter {
   ciRunsForBranch(args: CiRunsForBranchArgs): Promise<AdapterResult<CiRunsForBranchResponse>>;
 
   // Label & issue CRUD
-  labelCreate(args: LabelCreateArgs): Promise<AdapterResult<LabelCreateResponse>>;
+  labelCreate(args: LabelCreateArgs): Promise<AdapterResult<NormalizedLabel>>;
   labelList(args: LabelListArgs): Promise<AdapterResult<LabelListResponse>>;
   workItem(args: WorkItemArgs): Promise<AdapterResult<WorkItemResponse>>;
   ibm(args: IbmArgs): Promise<AdapterResult<IbmResponse>>;

@@ -21,6 +21,7 @@ import { ciRunStatusGitlab } from './ci-run-status-gitlab.js';
 import { ciRunsForBranchGitlab } from './ci-runs-for-branch-gitlab.js';
 import { fetchIssueGitlab } from './fetch-issue-gitlab.js';
 import { fetchPrStateGitlab } from './fetch-pr-state-gitlab.js';
+import { labelCreateGitlab } from './label-create-gitlab.js';
 import { prCommentGitlab } from './pr-comment-gitlab.js';
 import { prCreateGitlab } from './pr-create-gitlab.js';
 import { prDiffGitlab } from './pr-diff-gitlab.js';
@@ -51,7 +52,7 @@ export const gitlabAdapter: PlatformAdapter = {
   ciRunLogs: ciRunLogsGitlab,
   ciFailedJobs: ciFailedJobsGitlab,
   ciRunsForBranch: ciRunsForBranchGitlab,
-  labelCreate: stubMethod,
+  labelCreate: labelCreateGitlab,
   labelList: stubMethod,
   workItem: stubMethod,
   ibm: stubMethod,
