@@ -1,9 +1,47 @@
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
 
-// This handler uses Bun.spawnSync to invoke gh/glab/git. Tests create
-// fixture directories and PATH-stub executable shell scripts that stand
-// in for gh/glab/git. No module mocks — same philosophy as
-// dod_run_test_suite / drift_check_path_exists.
+// pr_create now uses child_process.execSync (story #238 — normalize subprocess
+// invocation). Tests intercept the boundary via `mock.module('child_process', ...)`
+// — same pattern as pr_merge.test.ts. Each test populates `execRegistry` with
+// substring → responder mappings; an unmatched call throws so missing stubs
+// surface loudly.
+
+interface ThrowableError extends Error {
+  stderr?: string;
+  stdout?: string;
+  status?: number;
+}
+
+type Responder = string | (() => string);
+
+let execRegistry: Array<{ match: string; respond: Responder }> = [];
+let execCalls: string[] = [];
+
+// Strip the shell-quoting layer the handler applies so test match-keys can be
+// authored as plain `gh pr create` rather than `'gh' 'pr' 'create'`. We only
+// remove single-quotes that surround whole tokens — argument values that
+// happen to contain quoted substrings still match correctly.
+function unquote(cmd: string): string {
+  return cmd.replace(/'([^']*)'/g, '$1');
+}
+
+function mockExec(cmd: string): string {
+  execCalls.push(cmd);
+  const flat = unquote(cmd);
+  for (const { match, respond } of execRegistry) {
+    if (cmd.includes(match) || flat.includes(match)) {
+      return typeof respond === 'function' ? respond() : respond;
+    }
+  }
+  const err = new Error(`Unexpected exec call: ${cmd}`) as ThrowableError;
+  err.stderr = `Unexpected exec call: ${cmd}`;
+  err.status = 127;
+  throw err;
+}
+
+mock.module('child_process', () => ({
+  execSync: (cmd: string, _opts?: unknown) => mockExec(cmd),
+}));
 
 const { default: handler } = await import('../handlers/pr_create.ts');
 
@@ -11,109 +49,57 @@ function parseResult(result: { content: Array<{ type: string; text: string }> })
   return JSON.parse(result.content[0].text) as Record<string, unknown>;
 }
 
-let fixtureDir = '';
-let stubBinDir = '';
-const ORIGINAL_ENV = process.env.CLAUDE_PROJECT_DIR;
-const ORIGINAL_PATH = process.env.PATH;
-
-function restoreEnv() {
-  if (ORIGINAL_ENV === undefined) {
-    delete process.env.CLAUDE_PROJECT_DIR;
-  } else {
-    process.env.CLAUDE_PROJECT_DIR = ORIGINAL_ENV;
-  }
-  if (ORIGINAL_PATH === undefined) {
-    delete process.env.PATH;
-  } else {
-    process.env.PATH = ORIGINAL_PATH;
-  }
+function onExec(match: string, respond: Responder) {
+  execRegistry.push({ match, respond });
 }
 
-async function makeFixture(
-  files: Record<string, string>,
-): Promise<{ fixture: string; stubBin: string }> {
-  const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
-  const fixture = `/tmp/pr-create-fix-${stamp}`;
-  const stubBin = `/tmp/pr-create-bin-${stamp}`;
-  for (const [name, content] of Object.entries(files)) {
-    await Bun.write(`${fixture}/${name}`, content);
-  }
-  // Ensure stubBin dir exists with a sentinel.
-  await Bun.write(`${stubBin}/.keep`, '');
-  return { fixture, stubBin };
+// Locate a recorded call whose unquoted form contains `needle`. Returns the
+// raw (still-quoted) call so flag-presence assertions still see the literal
+// argv (e.g. `--draft`, `--repo`, `'main'`).
+function findCall(needle: string): string {
+  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
 
-async function writeStub(stubBin: string, name: string, script: string): Promise<void> {
-  const path = `${stubBin}/${name}`;
-  await Bun.write(path, `#!/usr/bin/env bash\n${script}\n`);
-  const chmod = Bun.spawnSync({ cmd: ['chmod', '+x', path] });
-  if (chmod.exitCode !== 0) {
-    throw new Error(`chmod +x ${path} failed`);
-  }
+function failExec(match: string, stderr: string, status: number = 1): void {
+  onExec(match, () => {
+    const err = new Error(stderr) as ThrowableError;
+    err.stderr = stderr;
+    err.stdout = '';
+    err.status = status;
+    throw err;
+  });
 }
 
-function activate(fixture: string, stubBin: string) {
-  process.env.CLAUDE_PROJECT_DIR = fixture;
-  // Keep /usr/bin + /bin in PATH for coreutils (cat, printf, chmod, sh).
-  process.env.PATH = `${stubBin}:/usr/local/bin:/usr/bin:/bin`;
-}
+beforeEach(() => {
+  execRegistry = [];
+  execCalls = [];
+});
+
+afterEach(() => {
+  execRegistry = [];
+  execCalls = [];
+});
 
 describe('pr_create handler', () => {
-  beforeEach(() => {
-    fixtureDir = '';
-    stubBinDir = '';
-  });
-  afterEach(() => {
-    fixtureDir = '';
-    stubBinDir = '';
-    restoreEnv();
-  });
-
   test('handler exports valid HandlerDef shape', () => {
     expect(handler.name).toBe('pr_create');
     expect(typeof handler.execute).toBe('function');
   });
 
   test('github_happy_path — creates PR and returns normalized response', async () => {
-    const { fixture, stubBin } = await makeFixture({
-      '.claude-project.md': '# platform: github\n',
-    });
-    fixtureDir = fixture;
-    stubBinDir = stubBin;
-
-    // git branch --show-current → default to an expected head branch.
-    await writeStub(
-      stubBin,
-      'git',
-      `
-case "$1 $2" in
-  "branch --show-current") echo "feature/76-pr-create" ;;
-  "remote -v") echo "origin\tgit@github.com:org/repo.git (fetch)" ;;
-  *) echo "unhandled git: $*" >&2; exit 1 ;;
-esac
-`,
+    onExec('git remote -v', 'origin\tgit@github.com:org/repo.git (fetch)\n');
+    onExec('git branch --show-current', 'feature/76-pr-create\n');
+    onExec('gh pr create', 'https://github.com/org/repo/pull/42\n');
+    onExec(
+      'gh pr view',
+      JSON.stringify({
+        number: 42,
+        url: 'https://github.com/org/repo/pull/42',
+        state: 'OPEN',
+        headRefName: 'feature/76-pr-create',
+        baseRefName: 'main',
+      }),
     );
-
-    // gh stub: pr create prints the URL; pr view prints JSON.
-    await writeStub(
-      stubBin,
-      'gh',
-      `
-if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
-  echo "https://github.com/org/repo/pull/42"
-  exit 0
-fi
-if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
-  cat <<'EOF'
-{"number":42,"url":"https://github.com/org/repo/pull/42","state":"OPEN","headRefName":"feature/76-pr-create","baseRefName":"main"}
-EOF
-  exit 0
-fi
-echo "unhandled gh: $*" >&2; exit 1
-`,
-    );
-
-    activate(fixture, stubBin);
 
     const result = await handler.execute({
       title: 'feat: add pr_create',
@@ -132,43 +118,19 @@ echo "unhandled gh: $*" >&2; exit 1
   });
 
   test('gitlab_happy_path — creates MR and returns normalized response', async () => {
-    const { fixture, stubBin } = await makeFixture({
-      '.claude-project.md': '# platform: gitlab\n',
-    });
-    fixtureDir = fixture;
-    stubBinDir = stubBin;
-
-    await writeStub(
-      stubBin,
-      'git',
-      `
-case "$1 $2" in
-  "branch --show-current") echo "feature/76-pr-create" ;;
-  "remote -v") echo "origin\tgit@gitlab.com:org/repo.git (fetch)" ;;
-  *) echo "unhandled git: $*" >&2; exit 1 ;;
-esac
-`,
+    onExec('git remote -v', 'origin\tgit@gitlab.com:org/repo.git (fetch)\n');
+    onExec('git branch --show-current', 'feature/76-pr-create\n');
+    onExec('glab mr create', 'https://gitlab.com/org/repo/-/merge_requests/7\n');
+    onExec(
+      'glab mr view',
+      JSON.stringify({
+        iid: 7,
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/7',
+        state: 'opened',
+        source_branch: 'feature/76-pr-create',
+        target_branch: 'main',
+      }),
     );
-
-    await writeStub(
-      stubBin,
-      'glab',
-      `
-if [ "$1" = "mr" ] && [ "$2" = "create" ]; then
-  echo "https://gitlab.com/org/repo/-/merge_requests/7"
-  exit 0
-fi
-if [ "$1" = "mr" ] && [ "$2" = "view" ]; then
-  cat <<'EOF'
-{"iid":7,"web_url":"https://gitlab.com/org/repo/-/merge_requests/7","state":"opened","source_branch":"feature/76-pr-create","target_branch":"main"}
-EOF
-  exit 0
-fi
-echo "unhandled glab: $*" >&2; exit 1
-`,
-    );
-
-    activate(fixture, stubBin);
 
     const result = await handler.execute({
       title: 'feat: add pr_create',
@@ -187,46 +149,19 @@ echo "unhandled glab: $*" >&2; exit 1
   });
 
   test('draft_flag_github — passes --draft to gh pr create', async () => {
-    const { fixture, stubBin } = await makeFixture({
-      '.claude-project.md': '# platform: github\n',
-    });
-    fixtureDir = fixture;
-    stubBinDir = stubBin;
-
-    await writeStub(
-      stubBin,
-      'git',
-      `
-case "$1 $2" in
-  "branch --show-current") echo "feature/76-pr-create" ;;
-  "remote -v") echo "origin\tgit@github.com:org/repo.git (fetch)" ;;
-  *) exit 1 ;;
-esac
-`,
+    onExec('git remote -v', 'origin\tgit@github.com:org/repo.git (fetch)\n');
+    onExec('git branch --show-current', 'feature/76-pr-create\n');
+    onExec('gh pr create', 'https://github.com/org/repo/pull/99\n');
+    onExec(
+      'gh pr view',
+      JSON.stringify({
+        number: 99,
+        url: 'https://github.com/org/repo/pull/99',
+        state: 'OPEN',
+        headRefName: 'feature/76-pr-create',
+        baseRefName: 'main',
+      }),
     );
-
-    // Record args into a side-channel file for inspection.
-    const recordPath = `${fixture}/gh-args.txt`;
-    await writeStub(
-      stubBin,
-      'gh',
-      `
-if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
-  printf '%s\\n' "$@" > "${recordPath}"
-  echo "https://github.com/org/repo/pull/99"
-  exit 0
-fi
-if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
-  cat <<'EOF'
-{"number":99,"url":"https://github.com/org/repo/pull/99","state":"OPEN","headRefName":"feature/76-pr-create","baseRefName":"main"}
-EOF
-  exit 0
-fi
-exit 1
-`,
-    );
-
-    activate(fixture, stubBin);
 
     const result = await handler.execute({
       title: 't',
@@ -237,50 +172,24 @@ exit 1
     const data = parseResult(result);
     expect(data.ok).toBe(true);
 
-    const recorded = await Bun.file(recordPath).text();
-    expect(recorded).toContain('--draft');
+    const createCall = findCall('gh pr create');
+    expect(createCall).toContain('--draft');
   });
 
   test('draft_flag_gitlab — passes --draft to glab mr create', async () => {
-    const { fixture, stubBin } = await makeFixture({
-      '.claude-project.md': '# platform: gitlab\n',
-    });
-    fixtureDir = fixture;
-    stubBinDir = stubBin;
-
-    await writeStub(
-      stubBin,
-      'git',
-      `
-case "$1 $2" in
-  "branch --show-current") echo "feature/76-pr-create" ;;
-  "remote -v") echo "origin\tgit@gitlab.com:org/repo.git (fetch)" ;;
-  *) exit 1 ;;
-esac
-`,
+    onExec('git remote -v', 'origin\tgit@gitlab.com:org/repo.git (fetch)\n');
+    onExec('git branch --show-current', 'feature/76-pr-create\n');
+    onExec('glab mr create', 'https://gitlab.com/org/repo/-/merge_requests/8\n');
+    onExec(
+      'glab mr view',
+      JSON.stringify({
+        iid: 8,
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/8',
+        state: 'opened',
+        source_branch: 'feature/76-pr-create',
+        target_branch: 'main',
+      }),
     );
-
-    const recordPath = `${fixture}/glab-args.txt`;
-    await writeStub(
-      stubBin,
-      'glab',
-      `
-if [ "$1" = "mr" ] && [ "$2" = "create" ]; then
-  printf '%s\\n' "$@" > "${recordPath}"
-  echo "https://gitlab.com/org/repo/-/merge_requests/8"
-  exit 0
-fi
-if [ "$1" = "mr" ] && [ "$2" = "view" ]; then
-  cat <<'EOF'
-{"iid":8,"web_url":"https://gitlab.com/org/repo/-/merge_requests/8","state":"opened","source_branch":"feature/76-pr-create","target_branch":"main"}
-EOF
-  exit 0
-fi
-exit 1
-`,
-    );
-
-    activate(fixture, stubBin);
 
     const result = await handler.execute({
       title: 't',
@@ -291,8 +200,8 @@ exit 1
     const data = parseResult(result);
     expect(data.ok).toBe(true);
 
-    const recorded = await Bun.file(recordPath).text();
-    expect(recorded).toContain('--draft');
+    const createCall = findCall('glab mr create');
+    expect(createCall).toContain('--draft');
   });
 
   test('missing_required_title — schema rejects', async () => {
@@ -312,54 +221,21 @@ exit 1
   // ---- #159: auto-resolve default branch when base is omitted ------------
 
   test('default_branch_resolution_github — base omitted resolves via gh repo view', async () => {
-    const { fixture, stubBin } = await makeFixture({
-      '.claude-project.md': '# platform: github\n',
-    });
-    fixtureDir = fixture;
-    stubBinDir = stubBin;
-
-    await writeStub(
-      stubBin,
-      'git',
-      `
-case "$1 $2" in
-  "branch --show-current") echo "feature/159-default-branch" ;;
-  "remote -v") echo "origin\tgit@github.com:org/repo.git (fetch)" ;;
-  *) echo "unhandled git: $*" >&2; exit 1 ;;
-esac
-`,
+    onExec('git remote -v', 'origin\tgit@github.com:org/repo.git (fetch)\n');
+    onExec('git branch --show-current', 'feature/159-default-branch\n');
+    // gh repo view --json defaultBranchRef --jq .defaultBranchRef.name
+    onExec('gh repo view', 'main\n');
+    onExec('gh pr create', 'https://github.com/org/repo/pull/42\n');
+    onExec(
+      'gh pr view',
+      JSON.stringify({
+        number: 42,
+        url: 'https://github.com/org/repo/pull/42',
+        state: 'OPEN',
+        headRefName: 'feature/159-default-branch',
+        baseRefName: 'main',
+      }),
     );
-
-    // gh stub: repo view returns the default branch name; pr create succeeds; pr view normalizes.
-    await writeStub(
-      stubBin,
-      'gh',
-      `
-if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
-  # Verify --json defaultBranchRef --jq .defaultBranchRef.name is in argv.
-  echo "main"
-  exit 0
-fi
-if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
-  # Verify --base main was passed (default-branch resolution worked).
-  case " $* " in
-    *" --base main "*) ;;
-    *) echo "expected --base main in argv, got: $*" >&2; exit 1 ;;
-  esac
-  echo "https://github.com/org/repo/pull/42"
-  exit 0
-fi
-if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
-  cat <<'EOF'
-{"number":42,"url":"https://github.com/org/repo/pull/42","state":"OPEN","headRefName":"feature/159-default-branch","baseRefName":"main"}
-EOF
-  exit 0
-fi
-echo "unhandled gh: $*" >&2; exit 1
-`,
-    );
-
-    activate(fixture, stubBin);
 
     const result = await handler.execute({
       title: 'feat: default branch',
@@ -369,63 +245,45 @@ echo "unhandled gh: $*" >&2; exit 1
     const data = parseResult(result);
     expect(data.ok).toBe(true);
     expect(data.base).toBe('main');
+
+    // Verify default-branch resolution propagated into the create call.
+    const createCall = findCall('gh pr create');
+    expect(createCall).toContain('--base');
+    expect(createCall).toContain("'main'");
   });
 
   test('default_branch_resolution_gitlab — base omitted resolves via glab api', async () => {
-    const { fixture, stubBin } = await makeFixture({
-      '.claude-project.md': '# platform: gitlab\n',
+    onExec('git remote -v', 'origin\tgit@gitlab.com:org/repo.git (fetch)\n');
+    onExec('git branch --show-current', 'feature/159-default-branch\n');
+    // glab api projects/:id — no --jq flag (handler parses JSON in-process).
+    onExec('glab api', () => {
+      // Faithful to the real glab binary — fail loudly if the handler ever
+      // passes --jq. Look at the most recent recorded call.
+      const last = execCalls[execCalls.length - 1] ?? '';
+      if (last.includes('--jq')) {
+        const err = new Error('FAIL: glab api does not accept --jq') as ThrowableError;
+        err.stderr = 'FAIL: glab api does not accept --jq';
+        err.status = 99;
+        throw err;
+      }
+      return JSON.stringify({
+        id: 42,
+        name: 'repo',
+        default_branch: 'develop',
+        path_with_namespace: 'org/repo',
+      });
     });
-    fixtureDir = fixture;
-    stubBinDir = stubBin;
-
-    await writeStub(
-      stubBin,
-      'git',
-      `
-case "$1 $2" in
-  "branch --show-current") echo "feature/159-default-branch" ;;
-  "remote -v") echo "origin\tgit@gitlab.com:org/repo.git (fetch)" ;;
-  *) echo "unhandled git: $*" >&2; exit 1 ;;
-esac
-`,
+    onExec('glab mr create', 'https://gitlab.com/org/repo/-/merge_requests/7\n');
+    onExec(
+      'glab mr view',
+      JSON.stringify({
+        iid: 7,
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/7',
+        state: 'opened',
+        source_branch: 'feature/159-default-branch',
+        target_branch: 'develop',
+      }),
     );
-
-    await writeStub(
-      stubBin,
-      'glab',
-      `
-if [ "$1" = "api" ] && [[ "$2" =~ ^projects/ ]]; then
-  # Faithful to the real glab binary: --jq is NOT a recognized flag.
-  # If the handler ever passes it, the stub fails so tests catch the regression.
-  for arg in "$@"; do
-    if [ "$arg" = "--jq" ]; then
-      echo "FAIL: glab api does not accept --jq" >&2
-      exit 99
-    fi
-  done
-  cat <<'EOF'
-{"id":42,"name":"repo","default_branch":"develop","path_with_namespace":"org/repo"}
-EOF
-  exit 0
-fi
-if [ "$1" = "mr" ] && [ "$2" = "create" ]; then
-  case " $* " in
-    *" --target-branch develop "*) ;;
-    *) echo "expected --target-branch develop in argv, got: $*" >&2; exit 1 ;;
-  esac
-  exit 0
-fi
-if [ "$1" = "mr" ] && [ "$2" = "view" ]; then
-  cat <<'EOF'
-{"iid":7,"web_url":"https://gitlab.com/org/repo/-/merge_requests/7","state":"opened","source_branch":"feature/159-default-branch","target_branch":"develop"}
-EOF
-  exit 0
-fi
-echo "unhandled glab: $*" >&2; exit 1
-`,
-    );
-
-    activate(fixture, stubBin);
 
     const result = await handler.execute({
       title: 'feat: default branch',
@@ -434,55 +292,28 @@ echo "unhandled glab: $*" >&2; exit 1
     const data = parseResult(result);
     expect(data.ok).toBe(true);
     expect(data.base).toBe('develop');
+
+    const createCall = findCall('glab mr create');
+    expect(createCall).toContain('--target-branch');
+    expect(createCall).toContain("'develop'");
   });
 
   test('explicit_base_wins — auto-resolution skipped when base is provided', async () => {
-    const { fixture, stubBin } = await makeFixture({
-      '.claude-project.md': '# platform: github\n',
-    });
-    fixtureDir = fixture;
-    stubBinDir = stubBin;
-
-    await writeStub(
-      stubBin,
-      'git',
-      `
-case "$1 $2" in
-  "branch --show-current") echo "feature/159-default-branch" ;;
-  "remote -v") echo "origin\tgit@github.com:org/repo.git (fetch)" ;;
-  *) echo "unhandled git: $*" >&2; exit 1 ;;
-esac
-`,
-    );
-
+    onExec('git remote -v', 'origin\tgit@github.com:org/repo.git (fetch)\n');
+    onExec('git branch --show-current', 'feature/159-default-branch\n');
     // gh repo view MUST NOT be called when explicit base provided — fail loudly.
-    await writeStub(
-      stubBin,
-      'gh',
-      `
-if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
-  echo "FAIL: repo view should not be called with explicit base" >&2
-  exit 99
-fi
-if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
-  case " $* " in
-    *" --base release/v2 "*) ;;
-    *) echo "expected --base release/v2 in argv, got: $*" >&2; exit 1 ;;
-  esac
-  echo "https://github.com/org/repo/pull/77"
-  exit 0
-fi
-if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
-  cat <<'EOF'
-{"number":77,"url":"https://github.com/org/repo/pull/77","state":"OPEN","headRefName":"feature/159-default-branch","baseRefName":"release/v2"}
-EOF
-  exit 0
-fi
-echo "unhandled gh: $*" >&2; exit 1
-`,
+    failExec('gh repo view', 'FAIL: repo view should not be called with explicit base', 99);
+    onExec('gh pr create', 'https://github.com/org/repo/pull/77\n');
+    onExec(
+      'gh pr view',
+      JSON.stringify({
+        number: 77,
+        url: 'https://github.com/org/repo/pull/77',
+        state: 'OPEN',
+        headRefName: 'feature/159-default-branch',
+        baseRefName: 'release/v2',
+      }),
     );
-
-    activate(fixture, stubBin);
 
     const result = await handler.execute({
       title: 'feat: explicit base',
@@ -492,40 +323,15 @@ echo "unhandled gh: $*" >&2; exit 1
     const data = parseResult(result);
     expect(data.ok).toBe(true);
     expect(data.base).toBe('release/v2');
+
+    // Confirm gh repo view was never called.
+    expect(execCalls.some((c) => c.includes('gh repo view'))).toBe(false);
   });
 
   test('default_branch_resolution_failure — surfaces ok:false when gh repo view fails', async () => {
-    const { fixture, stubBin } = await makeFixture({
-      '.claude-project.md': '# platform: github\n',
-    });
-    fixtureDir = fixture;
-    stubBinDir = stubBin;
-
-    await writeStub(
-      stubBin,
-      'git',
-      `
-case "$1 $2" in
-  "branch --show-current") echo "feature/159-default-branch" ;;
-  "remote -v") echo "origin\tgit@github.com:org/repo.git (fetch)" ;;
-  *) echo "unhandled git: $*" >&2; exit 1 ;;
-esac
-`,
-    );
-
-    await writeStub(
-      stubBin,
-      'gh',
-      `
-if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
-  echo "auth required" >&2
-  exit 1
-fi
-echo "unhandled gh: $*" >&2; exit 1
-`,
-    );
-
-    activate(fixture, stubBin);
+    onExec('git remote -v', 'origin\tgit@github.com:org/repo.git (fetch)\n');
+    onExec('git branch --show-current', 'feature/159-default-branch\n');
+    failExec('gh repo view', 'auth required');
 
     const result = await handler.execute({
       title: 'feat: no base',
@@ -537,49 +343,24 @@ echo "unhandled gh: $*" >&2; exit 1
   });
 
   test('explicit_head_overrides_git_branch — uses args.head when provided', async () => {
-    const { fixture, stubBin } = await makeFixture({
-      '.claude-project.md': '# platform: github\n',
-    });
-    fixtureDir = fixture;
-    stubBinDir = stubBin;
-
-    // git stub that would fail if called with branch --show-current, proving
-    // the handler used args.head directly.
-    await writeStub(
-      stubBin,
-      'git',
-      `
-if [ "$1" = "branch" ]; then
-  echo "git branch should not be called when head is provided" >&2
-  exit 99
-fi
-if [ "$1" = "remote" ]; then
-  echo "origin\tgit@github.com:org/repo.git (fetch)"
-  exit 0
-fi
-exit 1
-`,
+    onExec('git remote -v', 'origin\tgit@github.com:org/repo.git (fetch)\n');
+    // git branch should NOT be called when head is provided — fail loudly.
+    failExec(
+      'git branch --show-current',
+      'git branch should not be called when head is provided',
+      99,
     );
-
-    await writeStub(
-      stubBin,
-      'gh',
-      `
-if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
-  echo "https://github.com/org/repo/pull/55"
-  exit 0
-fi
-if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
-  cat <<'EOF'
-{"number":55,"url":"https://github.com/org/repo/pull/55","state":"OPEN","headRefName":"custom-head","baseRefName":"main"}
-EOF
-  exit 0
-fi
-exit 1
-`,
+    onExec('gh pr create', 'https://github.com/org/repo/pull/55\n');
+    onExec(
+      'gh pr view',
+      JSON.stringify({
+        number: 55,
+        url: 'https://github.com/org/repo/pull/55',
+        state: 'OPEN',
+        headRefName: 'custom-head',
+        baseRefName: 'main',
+      }),
     );
-
-    activate(fixture, stubBin);
 
     const result = await handler.execute({
       title: 't',
@@ -590,37 +371,13 @@ exit 1
     const data = parseResult(result);
     expect(data.ok).toBe(true);
     expect(data.head).toBe('custom-head');
+    expect(execCalls.some((c) => c.includes('git branch --show-current'))).toBe(false);
   });
 
   test('github_error_path — gh pr create fails, returns ok=false with error', async () => {
-    const { fixture, stubBin } = await makeFixture({
-      '.claude-project.md': '# platform: github\n',
-    });
-    fixtureDir = fixture;
-    stubBinDir = stubBin;
-
-    await writeStub(
-      stubBin,
-      'git',
-      `
-case "$1 $2" in
-  "branch --show-current") echo "feature/76-pr-create" ;;
-  "remote -v") echo "origin\tgit@github.com:org/repo.git (fetch)" ;;
-  *) exit 1 ;;
-esac
-`,
-    );
-
-    await writeStub(
-      stubBin,
-      'gh',
-      `
-echo "authentication error: not logged in" >&2
-exit 1
-`,
-    );
-
-    activate(fixture, stubBin);
+    onExec('git remote -v', 'origin\tgit@github.com:org/repo.git (fetch)\n');
+    onExec('git branch --show-current', 'feature/76-pr-create\n');
+    failExec('gh pr create', 'authentication error: not logged in');
 
     const result = await handler.execute({
       title: 't',
@@ -634,42 +391,24 @@ exit 1
   });
 
   test('github_idempotent — duplicate PR returns existing with created=false', async () => {
-    const { fixture, stubBin } = await makeFixture({ '.keep': '' });
-    fixtureDir = fixture;
-    stubBinDir = stubBin;
-
-    await writeStub(
-      stubBin,
-      'git',
-      `
-case "$1 $2" in
-  "branch --show-current") echo "feature/76-pr-create" ;;
-  "remote -v") echo "origin\tgit@github.com:org/repo.git (fetch)" ;;
-  *) exit 1 ;;
-esac
-`,
+    onExec('git remote -v', 'origin\tgit@github.com:org/repo.git (fetch)\n');
+    onExec('git branch --show-current', 'feature/76-pr-create\n');
+    failExec(
+      'gh pr create',
+      'a pull request for branch "feature/76-pr-create" into branch "main" already exists',
     );
-
-    // gh pr create fails with "already exists"; gh pr list returns the existing PR.
-    await writeStub(
-      stubBin,
-      'gh',
-      `
-if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
-  echo "a pull request for branch \"feature/76-pr-create\" into branch \"main\" already exists" >&2
-  exit 1
-fi
-if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
-  cat <<'EOF'
-[{"number":42,"url":"https://github.com/org/repo/pull/42","state":"OPEN","headRefName":"feature/76-pr-create","baseRefName":"main"}]
-EOF
-  exit 0
-fi
-echo "unhandled gh: $*" >&2; exit 1
-`,
+    onExec(
+      'gh pr list',
+      JSON.stringify([
+        {
+          number: 42,
+          url: 'https://github.com/org/repo/pull/42',
+          state: 'OPEN',
+          headRefName: 'feature/76-pr-create',
+          baseRefName: 'main',
+        },
+      ]),
     );
-
-    activate(fixture, stubBin);
 
     const result = await handler.execute({
       title: 'feat: add pr_create',
@@ -685,42 +424,22 @@ echo "unhandled gh: $*" >&2; exit 1
   });
 
   test('gitlab_idempotent — duplicate MR returns existing with created=false', async () => {
-    const { fixture, stubBin } = await makeFixture({ '.keep': '' });
-    fixtureDir = fixture;
-    stubBinDir = stubBin;
-
-    await writeStub(
-      stubBin,
-      'git',
-      `
-case "$1 $2" in
-  "branch --show-current") echo "feature/76-pr-create" ;;
-  "remote -v") echo "origin\tgit@gitlab.com:org/repo.git (fetch)" ;;
-  *) exit 1 ;;
-esac
-`,
+    onExec('git remote -v', 'origin\tgit@gitlab.com:org/repo.git (fetch)\n');
+    onExec('git branch --show-current', 'feature/76-pr-create\n');
+    failExec(
+      'glab mr create',
+      'Another open merge request already exists for this source branch',
     );
-
-    // glab mr create fails with "already exists"; glab mr view returns the existing MR.
-    await writeStub(
-      stubBin,
-      'glab',
-      `
-if [ "$1" = "mr" ] && [ "$2" = "create" ]; then
-  echo "Another open merge request already exists for this source branch" >&2
-  exit 1
-fi
-if [ "$1" = "mr" ] && [ "$2" = "view" ]; then
-  cat <<'EOF'
-{"iid":7,"web_url":"https://gitlab.com/org/repo/-/merge_requests/7","state":"opened","source_branch":"feature/76-pr-create","target_branch":"main"}
-EOF
-  exit 0
-fi
-echo "unhandled glab: $*" >&2; exit 1
-`,
+    onExec(
+      'glab mr view',
+      JSON.stringify({
+        iid: 7,
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/7',
+        state: 'opened',
+        source_branch: 'feature/76-pr-create',
+        target_branch: 'main',
+      }),
     );
-
-    activate(fixture, stubBin);
 
     const result = await handler.execute({
       title: 'feat: add pr_create',
@@ -736,46 +455,23 @@ echo "unhandled glab: $*" >&2; exit 1
   });
 
   test('route_with_repo_github — appends --repo to gh pr create/view when repo provided', async () => {
-    const { fixture, stubBin } = await makeFixture({ '.keep': '' });
-    fixtureDir = fixture;
-    stubBinDir = stubBin;
-
     // cwd remote is a DIFFERENT repo — repo arg must override.
-    await writeStub(
-      stubBin,
-      'git',
-      `
-case "$1 $2" in
-  "branch --show-current") echo "feature/196-cross-repo" ;;
-  "remote -v") echo "origin\tgit@github.com:cwd-org/cwd-repo.git (fetch)" ;;
-  *) exit 1 ;;
-esac
-`,
+    onExec('git remote -v', 'origin\tgit@github.com:cwd-org/cwd-repo.git (fetch)\n');
+    onExec('git branch --show-current', 'feature/196-cross-repo\n');
+    onExec(
+      'gh pr create',
+      'https://github.com/Wave-Engineering/mcp-server-sdlc/pull/196\n',
     );
-
-    const createRecordPath = `${fixture}/gh-create-args.txt`;
-    const viewRecordPath = `${fixture}/gh-view-args.txt`;
-    await writeStub(
-      stubBin,
-      'gh',
-      `
-if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
-  printf '%s\\n' "$@" > "${createRecordPath}"
-  echo "https://github.com/Wave-Engineering/mcp-server-sdlc/pull/196"
-  exit 0
-fi
-if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
-  printf '%s\\n' "$@" > "${viewRecordPath}"
-  cat <<'EOF'
-{"number":196,"url":"https://github.com/Wave-Engineering/mcp-server-sdlc/pull/196","state":"OPEN","headRefName":"feature/196-cross-repo","baseRefName":"main"}
-EOF
-  exit 0
-fi
-exit 1
-`,
+    onExec(
+      'gh pr view',
+      JSON.stringify({
+        number: 196,
+        url: 'https://github.com/Wave-Engineering/mcp-server-sdlc/pull/196',
+        state: 'OPEN',
+        headRefName: 'feature/196-cross-repo',
+        baseRefName: 'main',
+      }),
     );
-
-    activate(fixture, stubBin);
 
     const result = await handler.execute({
       title: 't',
@@ -787,54 +483,31 @@ exit 1
     expect(data.ok).toBe(true);
     expect(data.number).toBe(196);
 
-    const createArgs = await Bun.file(createRecordPath).text();
-    expect(createArgs).toContain('--repo');
-    expect(createArgs).toContain('Wave-Engineering/mcp-server-sdlc');
-    const viewArgs = await Bun.file(viewRecordPath).text();
-    expect(viewArgs).toContain('--repo');
-    expect(viewArgs).toContain('Wave-Engineering/mcp-server-sdlc');
+    const createCall = findCall('gh pr create');
+    expect(createCall).toContain('--repo');
+    expect(createCall).toContain('Wave-Engineering/mcp-server-sdlc');
+    const viewCall = findCall('gh pr view');
+    expect(viewCall).toContain('--repo');
+    expect(viewCall).toContain('Wave-Engineering/mcp-server-sdlc');
   });
 
   test('route_with_repo_gitlab — appends -R to glab mr create/view when repo provided', async () => {
-    const { fixture, stubBin } = await makeFixture({ '.keep': '' });
-    fixtureDir = fixture;
-    stubBinDir = stubBin;
-
-    await writeStub(
-      stubBin,
-      'git',
-      `
-case "$1 $2" in
-  "branch --show-current") echo "feature/196-cross-repo" ;;
-  "remote -v") echo "origin\tgit@gitlab.com:cwd-org/cwd-repo.git (fetch)" ;;
-  *) exit 1 ;;
-esac
-`,
+    onExec('git remote -v', 'origin\tgit@gitlab.com:cwd-org/cwd-repo.git (fetch)\n');
+    onExec('git branch --show-current', 'feature/196-cross-repo\n');
+    onExec(
+      'glab mr create',
+      'https://gitlab.com/target-org/target-repo/-/merge_requests/8\n',
     );
-
-    const createRecordPath = `${fixture}/glab-create-args.txt`;
-    const viewRecordPath = `${fixture}/glab-view-args.txt`;
-    await writeStub(
-      stubBin,
-      'glab',
-      `
-if [ "$1" = "mr" ] && [ "$2" = "create" ]; then
-  printf '%s\\n' "$@" > "${createRecordPath}"
-  echo "https://gitlab.com/target-org/target-repo/-/merge_requests/8"
-  exit 0
-fi
-if [ "$1" = "mr" ] && [ "$2" = "view" ]; then
-  printf '%s\\n' "$@" > "${viewRecordPath}"
-  cat <<'EOF'
-{"iid":8,"web_url":"https://gitlab.com/target-org/target-repo/-/merge_requests/8","state":"opened","source_branch":"feature/196-cross-repo","target_branch":"main"}
-EOF
-  exit 0
-fi
-exit 1
-`,
+    onExec(
+      'glab mr view',
+      JSON.stringify({
+        iid: 8,
+        web_url: 'https://gitlab.com/target-org/target-repo/-/merge_requests/8',
+        state: 'opened',
+        source_branch: 'feature/196-cross-repo',
+        target_branch: 'main',
+      }),
     );
-
-    activate(fixture, stubBin);
 
     const result = await handler.execute({
       title: 't',
@@ -846,52 +519,28 @@ exit 1
     expect(data.ok).toBe(true);
     expect(data.number).toBe(8);
 
-    const createArgs = await Bun.file(createRecordPath).text();
-    expect(createArgs).toContain('-R');
-    expect(createArgs).toContain('target-org/target-repo');
-    const viewArgs = await Bun.file(viewRecordPath).text();
-    expect(viewArgs).toContain('-R');
-    expect(viewArgs).toContain('target-org/target-repo');
+    const createCall = findCall('glab mr create');
+    expect(createCall).toContain('-R');
+    expect(createCall).toContain('target-org/target-repo');
+    const viewCall = findCall('glab mr view');
+    expect(viewCall).toContain('-R');
+    expect(viewCall).toContain('target-org/target-repo');
   });
 
   test('regression_without_repo — gh pr create argv has no --repo flag', async () => {
-    const { fixture, stubBin } = await makeFixture({ '.keep': '' });
-    fixtureDir = fixture;
-    stubBinDir = stubBin;
-
-    await writeStub(
-      stubBin,
-      'git',
-      `
-case "$1 $2" in
-  "branch --show-current") echo "feature/xyz" ;;
-  "remote -v") echo "origin\tgit@github.com:org/repo.git (fetch)" ;;
-  *) exit 1 ;;
-esac
-`,
+    onExec('git remote -v', 'origin\tgit@github.com:org/repo.git (fetch)\n');
+    onExec('git branch --show-current', 'feature/xyz\n');
+    onExec('gh pr create', 'https://github.com/org/repo/pull/100\n');
+    onExec(
+      'gh pr view',
+      JSON.stringify({
+        number: 100,
+        url: 'https://github.com/org/repo/pull/100',
+        state: 'OPEN',
+        headRefName: 'feature/xyz',
+        baseRefName: 'main',
+      }),
     );
-
-    const recordPath = `${fixture}/gh-args.txt`;
-    await writeStub(
-      stubBin,
-      'gh',
-      `
-if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
-  printf '%s\\n' "$@" > "${recordPath}"
-  echo "https://github.com/org/repo/pull/100"
-  exit 0
-fi
-if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
-  cat <<'EOF'
-{"number":100,"url":"https://github.com/org/repo/pull/100","state":"OPEN","headRefName":"feature/xyz","baseRefName":"main"}
-EOF
-  exit 0
-fi
-exit 1
-`,
-    );
-
-    activate(fixture, stubBin);
 
     const result = await handler.execute({
       title: 't',
@@ -901,21 +550,14 @@ exit 1
     const data = parseResult(result);
     expect(data.ok).toBe(true);
 
-    const argsText = await Bun.file(recordPath).text();
-    expect(argsText).not.toContain('--repo');
+    const createCall = findCall('gh pr create');
+    expect(createCall).not.toContain('--repo');
   });
 
   test('invalid_slug_early_error — returns ok:false and does not spawn any subprocess', async () => {
-    // No stubs registered — if handler spawned anything it'd fail with an
-    // unpredictable error from PATH lookup. We rely on zod validation to
-    // short-circuit before any spawn.
-    const { fixture, stubBin } = await makeFixture({ '.keep': '' });
-    fixtureDir = fixture;
-    stubBinDir = stubBin;
-
-    // Activate with an EMPTY stubBin — no git, gh, or glab available.
-    activate(fixture, stubBin);
-
+    // No stubs registered — if handler invoked execSync it'd throw via the
+    // unmatched-call guard. Zod validation should short-circuit before any
+    // subprocess invocation.
     const result = await handler.execute({
       title: 't',
       body: 'b',
@@ -925,47 +567,24 @@ exit 1
     const data = parseResult(result);
     expect(data.ok).toBe(false);
     expect(String(data.error)).toContain('repo');
+    expect(execCalls.length).toBe(0);
   });
 
-  test('fallback_platform_detection — no .claude-project.md, uses git remote', async () => {
-    const { fixture, stubBin } = await makeFixture({
-      // Intentionally no .claude-project.md — handler must consult `git remote -v`.
-      'README.md': '# project\n',
-    });
-    fixtureDir = fixture;
-    stubBinDir = stubBin;
-
-    await writeStub(
-      stubBin,
-      'git',
-      `
-case "$1 $2" in
-  "branch --show-current") echo "feature/76-pr-create" ;;
-  "remote -v") echo "origin\thttps://gitlab.com/org/repo.git (fetch)" ;;
-  *) exit 1 ;;
-esac
-`,
+  test('fallback_platform_detection — uses git remote URL to route', async () => {
+    // Remote URL identifies gitlab — handler must dispatch to glab path.
+    onExec('git remote -v', 'origin\thttps://gitlab.com/org/repo.git (fetch)\n');
+    onExec('git branch --show-current', 'feature/76-pr-create\n');
+    onExec('glab mr create', 'https://gitlab.com/org/repo/-/merge_requests/11\n');
+    onExec(
+      'glab mr view',
+      JSON.stringify({
+        iid: 11,
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/11',
+        state: 'opened',
+        source_branch: 'feature/76-pr-create',
+        target_branch: 'main',
+      }),
     );
-
-    await writeStub(
-      stubBin,
-      'glab',
-      `
-if [ "$1" = "mr" ] && [ "$2" = "create" ]; then
-  echo "https://gitlab.com/org/repo/-/merge_requests/11"
-  exit 0
-fi
-if [ "$1" = "mr" ] && [ "$2" = "view" ]; then
-  cat <<'EOF'
-{"iid":11,"web_url":"https://gitlab.com/org/repo/-/merge_requests/11","state":"opened","source_branch":"feature/76-pr-create","target_branch":"main"}
-EOF
-  exit 0
-fi
-exit 1
-`,
-    );
-
-    activate(fixture, stubBin);
 
     const result = await handler.execute({
       title: 't',
@@ -975,5 +594,43 @@ exit 1
     const data = parseResult(result);
     expect(data.ok).toBe(true);
     expect(data.number).toBe(11);
+  });
+
+  // ---- argv-shape assertion (Story 1.1 unit test ledger) ------------------
+
+  test('execSync invocation matches gh CLI shape', async () => {
+    onExec('git remote -v', 'origin\tgit@github.com:org/repo.git (fetch)\n');
+    onExec('git branch --show-current', 'feature/argv-shape\n');
+    onExec('gh pr create', 'https://github.com/org/repo/pull/123\n');
+    onExec(
+      'gh pr view',
+      JSON.stringify({
+        number: 123,
+        url: 'https://github.com/org/repo/pull/123',
+        state: 'OPEN',
+        headRefName: 'feature/argv-shape',
+        baseRefName: 'main',
+      }),
+    );
+
+    const result = await handler.execute({
+      title: 'feat: shape test',
+      body: 'Body text',
+      base: 'main',
+    });
+    const data = parseResult(result);
+    expect(data.ok).toBe(true);
+
+    const createCall = findCall('gh pr create');
+    // Required flag pairs in any order — argv is shell-quoted in token form
+    // ('gh' 'pr' 'create' '--title' 'feat: shape test' ...). Assert presence
+    // of every flag and value via the unquoted view.
+    expect(createCall.length).toBeGreaterThan(0);
+    const flat = unquote(createCall);
+    expect(flat).toMatch(/^gh pr create /);
+    expect(flat).toContain('--title feat: shape test');
+    expect(flat).toContain('--body Body text');
+    expect(flat).toContain('--base main');
+    expect(flat).toContain('--head feature/argv-shape');
   });
 });
