@@ -31,10 +31,18 @@ describe('PlatformAdapter contract', () => {
     });
   }
 
-  test('Story 1.2 vacuous-pass: every method returns platform_unsupported', async () => {
-    // When a real implementation lands (Story 1.3+), it removes that method
-    // from this list. By Phase 3 close, this test should iterate zero methods.
-    for (const method of PLATFORM_ADAPTER_METHODS) {
+  // Methods migrated to a real adapter implementation. Each migration story
+  // (1.3 onward) appends here so the vacuous-pass test below stops asserting
+  // `platform_unsupported` for that method. By Phase 3 close, this set
+  // contains every method in PLATFORM_ADAPTER_METHODS and the test below
+  // iterates zero methods.
+  //
+  // Story 1.3 (#240): prCreate
+  const MIGRATED_METHODS = new Set<string>(['prCreate']);
+
+  test('still-stubbed methods return platform_unsupported', async () => {
+    const stubbed = PLATFORM_ADAPTER_METHODS.filter((m) => !MIGRATED_METHODS.has(m));
+    for (const method of stubbed) {
       const fn = (githubAdapter as unknown as Record<string, (args: unknown) => Promise<unknown>>)[method];
       const result = (await fn({})) as { platform_unsupported?: true; hint?: string };
       expect(result.platform_unsupported).toBe(true);
