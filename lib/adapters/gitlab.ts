@@ -18,6 +18,7 @@ import type { PlatformAdapter } from './types.js';
 import { ciFailedJobsGitlab } from './ci-failed-jobs-gitlab.js';
 import { ciRunLogsGitlab } from './ci-run-logs-gitlab.js';
 import { ciRunStatusGitlab } from './ci-run-status-gitlab.js';
+import { ciRunsForBranchGitlab } from './ci-runs-for-branch-gitlab.js';
 import { fetchIssueGitlab } from './fetch-issue-gitlab.js';
 import { fetchPrStateGitlab } from './fetch-pr-state-gitlab.js';
 import { prCommentGitlab } from './pr-comment-gitlab.js';
@@ -49,7 +50,7 @@ export const gitlabAdapter: PlatformAdapter = {
   ciRunStatus: ciRunStatusGitlab,
   ciRunLogs: ciRunLogsGitlab,
   ciFailedJobs: ciFailedJobsGitlab,
-  ciRunsForBranch: stubMethod,
+  ciRunsForBranch: ciRunsForBranchGitlab,
   labelCreate: stubMethod,
   labelList: stubMethod,
   workItem: stubMethod,

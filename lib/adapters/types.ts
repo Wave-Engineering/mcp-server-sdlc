@@ -385,8 +385,48 @@ export interface CiFailedJobsResponse {
   failed_jobs: FailedJob[];
 }
 
-export type CiRunsForBranchArgs = unknown;
-export type CiRunsForBranchResponse = unknown;
+/**
+ * `ci_runs_for_branch` args/response (Story 2.14, #308). Full-migration of
+ * the recent-runs list for a branch, optionally filtered by status.
+ *
+ * The `status` vocabulary is the caller-facing enum
+ * (`'success' | 'failure' | 'in_progress' | 'all'`) lifted verbatim from the
+ * pre-migration handler; each platform adapter owns the translation to its
+ * CLI's native flag value (`githubStatusFlag` / `gitlabStatusFlag`).
+ *
+ * Two-step dispatch diverges per platform:
+ * - GitHub: `gh run list --branch <ref> --limit <n> [--status <flag>]
+ *   [--repo <slug>] --json databaseId,name,status,conclusion,headSha,url,createdAt`.
+ * - GitLab: `glab api projects/:id/pipelines?ref=<ref>&per_page=<n>` — GitLab
+ *   has no server-side status filter, so the adapter fetches a larger window
+ *   (`limit * 3`) and filters client-side against the platform-native
+ *   `success | failed | running` vocabulary.
+ *
+ * The normalized `RunRecord` shape is the pre-migration struct — platform
+ * status strings pass through unchanged (GitHub returns `completed | in_progress | …`;
+ * GitLab returns `success | failed | running | …`) to preserve backward
+ * compatibility with consumers of `ci_runs_for_branch`.
+ */
+export interface CiRunsForBranchArgs {
+  branch: string;
+  limit: number;
+  status: 'success' | 'failure' | 'in_progress' | 'all';
+  repo?: string;
+}
+
+export interface CiRunsForBranchRun {
+  run_id: number;
+  workflow_name: string;
+  status: string;
+  conclusion: string | null;
+  sha: string;
+  url: string;
+  created_at: string;
+}
+
+export interface CiRunsForBranchResponse {
+  runs: CiRunsForBranchRun[];
+}
 
 export type LabelCreateArgs = unknown;
 export type LabelCreateResponse = unknown;
