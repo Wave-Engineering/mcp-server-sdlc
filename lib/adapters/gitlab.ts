@@ -15,6 +15,7 @@
  */
 
 import type { PlatformAdapter } from './types.js';
+import { fetchIssueGitlab } from './fetch-issue-gitlab.js';
 import { fetchPrStateGitlab } from './fetch-pr-state-gitlab.js';
 import { prCommentGitlab } from './pr-comment-gitlab.js';
 import { prCreateGitlab } from './pr-create-gitlab.js';
@@ -55,6 +56,6 @@ export const gitlabAdapter: PlatformAdapter = {
   specValidateStructure: stubMethod,
   specAcceptanceCriteria: stubMethod,
   specDependencies: stubMethod,
-  fetchIssue: stubMethod,
+  fetchIssue: fetchIssueGitlab,
   fetchPrState: fetchPrStateGitlab,
 };

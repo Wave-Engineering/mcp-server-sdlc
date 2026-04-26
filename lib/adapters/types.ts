@@ -304,16 +304,42 @@ export type SpecAcceptanceCriteriaResponse = unknown;
 export type SpecDependenciesArgs = unknown;
 export type SpecDependenciesResponse = unknown;
 
-// Hybrid sub-call placeholder (per §5.1, §5.5). The Phase 1 survey (Story
-// 1.12) produces the authoritative list of hybrid sub-calls; `fetchIssue` is
-// included here as the illustrative example. Adding/removing sub-calls is
-// expected during Phase 2 implementation.
+// Hybrid sub-call (Story 2.1, #295). `fetchIssue` is the single widest-reach
+// platform operation in the retrofit — consumed by 10 downstream handlers
+// (`ibm`, `spec_get`, `spec_validate_structure`, `spec_acceptance_criteria`,
+// `spec_dependencies`, `epic_sub_issues`, `wave_compute`,
+// `wave_dependency_graph`, `wave_topology`, `dod_load_manifest`). Returns the
+// normalized intersection of fields those consumers read: number, title,
+// state, url, body, labels. State is normalized to `OPEN | CLOSED` across
+// both platforms (GitHub returns `OPEN/CLOSED`; GitLab returns
+// `opened/closed`).
 //
-// Story 1.11 added the FIRST real hybrid sub-call: `fetchPrState` — see
+// Story 1.11 added the FIRST hybrid sub-call: `fetchPrState` — see
 // `FetchPrStateArgs` / `PrStateInfo` above. Used by `prMergeWait` and the
 // per-platform `prMerge` adapters.
-export type FetchIssueArgs = unknown;
-export type IssueData = unknown;
+export interface FetchIssueArgs {
+  number: number;
+  repo?: string;
+}
+
+export type IssueState = 'OPEN' | 'CLOSED';
+
+export interface AdapterIssue {
+  number: number;
+  title: string;
+  state: IssueState;
+  url: string;
+  body: string;
+  labels: string[];
+}
+
+/**
+ * Back-compat alias for downstream handler migrations that consume the
+ * normalized issue record. Keeps the name `IssueData` live while the new
+ * `AdapterIssue` name (matches the `AdapterResult<T>` / `PrStateInfo`
+ * convention) becomes the preferred import.
+ */
+export type IssueData = AdapterIssue;
 
 // ---------------------------------------------------------------------------
 // The interface
@@ -351,11 +377,13 @@ export interface PlatformAdapter {
   specAcceptanceCriteria(args: SpecAcceptanceCriteriaArgs): Promise<AdapterResult<SpecAcceptanceCriteriaResponse>>;
   specDependencies(args: SpecDependenciesArgs): Promise<AdapterResult<SpecDependenciesResponse>>;
 
-  // Hybrid sub-calls (illustrative; final set determined by Story 1.12 survey).
+  // Hybrid sub-calls.
   // `fetchPrState` is the first real hybrid (Story 1.11) — consumed by
   // `prMergeWait` and the per-platform `prMerge` adapters for state polling
   // and post-merge URL/sha lookup.
-  fetchIssue(args: FetchIssueArgs): Promise<AdapterResult<IssueData>>;
+  // `fetchIssue` (Story 2.1) is the keystone sub-call for Phase 2 — consumed
+  // by 10 handlers that all read the same normalized issue shape.
+  fetchIssue(args: FetchIssueArgs): Promise<AdapterResult<AdapterIssue>>;
   fetchPrState(args: FetchPrStateArgs): Promise<AdapterResult<PrStateInfo>>;
 }
 
