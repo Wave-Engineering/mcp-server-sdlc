@@ -1,17 +1,27 @@
 import { describe, test, expect, mock, beforeEach } from 'bun:test';
 
 // --- Mock child_process.execSync at module level ---
-// Registry-based mock so individual tests can register expected calls.
-
+//
+// pr_status now dispatches through the platform adapter (Story 1.7 / #244), and
+// the GitHub adapter calls subprocess via `runArgv` which shell-escapes its
+// argv (`'gh' 'pr' 'view' '42' '--json' 'state,...'`). The `unquote` shim
+// strips that quoting so test match-keys can stay as plain `gh pr view 42`
+// strings — same pattern adopted by tests/pr_create.test.ts in PR #266 and
+// tests/pr_files.test.ts in PR #268.
 let execRegistry: Array<{ match: string; value: string }> = [];
 let execError: Error | null = null;
 let execCalls: string[] = [];
 
+function unquote(cmd: string): string {
+  return cmd.replace(/'([^']*)'/g, '$1');
+}
+
 function mockExec(cmd: string): string {
   execCalls.push(cmd);
   if (execError) throw execError;
+  const flat = unquote(cmd);
   for (const { match, value } of execRegistry) {
-    if (cmd.includes(match)) return value;
+    if (cmd.includes(match) || flat.includes(match)) return value;
   }
   throw new Error(`Unexpected exec call: ${cmd}`);
 }
@@ -327,7 +337,11 @@ describe('pr_status handler', () => {
     expect(data.state).toBe('merged');
     const checks = data.checks as Record<string, unknown>;
     expect(checks.total).toBe(0);
-    expect(checks.summary).toBe('none');
+    // Story 1.7 (#244): explicit no-pipeline-data fallthrough. The MR has
+    // `head_pipeline: null` and no `pipeline` field at all → both
+    // `pipeline?.status` and `head_pipeline?.status` are undefined, so the
+    // adapter reports `no_pipeline_data` instead of the legacy silent `'none'`.
+    expect(checks.summary).toBe('no_pipeline_data');
   });
 
   test('gitlab_closed', async () => {
@@ -406,10 +420,12 @@ describe('pr_status handler', () => {
     const out = parseResult(result.content);
     expect(out.ok).toBe(true);
 
-    const viewCall = execCalls.find((c) => c.startsWith('gh pr view 42')) ?? '';
-    expect(viewCall).toContain('--repo Wave-Engineering/mcp-server-sdlc');
-    const checksCall = execCalls.find((c) => c.startsWith('gh pr checks 42')) ?? '';
-    expect(checksCall).toContain('--repo Wave-Engineering/mcp-server-sdlc');
+    const viewCall =
+      execCalls.find((c) => unquote(c).startsWith('gh pr view 42')) ?? '';
+    expect(unquote(viewCall)).toContain('--repo Wave-Engineering/mcp-server-sdlc');
+    const checksCall =
+      execCalls.find((c) => unquote(c).startsWith('gh pr checks 42')) ?? '';
+    expect(unquote(checksCall)).toContain('--repo Wave-Engineering/mcp-server-sdlc');
   });
 
   test('route_with_repo — gitlab forwards owner/repo slug into glab api path', async () => {
@@ -453,10 +469,12 @@ describe('pr_status handler', () => {
 
     await prStatusHandler.execute({ number: 42 });
 
-    const viewCall = execCalls.find((c) => c.startsWith('gh pr view 42')) ?? '';
-    expect(viewCall).not.toContain('--repo');
-    const checksCall = execCalls.find((c) => c.startsWith('gh pr checks 42')) ?? '';
-    expect(checksCall).not.toContain('--repo');
+    const viewCall =
+      execCalls.find((c) => unquote(c).startsWith('gh pr view 42')) ?? '';
+    expect(unquote(viewCall)).not.toContain('--repo');
+    const checksCall =
+      execCalls.find((c) => unquote(c).startsWith('gh pr checks 42')) ?? '';
+    expect(unquote(checksCall)).not.toContain('--repo');
   });
 
   test('invalid_slug_early_error — returns ok:false with zero exec calls', async () => {

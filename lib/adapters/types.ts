@@ -64,8 +64,48 @@ export type PrMergeArgs = unknown;
 export type PrMergeResponse = unknown;
 export type PrMergeWaitArgs = unknown;
 export type PrMergeWaitResponse = unknown;
-export type PrStatusArgs = unknown;
-export type PrStatusResponse = unknown;
+export interface PrStatusArgs {
+  number: number;
+  repo?: string;
+}
+
+export type PrStatusState = 'open' | 'merged' | 'closed';
+export type PrStatusMergeState = 'clean' | 'unstable' | 'dirty' | 'blocked' | 'unknown';
+/**
+ * Check-aggregate summary states.
+ *
+ * - `'all_passed'`        — every check completed successfully.
+ * - `'has_failures'`      — at least one check failed.
+ * - `'pending'`           — checks are still in flight.
+ * - `'none'`              — no checks were configured (or none were reported).
+ * - `'no_pipeline_data'`  — GitLab-only: the MR has no pipeline data at all
+ *                            (neither `pipeline.status` nor `head_pipeline.status`).
+ *                            Distinguishes a misconfigured-CI MR from a
+ *                            no-pipeline MR (Story 1.7 explicit-fallthrough fix).
+ */
+export type PrStatusChecksSummary =
+  | 'all_passed'
+  | 'has_failures'
+  | 'pending'
+  | 'none'
+  | 'no_pipeline_data';
+
+export interface PrStatusChecksAggregate {
+  total: number;
+  passed: number;
+  failed: number;
+  pending: number;
+  summary: PrStatusChecksSummary;
+}
+
+export interface PrStatusResponse {
+  number: number;
+  state: PrStatusState;
+  merge_state: PrStatusMergeState;
+  mergeable: boolean;
+  checks: PrStatusChecksAggregate;
+  url: string;
+}
 export interface PrDiffArgs {
   number: number;
   repo?: string;
