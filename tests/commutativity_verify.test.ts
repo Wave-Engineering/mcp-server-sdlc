@@ -25,6 +25,40 @@ mock.module('child_process', () => ({
   execSync: (cmd: string, opts?: { timeout?: number; cwd?: string }) => mockExec(cmd, opts),
 }));
 
+// Mock the logger so we can (a) count calls per invocation — issue #256 says
+// the wrapper was suspected of multi-emitting; this test locks in the
+// "exactly one subprocess log per invocation" contract — and (b) PREVENT the
+// test suite from polluting ~/.claude/logs/mcp.jsonl when developers have
+// LOG_FILE set in their shell. The contradictory cluster pattern (info + warn
+// + error all at one ms-tick for one tool call) that surfaced the bug was
+// itself produced by this very test file writing to the user's mcp.jsonl
+// during repeated `bun test` runs — each test exercises a different handler
+// branch, so the union across tests looked like multi-emit per call.
+interface LogCall {
+  level: 'debug' | 'info' | 'warn' | 'error';
+  event: string;
+  fields: Record<string, unknown>;
+  msg?: string;
+}
+let logCalls: LogCall[] = [];
+function logCallsForCmd(cmd: string): LogCall[] {
+  return logCalls.filter(
+    c => c.event === 'subprocess' && (c.fields as { cmd?: string }).cmd === cmd,
+  );
+}
+mock.module('../logger.ts', () => ({
+  log: {
+    debug: (event: string, fields: Record<string, unknown> = {}, msg?: string) =>
+      logCalls.push({ level: 'debug', event, fields, msg }),
+    info: (event: string, fields: Record<string, unknown> = {}, msg?: string) =>
+      logCalls.push({ level: 'info', event, fields, msg }),
+    warn: (event: string, fields: Record<string, unknown> = {}, msg?: string) =>
+      logCalls.push({ level: 'warn', event, fields, msg }),
+    error: (event: string, fields: Record<string, unknown> = {}, msg?: string) =>
+      logCalls.push({ level: 'error', event, fields, msg }),
+  },
+}));
+
 const { default: handler } = await import('../handlers/commutativity_verify.ts');
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
@@ -87,12 +121,14 @@ beforeEach(() => {
   execRegistry = [];
   execCalls = [];
   lastExecOpts = undefined;
+  logCalls = [];
 });
 
 afterEach(() => {
   execRegistry = [];
   execCalls = [];
   lastExecOpts = undefined;
+  logCalls = [];
 });
 
 describe('commutativity_verify handler', () => {
@@ -716,5 +752,140 @@ describe('commutativity_verify handler', () => {
     expect(resultPairs[2].a).toBe('mr-2');
     expect(resultPairs[2].b).toBe('mr-3');
     expect(resultPairs[2].verdict).toBe('WEAK');
+  });
+
+  // --- issue #256: exactly-one-subprocess-log-per-invocation contract ---
+  // The wrapper must emit EXACTLY ONE `subprocess` log event per call, with
+  // level + fields reflecting the actual outcome. The reported symptom (info
+  // exit_code:0 + warn timed-out + error command-not-found all at one tick)
+  // is logically impossible from a single MCP call and must remain so. Lock
+  // it in here so any future middleware/decorator that adds a redundant emit
+  // fails CI immediately.
+
+  test('#256: success branch emits exactly one info subprocess log', async () => {
+    onExec('commutativity-probe', probeJson('STRONG', [{
+      a: 'feature/1', b: 'feature/2', verdict: 'STRONG', reason: 'Disjoint',
+    }]));
+
+    await handler.execute({
+      repo_path: '/repo',
+      base_ref: 'main',
+      changesets: [
+        { id: 'mr-1', head_ref: 'feature/1' },
+        { id: 'mr-2', head_ref: 'feature/2' },
+      ],
+    });
+
+    const probeLogs = logCallsForCmd('commutativity-probe');
+    expect(probeLogs).toHaveLength(1);
+    expect(probeLogs[0].level).toBe('info');
+    expect(probeLogs[0].fields.exit_code).toBe(0);
+    expect(typeof probeLogs[0].fields.ms).toBe('number');
+  });
+
+  test('#256: probe-missing branch emits exactly one warn subprocess log', async () => {
+    onExec('commutativity-probe', throwBinaryMissing);
+
+    await handler.execute({
+      repo_path: '/repo',
+      base_ref: 'main',
+      changesets: [
+        { id: 'mr-1', head_ref: 'feature/1' },
+        { id: 'mr-2', head_ref: 'feature/2' },
+      ],
+    });
+
+    const probeLogs = logCallsForCmd('commutativity-probe');
+    expect(probeLogs).toHaveLength(1);
+    expect(probeLogs[0].level).toBe('warn');
+    expect(probeLogs[0].fields.exit_code).toBe(127);
+    expect(probeLogs[0].msg).toContain('not found');
+  });
+
+  test('#256: timeout branch emits exactly one warn subprocess log', async () => {
+    onExec('commutativity-probe', () => {
+      throw new Error('ETIMEDOUT: command timed out');
+    });
+
+    await handler.execute({
+      repo_path: '/repo',
+      base_ref: 'main',
+      changesets: [
+        { id: 'mr-1', head_ref: 'feature/1' },
+        { id: 'mr-2', head_ref: 'feature/2' },
+      ],
+    });
+
+    const probeLogs = logCallsForCmd('commutativity-probe');
+    expect(probeLogs).toHaveLength(1);
+    expect(probeLogs[0].level).toBe('warn');
+    expect(probeLogs[0].fields.exit_code).toBe(-1);
+    expect(probeLogs[0].msg).toBe('Subprocess timed out');
+  });
+
+  test('#256: probe-crash branch emits exactly one error subprocess log', async () => {
+    onExec('commutativity-probe', throwProbeCrash);
+
+    await handler.execute({
+      repo_path: '/repo',
+      base_ref: 'main',
+      changesets: [
+        { id: 'mr-1', head_ref: 'feature/1' },
+        { id: 'mr-2', head_ref: 'feature/2' },
+      ],
+    });
+
+    const probeLogs = logCallsForCmd('commutativity-probe');
+    expect(probeLogs).toHaveLength(1);
+    expect(probeLogs[0].level).toBe('error');
+    expect(probeLogs[0].fields.exit_code).toBe(-1);
+    expect((probeLogs[0].fields.stderr as string)).toContain('tree-sitter parse failed');
+  });
+
+  test('#256: contradictory levels never co-occur — at most one of {info, warn, error} per invocation', async () => {
+    // Aggregate guard for the spec's "logically impossible" cluster (info +
+    // warn + error all firing for one call). Run each scenario, assert each
+    // produces exactly one log AND that no scenario produces logs at multiple
+    // levels simultaneously.
+    const scenarios: Array<{ name: string; setup: () => void }> = [
+      {
+        name: 'success',
+        setup: () => onExec('commutativity-probe', probeJson('STRONG', [{
+          a: 'feature/1', b: 'feature/2', verdict: 'STRONG', reason: 'Disjoint',
+        }])),
+      },
+      {
+        name: 'probe-missing',
+        setup: () => onExec('commutativity-probe', throwBinaryMissing),
+      },
+      {
+        name: 'timeout',
+        setup: () => onExec('commutativity-probe', () => {
+          throw new Error('ETIMEDOUT: command timed out');
+        }),
+      },
+      {
+        name: 'probe-crash',
+        setup: () => onExec('commutativity-probe', throwProbeCrash),
+      },
+    ];
+
+    for (const s of scenarios) {
+      execRegistry = [];
+      logCalls = [];
+      s.setup();
+      await handler.execute({
+        repo_path: '/repo',
+        base_ref: 'main',
+        changesets: [
+          { id: 'mr-1', head_ref: 'feature/1' },
+          { id: 'mr-2', head_ref: 'feature/2' },
+        ],
+      });
+      const probeLogs = logCallsForCmd('commutativity-probe');
+      const distinctLevels = new Set(probeLogs.map(l => l.level));
+      expect(probeLogs.length).toBe(1);
+      expect(distinctLevels.size).toBe(1);
+    }
   });
 });
