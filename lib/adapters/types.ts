@@ -275,8 +275,56 @@ export interface PrWaitCiResponse {
 
 export type CiWaitRunArgs = unknown;
 export type CiWaitRunResponse = unknown;
-export type CiRunStatusArgs = unknown;
-export type CiRunStatusResponse = unknown;
+
+/**
+ * `ci_run_status` args/response (Story 2.13, #307). Full-migration of the
+ * latest-run lookup for a commit SHA or branch ref, optionally filtered by
+ * workflow name.
+ *
+ * Two-step dispatch diverges per platform:
+ * - GitHub: `gh run list [--commit <sha> | --branch <ref>] [--workflow <name>]
+ *   [--repo <slug>] --limit 1 --json databaseId,name,status,conclusion,url,...`
+ * - GitLab: `glab api projects/:id/pipelines?ref=<ref>[&per_page=<n>]` —
+ *   `workflow_name` filtering happens client-side against the `source` field
+ *   (GitLab pipelines don't carry a workflow name the way GitHub runs do).
+ *
+ * The normalized response (`NormalizedRun | null`) collapses the two very
+ * different platform-native shapes onto a single enum-normalized record.
+ * Status/conclusion enum mapping (both `normalizeGh*` and `normalizeGl*`)
+ * belongs with each platform adapter — it's platform-shape-to-normalized-shape
+ * glue, not handler business logic.
+ *
+ * `null` means "no matching run found" — the handler translates this into the
+ * `{ok: false, code: 'no_runs_found'}` envelope.
+ */
+export interface CiRunStatusArgs {
+  ref: string;
+  workflow_name?: string;
+  repo?: string;
+}
+
+export type CiRunStatus = 'queued' | 'in_progress' | 'completed';
+
+export type CiRunConclusion =
+  | 'success'
+  | 'failure'
+  | 'cancelled'
+  | 'skipped'
+  | 'timed_out';
+
+export interface NormalizedRun {
+  run_id: number;
+  workflow_name: string;
+  status: CiRunStatus;
+  conclusion: CiRunConclusion | null;
+  url: string;
+  ref: string;
+  sha: string;
+  created_at: string;
+  finished_at: string | null;
+}
+
+export type CiRunStatusResponse = NormalizedRun | null;
 
 /**
  * `ci_run_logs` args/response (Story 2.12, #306). Full-migration of log
