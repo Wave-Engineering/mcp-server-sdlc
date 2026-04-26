@@ -1,12 +1,11 @@
-// Origin Operations family handler.
-// See docs/handlers/origin-operations-guide.md for the canonical pattern,
-// gh ↔ glab field mappings, and normalized response schemas.
+// Origin Operations family handler — adapter-dispatching shell.
+// Subprocess + platform branching live in lib/adapters/pr-list-{github,gitlab}.ts;
+// see docs/handlers/origin-operations-guide.md for the canonical pattern and
+// docs/platform-adapter-retrofit-devspec.md §5 for the contract.
 
-import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
-import { detectPlatform } from '../lib/shared/detect-platform.js';
-import { gitlabApiMrList } from '../lib/glab.js';
+import { getAdapter } from '../lib/adapters/index.js';
 
 const inputSchema = z.object({
   head: z.string().optional(),
@@ -20,84 +19,8 @@ const inputSchema = z.object({
     .optional(),
 });
 
-type Input = z.infer<typeof inputSchema>;
-
-interface NormalizedPr {
-  number: number;
-  title: string;
-  state: string;
-  head: string;
-  base: string;
-  url: string;
-}
-
-function exec(cmd: string): string {
-  return execSync(cmd, { encoding: 'utf8' }).trim();
-}
-
-function quoteArg(s: string): string {
-  // Single-quote the arg and escape any embedded single quotes.
-  return `'${s.replace(/'/g, `'\\''`)}'`;
-}
-
-interface GithubPr {
-  number: number;
-  title: string;
-  state: string;
-  headRefName: string;
-  baseRefName: string;
-  url: string;
-}
-
-function listGithubPrs(args: Input): NormalizedPr[] {
-  const flags: string[] = [];
-  if (args.head !== undefined) flags.push(`--head ${quoteArg(args.head)}`);
-  if (args.base !== undefined) flags.push(`--base ${quoteArg(args.base)}`);
-  flags.push(`--state ${quoteArg(args.state)}`);
-  if (args.author !== undefined) flags.push(`--author ${quoteArg(args.author)}`);
-  flags.push(`--limit ${args.limit}`);
-  flags.push('--json number,title,state,headRefName,baseRefName,url');
-  if (args.repo !== undefined) flags.push(`--repo ${quoteArg(args.repo)}`);
-
-  const cmd = `gh pr list ${flags.join(' ')}`;
-  const raw = exec(cmd);
-  const parsed = JSON.parse(raw) as GithubPr[];
-  return parsed.map((pr) => ({
-    number: pr.number,
-    title: pr.title,
-    state: pr.state,
-    head: pr.headRefName,
-    base: pr.baseRefName,
-    url: pr.url,
-  }));
-}
-
-function parseSlugOpts(slug: string | undefined): { owner?: string; repo?: string } | undefined {
-  if (slug === undefined) return undefined;
-  const idx = slug.indexOf('/');
-  if (idx <= 0 || idx === slug.length - 1) return undefined;
-  return { owner: slug.slice(0, idx), repo: slug.slice(idx + 1) };
-}
-
-function listGitlabMrs(args: Input): NormalizedPr[] {
-  const parsed = gitlabApiMrList(
-    {
-      head: args.head,
-      base: args.base,
-      state: args.state,
-      author: args.author,
-      limit: args.limit,
-    },
-    parseSlugOpts(args.repo),
-  );
-  return parsed.map((mr) => ({
-    number: mr.iid,
-    title: mr.title,
-    state: mr.state,
-    head: mr.source_branch,
-    base: mr.target_branch,
-    url: mr.web_url,
-  }));
+function envelope(payload: unknown) {
+  return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
 }
 
 const prListHandler: HandlerDef = {
@@ -106,30 +29,25 @@ const prListHandler: HandlerDef = {
     'List PRs (GitHub) or MRs (GitLab) filtered by head branch, base branch, state, and author. Used to check whether a PR already exists for the current branch before creating a new one.',
   inputSchema,
   async execute(rawArgs: unknown) {
-    let args: Input;
+    let args;
     try {
       args = inputSchema.parse(rawArgs);
     } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error }) }],
-      };
+      return envelope({ ok: false, error: err instanceof Error ? err.message : String(err) });
     }
 
-    try {
-      const platform = detectPlatform();
-      const prs = platform === 'github' ? listGithubPrs(args) : listGitlabMrs(args);
-      return {
-        content: [
-          { type: 'text' as const, text: JSON.stringify({ ok: true, prs }) },
-        ],
-      };
-    } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error }) }],
-      };
+    const adapter = getAdapter({ repo: args.repo });
+    const result = await adapter.prList(args);
+
+    // Per dev spec §4.4 step 4: surface `platform_unsupported` as a typed
+    // signal alongside `ok: true` — NOT as an error. The dispatch succeeded;
+    // the platform just doesn't have the concept. Callers branch on the
+    // discriminator instead of confusing it with a runtime failure.
+    if ('platform_unsupported' in result) {
+      return envelope({ ok: true, platform_unsupported: true, hint: result.hint });
     }
+    if (!result.ok) return envelope({ ok: false, error: result.error });
+    return envelope({ ok: true, ...result.data });
   },
 };
 

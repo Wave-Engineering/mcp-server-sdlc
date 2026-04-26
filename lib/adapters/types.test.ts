@@ -40,7 +40,8 @@ describe('PlatformAdapter contract', () => {
   // Story 1.3 (#240): prCreate
   // Story 1.4 (#241): prDiff
   // Story 1.5 (#242): prFiles
-  const MIGRATED_METHODS = new Set<string>(['prCreate', 'prDiff', 'prFiles']);
+  // Story 1.6 (#243): prList
+  const MIGRATED_METHODS = new Set<string>(['prCreate', 'prDiff', 'prFiles', 'prList']);
 
   test('still-stubbed methods return platform_unsupported', async () => {
     const stubbed = PLATFORM_ADAPTER_METHODS.filter((m) => !MIGRATED_METHODS.has(m));
