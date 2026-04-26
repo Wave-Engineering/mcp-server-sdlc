@@ -20,6 +20,7 @@ import { ciRunStatusGithub } from './ci-run-status-github.js';
 import { ciRunsForBranchGithub } from './ci-runs-for-branch-github.js';
 import { fetchIssueGithub } from './fetch-issue-github.js';
 import { fetchPrStateGithub } from './fetch-pr-state-github.js';
+import { labelCreateGithub } from './label-create-github.js';
 import { prCommentGithub } from './pr-comment-github.js';
 import { prCreateGithub } from './pr-create-github.js';
 import { prDiffGithub } from './pr-diff-github.js';
@@ -50,7 +51,7 @@ export const githubAdapter: PlatformAdapter = {
   ciRunLogs: ciRunLogsGithub,
   ciFailedJobs: ciFailedJobsGithub,
   ciRunsForBranch: ciRunsForBranchGithub,
-  labelCreate: stubMethod,
+  labelCreate: labelCreateGithub,
   labelList: stubMethod,
   workItem: stubMethod,
   ibm: stubMethod,

@@ -13,7 +13,6 @@ ci_wait_run.ts
 dod_load_manifest.ts
 epic_sub_issues.ts
 ibm.ts
-label_create.ts
 label_list.ts
 spec_acceptance_criteria.ts
 spec_dependencies.ts
