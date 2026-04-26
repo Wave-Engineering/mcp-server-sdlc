@@ -2,7 +2,8 @@ import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { parseIssueRef, parseSections, type IssueRef } from '../lib/spec_parser';
-import { detectPlatform, gitlabApiIssue } from '../lib/glab';
+import { detectPlatform } from '../lib/shared/detect-platform.js';
+import { gitlabApiIssue } from '../lib/glab.js';
 
 const inputSchema = z.object({
   issue_ref: z.string().min(1, 'issue_ref must be a non-empty string'),

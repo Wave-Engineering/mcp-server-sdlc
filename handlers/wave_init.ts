@@ -3,7 +3,8 @@ import { writeFileSync } from 'fs';
 import { join } from 'path';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
-import { detectPlatform, parseRepoSlug } from '../lib/glab.js';
+import { detectPlatform } from '../lib/shared/detect-platform.js';
+import { parseRepoSlug } from '../lib/shared/parse-repo-slug.js';
 
 const inputSchema = z.object({
   plan_json: z.string().min(1, 'plan_json must be a non-empty JSON string'),

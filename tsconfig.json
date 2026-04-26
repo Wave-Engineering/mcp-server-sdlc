@@ -11,6 +11,6 @@
     "declaration": true,
     "types": ["bun"]
   },
-  "include": ["*.ts", "handlers/**/*.ts", "tests/**/*.ts"],
+  "include": ["*.ts", "handlers/**/*.ts", "lib/**/*.ts", "tests/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }

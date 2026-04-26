@@ -5,7 +5,7 @@
 import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
-import { detectPlatform } from '../lib/glab';
+import { detectPlatform } from '../lib/shared/detect-platform.js';
 
 // 6-char hex (no leading #). Both gh and glab accept color in this form.
 const HEX_COLOR_RE = /^[0-9a-fA-F]{6}$/;

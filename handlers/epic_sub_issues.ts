@@ -2,7 +2,9 @@ import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { SUB_ISSUE_SECTION_KEYS, findSubIssueSection, parseIssueRef, parseSections, type IssueRef } from '../lib/spec_parser';
-import { detectPlatform, parseRepoSlug, gitlabApiIssue } from '../lib/glab';
+import { detectPlatform } from '../lib/shared/detect-platform.js';
+import { parseRepoSlug } from '../lib/shared/parse-repo-slug.js';
+import { gitlabApiIssue } from '../lib/glab.js';
 
 const inputSchema = z.object({
   epic_ref: z.string().min(1, 'epic_ref must be a non-empty string'),

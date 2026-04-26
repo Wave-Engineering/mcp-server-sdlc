@@ -2,7 +2,9 @@ import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { parseIssueRef, parseSections, type IssueRef } from '../lib/spec_parser';
 import { buildGraph, computeWaves, type DepNode } from '../lib/dependency_graph';
-import { detectPlatform, parseRepoSlug, gitlabApiIssue } from '../lib/glab.js';
+import { detectPlatform } from '../lib/shared/detect-platform.js';
+import { parseRepoSlug } from '../lib/shared/parse-repo-slug.js';
+import { gitlabApiIssue } from '../lib/glab.js';
 import { execSync } from 'child_process';
 
 const inputSchema = z

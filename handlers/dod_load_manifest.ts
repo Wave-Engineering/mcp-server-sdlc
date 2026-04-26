@@ -1,7 +1,8 @@
 import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
-import { detectPlatform, gitlabApiIssue } from '../lib/glab';
+import { detectPlatform } from '../lib/shared/detect-platform.js';
+import { gitlabApiIssue } from '../lib/glab.js';
 
 const inputSchema = z.object({
   path: z.string().min(1, 'path must be a non-empty string'),

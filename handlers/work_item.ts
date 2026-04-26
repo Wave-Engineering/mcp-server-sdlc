@@ -2,7 +2,7 @@ import { execSync } from 'child_process';
 import { writeFileSync } from 'fs';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
-import { detectPlatform } from '../lib/glab.js';
+import { detectPlatform } from '../lib/shared/detect-platform.js';
 
 const inputSchema = z.object({
   type: z.enum(['epic', 'story', 'bug', 'chore', 'docs', 'pr', 'mr']),

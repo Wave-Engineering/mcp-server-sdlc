@@ -12,6 +12,9 @@ echo "--- codegen ---"
 echo "--- TypeScript lint ---"
 bun run lint
 
+echo "--- adapter-retrofit gate-greps ---"
+./scripts/ci/gate-greps.sh
+
 echo "--- shellcheck ---"
 shopt -s nullglob
 scripts=( scripts/ci/*.sh )

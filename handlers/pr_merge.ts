@@ -6,7 +6,8 @@ import { execSync } from 'child_process';
 import { writeFileSync } from 'fs';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
-import { detectPlatform, parseRepoSlug } from '../lib/glab.js';
+import { detectPlatform } from '../lib/shared/detect-platform.js';
+import { parseRepoSlug } from '../lib/shared/parse-repo-slug.js';
 import { detectMergeQueue, type MergeQueueInfo } from '../lib/merge_queue_detect.js';
 import { fetchGithubPrState, fetchGitlabMrState } from '../lib/pr_state.js';
 

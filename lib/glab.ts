@@ -18,73 +18,17 @@
  */
 
 import { execSync } from 'child_process';
-import type { IssueRef } from './spec_parser.js';
+import { parseRepoSlug } from './shared/parse-repo-slug.js';
 
 // ---------------------------------------------------------------------------
-// Helpers — platform detection and repo slug parsing
+// Re-exports — `detectPlatform`, `detectPlatformForRef`, and `parseRepoSlug`
+// moved to `lib/shared/` per Story 1.2 (R-17). These re-exports keep existing
+// importers working during the transition; they are deleted in Phase 3 once
+// every importer is updated to point at the new location directly.
 // ---------------------------------------------------------------------------
 
-/**
- * Detect whether the current repo's origin is a GitLab or GitHub remote.
- *
- * Returns `'gitlab'` if the origin URL contains `'gitlab'` (matches gitlab.com
- * and any self-hosted `gitlab.<company>.com`), otherwise `'github'`. Falls
- * back to `'github'` if the origin cannot be read.
- *
- * This function is the canonical source of cwd-based platform detection.
- * Handlers must import this rather than rolling their own (a local copy in
- * `pr_list.ts` previously inverted the check — `url.includes('github')` —
- * which gives the wrong answer for self-hosted enterprise deployments).
- */
-export function detectPlatform(): 'github' | 'gitlab' {
-  try {
-    const url = execSync('git remote get-url origin', { encoding: 'utf8' }).trim();
-    return url.includes('gitlab') ? 'gitlab' : 'github';
-  } catch {
-    return 'github';
-  }
-}
-
-/**
- * Detect platform for a qualified issue ref (`owner/repo#N`).
- *
- * When a ref includes an owner path, we can infer the platform:
- * - If the owner has multiple segments (e.g. `org/sub/group`), it MUST be
- *   GitLab — GitHub only supports single-segment owners.
- * - Otherwise, fall back to cwd-based detection (ambiguous).
- *
- * When a ref is local (no owner/repo), falls back to cwd-based detection.
- */
-export function detectPlatformForRef(ref: IssueRef): 'github' | 'gitlab' {
-  if (ref.owner && ref.owner.includes('/')) {
-    // Multi-segment owner path → must be GitLab (nested groups)
-    return 'gitlab';
-  }
-  return detectPlatform();
-}
-
-/**
- * Parse the project slug from the current repo's origin URL.
- *
- * Handles both SSH (`git@host:path.git`) and HTTPS
- * (`https://host/path(.git)?`) remote formats, including deeply nested
- * GitLab group paths (e.g. `org/sub/group/repo`). Returns `null` if the
- * origin cannot be read or the URL does not match the expected pattern.
- *
- * This function is the canonical source of slug parsing.
- */
-export function parseRepoSlug(): string | null {
-  try {
-    const url = execSync('git remote get-url origin', { encoding: 'utf8' }).trim();
-    // SSH: git@host:path/to/repo.git → capture everything after ':'
-    // HTTPS: https://host/path/to/repo.git → capture everything after host '/'
-    const m = /(?:git@[^:]+:|https?:\/\/[^/]+\/)(.+?)(?:\.git)?$/.exec(url);
-    if (m) return m[1];
-    return null;
-  } catch {
-    return null;
-  }
-}
+export { detectPlatform, detectPlatformForRef, type Platform } from './shared/detect-platform.js';
+export { parseRepoSlug } from './shared/parse-repo-slug.js';
 
 /**
  * URL-encoded project path suitable for `glab api projects/<path>/...`
@@ -93,6 +37,9 @@ export function parseRepoSlug(): string | null {
  *
  * Throws if the origin URL cannot be parsed. Callers that want a graceful
  * fallback should catch the error and fall through to the GitHub code path.
+ *
+ * Stays in `lib/glab.ts` (not `lib/shared/`) because it's a GitLab-specific
+ * helper; it folds into the GitLab adapter during Phase 2 migration.
  */
 export function gitlabProjectPath(): string {
   const slug = parseRepoSlug();

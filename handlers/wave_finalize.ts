@@ -16,7 +16,7 @@ import { join, resolve } from 'path';
 // `undefined` if the offending test runs first. See lesson_mcp_gotchas.md §6.
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
-import { detectPlatform } from '../lib/glab.js';
+import { detectPlatform } from '../lib/shared/detect-platform.js';
 
 const inputSchema = z.object({
   root: z.string().optional(),
