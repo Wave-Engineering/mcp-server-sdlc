@@ -458,8 +458,38 @@ export interface NormalizedLabel {
 }
 
 export type LabelCreateResponse = NormalizedLabel;
-export type LabelListArgs = unknown;
-export type LabelListResponse = unknown;
+
+/**
+ * `label_list` args/response (Story 2.16, #310). Full-migration of the simplest
+ * Origin Operations handler — list labels with limit and optional cross-repo
+ * slug.
+ *
+ * Color contract is symmetric across platforms at the adapter boundary:
+ * consumers always see bare 6-char hex (no leading `#`). The GitLab adapter
+ * strips the leading `#` that `glab label list` returns; the GitHub adapter
+ * passes gh's bare-hex output through unchanged. See
+ * `lesson_origin_ops_pitfalls.md` for the argv-level asymmetry
+ * (`--limit`/`--repo` on gh vs. `--per-page`/`-R` on glab).
+ *
+ * The `NormalizedLabelListEntry` shape deliberately omits `created` — that
+ * field is the discriminator used by `label_create`'s idempotent path. A
+ * simple `list` call has no such signal.
+ */
+export interface LabelListArgs {
+  limit: number;
+  repo?: string;
+}
+
+export interface NormalizedLabelListEntry {
+  name: string;
+  description: string;
+  color: string;
+}
+
+export interface LabelListResponse {
+  labels: NormalizedLabelListEntry[];
+  count: number;
+}
 export type WorkItemArgs = unknown;
 export type WorkItemResponse = unknown;
 export type IbmArgs = unknown;

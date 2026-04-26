@@ -52,6 +52,7 @@ describe('PlatformAdapter contract', () => {
   // Story 2.13 (#307): ciRunStatus
   // Story 2.14 (#308): ciRunsForBranch
   // Story 2.15 (#309): labelCreate
+  // Story 2.16 (#310): labelList
   const MIGRATED_METHODS = new Set<string>([
     'prCreate',
     'prDiff',
@@ -69,6 +70,7 @@ describe('PlatformAdapter contract', () => {
     'ciRunStatus',
     'ciRunsForBranch',
     'labelCreate',
+    'labelList',
   ]);
 
   test('still-stubbed methods return platform_unsupported', async () => {
