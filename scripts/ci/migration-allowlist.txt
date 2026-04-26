@@ -11,7 +11,6 @@
 # Format: one basename per line. Comments (#) and blank lines ignored.
 ci_wait_run.ts
 dod_load_manifest.ts
-epic_sub_issues.ts
 ibm.ts
 wave_ci_trust_level.ts
 wave_compute.ts
