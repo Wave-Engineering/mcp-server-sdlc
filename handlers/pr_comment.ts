@@ -2,8 +2,14 @@
 // See docs/handlers/origin-operations-guide.md for the canonical pattern,
 // gh ↔ glab field mappings, and normalized response schemas.
 
+import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
+
+// Codebase convention: child_process.execSync (29/36 handlers, including
+// pr_merge / pr_create). Tests mock it via `mock.module('child_process', ...)`.
+// This handler was migrated from Bun's spawn API for uniformity (#253) so the
+// adapter retrofit can stub the subprocess boundary in one place.
 
 const inputSchema = z.object({
   number: z.number().int().positive('number must be a positive integer'),
@@ -20,33 +26,49 @@ function projectDir(): string {
   return process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
 }
 
-interface SpawnResult {
+interface RunResult {
   exitCode: number;
   stdout: string;
   stderr: string;
 }
 
-function runCommand(cmd: string[], cwd: string): SpawnResult {
-  // Bun.spawnSync with an arg array preserves unicode, code fences, and
-  // multi-line markdown verbatim — no shell quoting required.
-  // Passing `env: process.env` explicitly ensures we honour any PATH
-  // mutations the caller has made since Bun startup.
-  const proc = Bun.spawnSync({
-    cmd,
-    cwd,
-    env: process.env as Record<string, string>,
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
-  return {
-    exitCode: proc.exitCode ?? -1,
-    stdout: new TextDecoder().decode(proc.stdout),
-    stderr: new TextDecoder().decode(proc.stderr),
-  };
+interface ExecError extends Error {
+  stdout?: Buffer | string;
+  stderr?: Buffer | string;
+  status?: number;
+}
+
+function bufToString(b: unknown): string {
+  if (b === undefined || b === null) return '';
+  if (typeof b === 'string') return b;
+  if (typeof (b as Buffer).toString === 'function') return (b as Buffer).toString();
+  return String(b);
+}
+
+function shellEscape(value: string): string {
+  // Single-quote the arg and escape any embedded single quotes — same form
+  // as pr_merge.ts / pr_create.ts. Safe for arbitrary user-supplied strings
+  // (markdown bodies, branch names) when the shell is invoked.
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function run(cmd: string[], cwd: string): RunResult {
+  const shellCmd = cmd.map(shellEscape).join(' ');
+  try {
+    const stdout = execSync(shellCmd, { cwd, encoding: 'utf8' });
+    return { exitCode: 0, stdout, stderr: '' };
+  } catch (err) {
+    const e = err as ExecError;
+    return {
+      exitCode: typeof e.status === 'number' ? e.status : -1,
+      stdout: bufToString(e.stdout),
+      stderr: bufToString(e.stderr) || (err instanceof Error ? err.message : String(err)),
+    };
+  }
 }
 
 function detectPlatform(cwd: string): 'github' | 'gitlab' {
-  const proc = runCommand(['git', 'remote', 'get-url', 'origin'], cwd);
+  const proc = run(['git', 'remote', 'get-url', 'origin'], cwd);
   if (proc.exitCode !== 0) return 'github';
   const url = proc.stdout.trim();
   return url.includes('gitlab') ? 'gitlab' : 'github';
@@ -80,7 +102,7 @@ function postGithubComment(num: number, body: string, cwd: string, repo?: string
   if (repo !== undefined) {
     cmd.push('--repo', repo);
   }
-  const proc = runCommand(cmd, cwd);
+  const proc = run(cmd, cwd);
   if (proc.exitCode !== 0) {
     throw new Error(`gh pr comment failed: ${proc.stderr.trim() || proc.stdout.trim()}`);
   }
@@ -97,7 +119,7 @@ function postGitlabComment(num: number, body: string, cwd: string, repo?: string
   if (repo !== undefined) {
     cmd.push('-R', repo);
   }
-  const proc = runCommand(cmd, cwd);
+  const proc = run(cmd, cwd);
   if (proc.exitCode !== 0) {
     throw new Error(`glab mr note failed: ${proc.stderr.trim() || proc.stdout.trim()}`);
   }
