@@ -1,3 +1,4 @@
+import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 
@@ -5,10 +6,26 @@ const inputSchema = z.object({
   command: z.string().optional(),
 });
 
+interface ExecError extends Error {
+  stdout?: Buffer | string;
+  stderr?: Buffer | string;
+  status?: number;
+}
+
+function bufToString(b: unknown): string {
+  if (b === undefined || b === null) return '';
+  if (typeof b === 'string') return b;
+  if (typeof (b as Buffer).toString === 'function') return (b as Buffer).toString();
+  return String(b);
+}
+
 function projectDir(): string {
   return process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
 }
 
+// Discovery uses Bun.file (filesystem probe, not subprocess) so it stays
+// outside the child_process mock surface. Tests cover discovery via real
+// fixture directories.
 async function fileExists(path: string): Promise<boolean> {
   return await Bun.file(path).exists();
 }
@@ -80,19 +97,22 @@ function parseTestOutput(command: string, output: string): TestResult {
 
 function runCommand(cmd: string, cwd: string): { exitCode: number; output: string; durationMs: number } {
   const start = Date.now();
-  const proc = Bun.spawnSync({
-    cmd: ['sh', '-c', cmd],
-    cwd,
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
-  const out =
-    new TextDecoder().decode(proc.stdout) + new TextDecoder().decode(proc.stderr);
-  return {
-    exitCode: proc.exitCode ?? -1,
-    output: out,
-    durationMs: Date.now() - start,
-  };
+  // `cmd` is a full shell command string (e.g. `npm test`, `./scripts/ci/test.sh`,
+  // user-supplied), NOT an argv array — so per-token shellEscape would break it.
+  // Append `2>&1` so the merged stream lands in execSync's stdout return value
+  // (execSync only surfaces stdout). On non-zero exit the merged content is in
+  // err.stdout; err.stderr is empty after the shell-level redirect.
+  const shellCmd = `${cmd} 2>&1`;
+  let exitCode = 0;
+  let output = '';
+  try {
+    output = execSync(shellCmd, { cwd, encoding: 'utf8' });
+  } catch (err) {
+    const e = err as ExecError;
+    exitCode = typeof e.status === 'number' ? e.status : -1;
+    output = bufToString(e.stdout) + bufToString(e.stderr);
+  }
+  return { exitCode, output, durationMs: Date.now() - start };
 }
 
 const dodRunTestSuiteHandler: HandlerDef = {

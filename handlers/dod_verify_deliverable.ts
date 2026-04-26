@@ -1,3 +1,4 @@
+import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 
@@ -14,19 +15,19 @@ interface FsInfo {
   last_modified: string | null;
 }
 
-/**
- * Use Bun.spawnSync('stat', ...) to probe a path. Avoids node:fs so we
- * dodge mock.module('fs') pollution from sibling test files, and avoids
- * child_process so we dodge mock.module('child_process') pollution from
- * sibling test files that mock execSync.
- */
-function probePath(path: string): FsInfo {
-  const proc = Bun.spawnSync({
-    cmd: ['stat', '-c', '%F|%s|%Y', path],
-    stderr: 'pipe',
-  });
+function shellEscape(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
 
-  if (proc.exitCode !== 0) {
+function probePath(path: string): FsInfo {
+  // `stat -c '%F|%s|%Y'` prints "<kind>|<size_bytes>|<mtime_secs>".
+  // execSync throws on non-zero exit (missing path) — catch and report
+  // exists:false so callers see a clean envelope rather than an exception.
+  const statCmd = ['stat', '-c', '%F|%s|%Y', path].map(shellEscape).join(' ');
+  let statOut: string;
+  try {
+    statOut = execSync(statCmd, { encoding: 'utf8' });
+  } catch {
     return {
       exists: false,
       is_directory: false,
@@ -36,8 +37,7 @@ function probePath(path: string): FsInfo {
     };
   }
 
-  const out = new TextDecoder().decode(proc.stdout).trim();
-  const parts = out.split('|');
+  const parts = statOut.trim().split('|');
   const kind = parts[0] ?? '';
   const sizeBytes = parseInt(parts[1] ?? '0', 10) || 0;
   const mtimeSecs = parseInt(parts[2] ?? '0', 10) || 0;
@@ -45,13 +45,18 @@ function probePath(path: string): FsInfo {
 
   let empty: boolean;
   if (isDirectory) {
-    // For a directory, "empty" means no entries.
-    const ls = Bun.spawnSync({
-      cmd: ['sh', '-c', `ls -A ${JSON.stringify(path)}`],
-      stderr: 'pipe',
-    });
-    const lsOut = new TextDecoder().decode(ls.stdout).trim();
-    empty = lsOut.length === 0;
+    // For a directory, "empty" means no entries. `ls -A` lists everything
+    // except '.' and '..'; empty stdout means an empty dir. If `ls` fails
+    // for any reason (permissions, race), preserve the original semantics
+    // by treating it as empty.
+    const lsCmd = ['ls', '-A', path].map(shellEscape).join(' ');
+    let lsOut = '';
+    try {
+      lsOut = execSync(lsCmd, { encoding: 'utf8' });
+    } catch {
+      lsOut = '';
+    }
+    empty = lsOut.trim().length === 0;
   } else {
     empty = sizeBytes === 0;
   }
