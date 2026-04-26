@@ -277,8 +277,38 @@ export type CiWaitRunArgs = unknown;
 export type CiWaitRunResponse = unknown;
 export type CiRunStatusArgs = unknown;
 export type CiRunStatusResponse = unknown;
-export type CiRunLogsArgs = unknown;
-export type CiRunLogsResponse = unknown;
+
+/**
+ * `ci_run_logs` args/response (Story 2.12, #306). Full-migration of log
+ * retrieval for a CI run (GitHub workflow run) or pipeline job (GitLab).
+ *
+ * Two-step dispatch diverges per platform:
+ * - GitHub: `gh run view <run_id> [--job <job_id>] --log | --log-failed
+ *   [--repo <slug>]` — single subprocess call, returns concatenated log text.
+ * - GitLab: when `job_id` is omitted, first resolves the failed job via
+ *   `glab api projects/:id/pipelines/<run_id>/jobs`, then `glab ci trace
+ *   <job_id> [-R <slug>]` to fetch the trace text.
+ *
+ * Adapter returns the RAW log string. Truncation is a platform-agnostic
+ * post-step owned by the handler (`lib/shared/truncate-logs.ts`).
+ *
+ * `job_id` in the response reflects the job actually traced: on GitHub it
+ * mirrors the caller's `job_id` (or `null` when omitted — full-run logs);
+ * on GitLab it's always populated (either the caller's explicit id or the
+ * pipeline-resolved failed job id).
+ */
+export interface CiRunLogsArgs {
+  run_id: number;
+  job_id?: number;
+  failed_only: boolean;
+  repo?: string;
+}
+
+export interface CiRunLogsResponse {
+  logs: string;
+  job_id: number | null;
+  url: string;
+}
 
 /**
  * `ci_failed_jobs` args/response (Story 2.11, #305). Thin platform wrapper

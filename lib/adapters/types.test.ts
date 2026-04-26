@@ -48,6 +48,7 @@ describe('PlatformAdapter contract', () => {
   // Story 1.11 (#248): prMergeWait + fetchPrState (first hybrid sub-call)
   // Story 2.1 (#295): fetchIssue (keystone hybrid sub-call for Phase 2)
   // Story 2.11 (#305): ciFailedJobs
+  // Story 2.12 (#306): ciRunLogs
   const MIGRATED_METHODS = new Set<string>([
     'prCreate',
     'prDiff',
@@ -61,6 +62,7 @@ describe('PlatformAdapter contract', () => {
     'fetchPrState',
     'fetchIssue',
     'ciFailedJobs',
+    'ciRunLogs',
   ]);
 
   test('still-stubbed methods return platform_unsupported', async () => {

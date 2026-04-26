@@ -1,14 +1,15 @@
-// Origin Operations family handler.
-// See docs/handlers/origin-operations-guide.md for the canonical pattern,
-// gh ↔ glab field mappings, and normalized response schemas.
+// Origin Operations family handler — adapter-dispatching shell.
+// Subprocess + platform branching live in lib/adapters/ci-run-logs-{github,gitlab}.ts;
+// see docs/handlers/origin-operations-guide.md for the canonical pattern and
+// docs/platform-adapter-retrofit-devspec.md §5 for the contract.
+//
+// The truncation step is platform-agnostic and composes AFTER the adapter
+// returns raw logs — see `lib/shared/truncate-logs.ts` (Story 2.12, R-17).
 
-import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
-import { detectPlatform } from '../lib/shared/detect-platform.js';
-
-const HARD_MAX_LINES = 10000;
-const DEFAULT_MAX_LINES = 2000;
+import { getAdapter } from '../lib/adapters/index.js';
+import { truncateLogs, DEFAULT_MAX_LINES } from '../lib/shared/truncate-logs.js';
 
 const inputSchema = z.object({
   run_id: z.number().int().nonnegative(),
@@ -21,142 +22,8 @@ const inputSchema = z.object({
     .optional(),
 });
 
-type Input = z.infer<typeof inputSchema>;
-
-interface FetchResult {
-  logs: string;
-  job_id: number | null;
-  url: string;
-}
-
-function exec(cmd: string): string {
-  return execSync(cmd, { encoding: 'utf8', maxBuffer: 1024 * 1024 * 64 });
-}
-
-function parseRepoSlug(): string | null {
-  try {
-    const url = execSync('git remote get-url origin', { encoding: 'utf8' }).trim();
-    const m = /[/:]([^/]+)\/([^/.]+?)(\.git)?$/.exec(url);
-    if (m) return `${m[1]}/${m[2]}`;
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-function fetchGithub(args: Input): FetchResult {
-  const parts = ['gh run view', String(args.run_id)];
-  if (args.job_id !== undefined) {
-    parts.push('--job', String(args.job_id));
-  }
-  parts.push(args.failed_only ? '--log-failed' : '--log');
-  if (args.repo) {
-    parts.push('--repo', args.repo);
-  }
-  const cmd = parts.join(' ');
-  const logs = exec(cmd);
-
-  // When `repo` is explicitly provided, use it directly for URL construction —
-  // skip the local cwd-based parseRepoSlug fallback entirely.
-  const slug = args.repo ?? parseRepoSlug();
-  const url = slug
-    ? `https://github.com/${slug}/actions/runs/${args.run_id}`
-    : `https://github.com/actions/runs/${args.run_id}`;
-
-  return {
-    logs,
-    job_id: args.job_id ?? null,
-    url,
-  };
-}
-
-interface GitlabJob {
-  id: number;
-  status: string;
-  web_url?: string;
-}
-
-function gitlabProjectPath(repo: string | undefined): string {
-  // URL-encoded project path for glab api. Use the caller-supplied slug when
-  // provided, otherwise fall back to parsing the cwd's origin URL.
-  const slug = repo ?? parseRepoSlug();
-  if (!slug) throw new Error('could not parse gitlab project path from origin url');
-  return encodeURIComponent(slug);
-}
-
-function fetchGitlab(args: Input): FetchResult {
-  let jobId = args.job_id;
-
-  if (jobId === undefined) {
-    // Fetch the first failed job from the pipeline
-    const projectPath = gitlabProjectPath(args.repo);
-    const raw = exec(`glab api projects/${projectPath}/pipelines/${args.run_id}/jobs`);
-    const jobs = JSON.parse(raw) as GitlabJob[];
-    const failed = jobs.find(j => j.status === 'failed');
-    if (!failed) {
-      throw new Error(`no failed job found in pipeline ${args.run_id}`);
-    }
-    jobId = failed.id;
-  }
-
-  // `glab ci trace` supports `-R owner/repo` for cross-repo targeting
-  // (verified against installed glab version). When `repo` is provided,
-  // append the flag so the trace runs against the explicit project.
-  const repoFlag = args.repo ? ` -R ${args.repo}` : '';
-  const logs = exec(`glab ci trace ${jobId}${repoFlag}`);
-
-  const slug = args.repo ?? parseRepoSlug();
-  const url = slug
-    ? `https://gitlab.com/${slug}/-/jobs/${jobId}`
-    : `https://gitlab.com/-/jobs/${jobId}`;
-
-  return {
-    logs,
-    job_id: jobId,
-    url,
-  };
-}
-
-interface TruncationResult {
-  logs: string;
-  line_count: number;
-  truncated: boolean;
-}
-
-export function truncateLogs(rawLogs: string, requestedMax: number): TruncationResult {
-  // Enforce hard cap regardless of caller override
-  const effectiveMax = Math.min(requestedMax, HARD_MAX_LINES);
-
-  // Split preserving content. Strip a single trailing empty line from a
-  // trailing newline so we don't count it as a "line".
-  let lines = rawLogs.split('\n');
-  if (lines.length > 0 && lines[lines.length - 1] === '') {
-    lines = lines.slice(0, -1);
-  }
-  const originalCount = lines.length;
-
-  if (originalCount <= effectiveMax) {
-    return {
-      logs: lines.join('\n'),
-      line_count: originalCount,
-      truncated: false,
-    };
-  }
-
-  const halfHead = Math.floor(effectiveMax / 2);
-  const halfTail = effectiveMax - halfHead;
-  const head = lines.slice(0, halfHead);
-  const tail = lines.slice(lines.length - halfTail);
-  const omitted = originalCount - head.length - tail.length;
-  const marker = `... [${omitted} lines omitted] ...`;
-
-  const out = [...head, marker, ...tail].join('\n');
-  // line_count reflects the original log size so callers can see how big the real log was
-  return {
-    logs: out,
-    line_count: originalCount,
-    truncated: true,
-  };
+function envelope(payload: unknown) {
+  return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
 }
 
 const ciRunLogsHandler: HandlerDef = {
@@ -165,45 +32,39 @@ const ciRunLogsHandler: HandlerDef = {
     'Fetch logs for a CI run (GitHub) or pipeline job (GitLab), truncated to keep response size sane. Used by /jfail.',
   inputSchema,
   async execute(rawArgs: unknown) {
-    let args: Input;
+    let args;
     try {
       args = inputSchema.parse(rawArgs);
     } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error }) }],
-      };
+      return envelope({ ok: false, error: err instanceof Error ? err.message : String(err) });
     }
 
-    try {
-      const platform = detectPlatform();
-      const fetched =
-        platform === 'github' ? fetchGithub(args) : fetchGitlab(args);
+    const adapter = getAdapter({ repo: args.repo });
+    const result = await adapter.ciRunLogs({
+      run_id: args.run_id,
+      job_id: args.job_id,
+      failed_only: args.failed_only,
+      repo: args.repo,
+    });
 
-      const { logs, line_count, truncated } = truncateLogs(fetched.logs, args.max_lines);
-
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify({
-              ok: true,
-              run_id: args.run_id,
-              job_id: fetched.job_id,
-              logs,
-              line_count,
-              truncated,
-              url: fetched.url,
-            }),
-          },
-        ],
-      };
-    } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error }) }],
-      };
+    // ciRunLogs is fully migrated on both platforms — `platform_unsupported`
+    // isn't a valid outcome here, but branch defensively to keep the contract
+    // honest if the interface shape changes.
+    if ('platform_unsupported' in result) {
+      return envelope({ ok: false, error: result.hint });
     }
+    if (!result.ok) return envelope({ ok: false, error: result.error });
+
+    const { logs, line_count, truncated } = truncateLogs(result.data.logs, args.max_lines);
+    return envelope({
+      ok: true,
+      run_id: args.run_id,
+      job_id: result.data.job_id,
+      logs,
+      line_count,
+      truncated,
+      url: result.data.url,
+    });
   },
 };
 

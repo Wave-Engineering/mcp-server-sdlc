@@ -9,7 +9,6 @@
 # off-by-one that was reconciled to disk reality).
 #
 # Format: one basename per line. Comments (#) and blank lines ignored.
-ci_run_logs.ts
 ci_run_status.ts
 ci_runs_for_branch.ts
 ci_wait_run.ts
