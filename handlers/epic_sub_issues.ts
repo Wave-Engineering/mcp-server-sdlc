@@ -1,123 +1,25 @@
-import { execSync } from 'child_process';
+// Epic-family handler — adapter-dispatching shell. Subprocess + platform
+// branching live in lib/adapters/fetch-issue-{github,gitlab}.ts (Story 2.1,
+// #295); markdown parsers live in lib/epic-sub-issues-parser.ts (Story 2.6,
+// #300). This handler is dispatch + envelope only.
+
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { SUB_ISSUE_SECTION_KEYS, findSubIssueSection, parseIssueRef, parseSections, type IssueRef } from '../lib/spec_parser';
-import { detectPlatform } from '../lib/shared/detect-platform.js';
 import { parseRepoSlug } from '../lib/shared/parse-repo-slug.js';
-import { gitlabApiIssue } from '../lib/glab.js';
+import { getAdapter } from '../lib/adapters/index.js';
+import { parseChecklistOrBullets, parseTableRows } from '../lib/epic-sub-issues-parser.js';
 
 const inputSchema = z.object({
   epic_ref: z.string().min(1, 'epic_ref must be a non-empty string'),
 });
 
-interface SubIssue {
-  ref: string;
-  title?: string;
-  order?: number;
+function envelope(payload: unknown) {
+  return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
 }
 
-function fetchBody(ref: IssueRef): string {
-  const platform = detectPlatform();
-  if (platform === 'github') {
-    const repoArg = ref.owner && ref.repo ? `--repo ${ref.owner}/${ref.repo}` : '';
-    const cmd = `gh issue view ${ref.number} ${repoArg} --json body`.trim();
-    const raw = execSync(cmd, { encoding: 'utf8' });
-    return (JSON.parse(raw) as { body: string }).body ?? '';
-  }
-  const result = gitlabApiIssue(ref.number, ref.owner && ref.repo ? { owner: ref.owner, repo: ref.repo } : undefined);
-  return result.description ?? '';
-}
-
-function normalizeRef(ref: string, currentSlug: string | null): string {
-  // URL
-  const urlM =
-    /https?:\/\/(?:github\.com|gitlab\.com)\/([^\s/]+)\/([^\s/]+)\/(?:-\/)?issues\/(\d+)/.exec(
-      ref,
-    );
-  if (urlM) return `${urlM[1]}/${urlM[2]}#${urlM[3]}`;
-
-  const crossM = /^([^/\s#]+)\/([^/\s#]+)#(\d+)$/.exec(ref);
-  if (crossM) return ref;
-
-  const shortM = /^#?(\d+)$/.exec(ref);
-  if (shortM) {
-    return currentSlug ? `${currentSlug}#${shortM[1]}` : `#${shortM[1]}`;
-  }
-  return ref;
-}
-
-// Section-name aliases live in lib/spec_parser so wave_compute and
-// epic_sub_issues stay in lock-step. See SUB_ISSUE_SECTION_KEYS for the
-// canonical list and rationale.
-
-function parseTableRows(section: string, currentSlug: string | null): SubIssue[] {
-  const lines = section.split('\n').map(l => l.trim());
-  const subs: SubIssue[] = [];
-  let headerIdx = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].startsWith('|') && lines[i].includes('|', 1)) {
-      headerIdx = i;
-      break;
-    }
-  }
-  if (headerIdx === -1) return [];
-  const headerCells = lines[headerIdx]
-    .split('|')
-    .slice(1, -1)
-    .map(c => c.trim().toLowerCase());
-  const colIdx = (name: string) => headerCells.findIndex(c => c.includes(name));
-  const orderCol = colIdx('order');
-  const issueCol = colIdx('issue');
-  const titleCol = colIdx('title');
-
-  let startRow = headerIdx + 1;
-  if (startRow < lines.length && /^\|[\s\-:|]+\|$/.test(lines[startRow])) startRow += 1;
-
-  for (let i = startRow; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line.startsWith('|')) break;
-    const cells = line.split('|').slice(1, -1).map(c => c.trim());
-    const getCell = (idx: number) => (idx >= 0 && idx < cells.length ? cells[idx] : '');
-    const issueRaw = getCell(issueCol);
-    const refM = /#?(\d+)|([^/\s#]+)\/([^/\s#]+)#(\d+)/.exec(issueRaw);
-    if (!refM) continue;
-    const ref = normalizeRef(issueRaw, currentSlug);
-    const order = orderCol >= 0 ? parseInt(getCell(orderCol), 10) : undefined;
-    const title = titleCol >= 0 ? getCell(titleCol) : undefined;
-    subs.push({
-      ref,
-      title: title && title.length > 0 ? title : undefined,
-      order: Number.isFinite(order) ? (order as number) : undefined,
-    });
-  }
-  return subs;
-}
-
-function parseChecklistOrBullets(section: string, currentSlug: string | null): SubIssue[] {
-  const subs: SubIssue[] = [];
-  const checklistRe = /^\s*[-*]\s*(?:\[[ xX]\]\s*)?([^\n]*)$/gm;
-  let m: RegExpExecArray | null;
-  let position = 1;
-  while ((m = checklistRe.exec(section)) !== null) {
-    const text = m[1].trim();
-    if (!text) continue;
-    const refM =
-      /(?:^|\s)([^/\s#]+\/[^/\s#]+#\d+|https?:\/\/\S+\/issues\/\d+|#\d+)/.exec(text);
-    if (!refM) continue;
-    const raw = refM[1];
-    const ref = normalizeRef(raw, currentSlug);
-    // Title = text with the ref token stripped out. Also strip leading
-    // list/separator punctuation including em/en dashes commonly used in
-    // `- #NN — Title` style bullets.
-    const title = text.replace(refM[0], '').trim().replace(/^[-:*\s—–]+/, '').trim();
-    subs.push({
-      ref,
-      title: title.length > 0 ? title : undefined,
-      order: position,
-    });
-    position += 1;
-  }
-  return subs;
+function repoSlug(ref: IssueRef): string | undefined {
+  return ref.owner && ref.repo ? `${ref.owner}/${ref.repo}` : undefined;
 }
 
 const epicSubIssuesHandler: HandlerDef = {
@@ -130,79 +32,46 @@ const epicSubIssuesHandler: HandlerDef = {
     try {
       args = inputSchema.parse(rawArgs);
     } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error }) }],
-      };
+      return envelope({ ok: false, error: err instanceof Error ? err.message : String(err) });
     }
 
     const ref = parseIssueRef(args.epic_ref);
     if (!ref) {
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify({
-              ok: false,
-              error: `could not parse epic_ref: '${args.epic_ref}'`,
-            }),
-          },
-        ],
-      };
+      return envelope({ ok: false, error: `could not parse epic_ref: '${args.epic_ref}'` });
     }
 
-    try {
-      const body = fetchBody(ref);
-      const { sections } = parseSections(body);
-      const section = findSubIssueSection(sections);
-      if (!section) {
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: JSON.stringify({
-                ok: true,
-                epic_ref: args.epic_ref,
-                sub_issues: [],
-                count: 0,
-                reason: 'no matching sub-issue section found in epic body',
-                accepted_sections: [...SUB_ISSUE_SECTION_KEYS],
-              }),
-            },
-          ],
-        };
-      }
+    const repo = repoSlug(ref);
+    const result = await getAdapter({ repo }).fetchIssue({ number: ref.number, repo });
+    if ('platform_unsupported' in result) return envelope({ ok: false, error: result.hint });
+    if (!result.ok) return envelope({ ok: false, error: result.error });
 
-      // Resolve bare `#N` refs in the epic body against the EPIC's repo, not
-      // the MCP process's cwd. Fall back to cwd's slug only when the epic_ref
-      // itself was bare (back-compat for same-repo invocations).
-      const epicSlug =
-        ref.owner && ref.repo ? `${ref.owner}/${ref.repo}` : parseRepoSlug();
-      // Try table format first; if it yields nothing, fall back to checklist/bullets.
-      let subs = parseTableRows(section, epicSlug);
-      if (subs.length === 0) {
-        subs = parseChecklistOrBullets(section, epicSlug);
-      }
-
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify({
-              ok: true,
-              epic_ref: args.epic_ref,
-              sub_issues: subs,
-              count: subs.length,
-            }),
-          },
-        ],
-      };
-    } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error }) }],
-      };
+    const { sections } = parseSections(result.data.body);
+    const section = findSubIssueSection(sections);
+    if (!section) {
+      return envelope({
+        ok: true,
+        epic_ref: args.epic_ref,
+        sub_issues: [],
+        count: 0,
+        reason: 'no matching sub-issue section found in epic body',
+        accepted_sections: [...SUB_ISSUE_SECTION_KEYS],
+      });
     }
+
+    // Resolve bare `#N` refs in the epic body against the EPIC's repo, not
+    // the MCP process's cwd. Fall back to cwd's slug only when the epic_ref
+    // itself was bare (back-compat for same-repo invocations).
+    const epicSlug = repo ?? parseRepoSlug();
+    // Try table format first; fall back to checklist/bullets if table yields nothing.
+    let subs = parseTableRows(section, epicSlug);
+    if (subs.length === 0) subs = parseChecklistOrBullets(section, epicSlug);
+
+    return envelope({
+      ok: true,
+      epic_ref: args.epic_ref,
+      sub_issues: subs,
+      count: subs.length,
+    });
   },
 };
 
