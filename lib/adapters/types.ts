@@ -81,8 +81,26 @@ export interface PrDiffResponse {
 }
 export type PrCommentArgs = unknown;
 export type PrCommentResponse = unknown;
-export type PrFilesArgs = unknown;
-export type PrFilesResponse = unknown;
+export interface PrFilesArgs {
+  number: number;
+  repo?: string;
+}
+
+export type PrFilesStatus = 'added' | 'modified' | 'removed' | 'renamed';
+
+export interface PrFilesEntry {
+  path: string;
+  status: PrFilesStatus;
+  additions: number;
+  deletions: number;
+}
+
+export interface PrFilesResponse {
+  number: number;
+  files: PrFilesEntry[];
+  total_additions: number;
+  total_deletions: number;
+}
 export type PrListArgs = unknown;
 export type PrListResponse = unknown;
 export type PrWaitCiArgs = unknown;
