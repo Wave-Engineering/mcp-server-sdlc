@@ -14,6 +14,7 @@
  */
 
 import type { PlatformAdapter } from './types.js';
+import { prCreateGithub } from './pr-create-github.js';
 
 const stubMethod = async (_args: unknown) => ({
   platform_unsupported: true as const,
@@ -21,7 +22,7 @@ const stubMethod = async (_args: unknown) => ({
 });
 
 export const githubAdapter: PlatformAdapter = {
-  prCreate: stubMethod,
+  prCreate: prCreateGithub,
   prMerge: stubMethod,
   prMergeWait: stubMethod,
   prStatus: stubMethod,

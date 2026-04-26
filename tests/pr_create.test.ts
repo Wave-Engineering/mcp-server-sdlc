@@ -87,7 +87,7 @@ describe('pr_create handler', () => {
   });
 
   test('github_happy_path — creates PR and returns normalized response', async () => {
-    onExec('git remote -v', 'origin\tgit@github.com:org/repo.git (fetch)\n');
+    onExec('git remote get-url origin', 'git@github.com:org/repo.git\n');
     onExec('git branch --show-current', 'feature/76-pr-create\n');
     onExec('gh pr create', 'https://github.com/org/repo/pull/42\n');
     onExec(
@@ -118,7 +118,7 @@ describe('pr_create handler', () => {
   });
 
   test('gitlab_happy_path — creates MR and returns normalized response', async () => {
-    onExec('git remote -v', 'origin\tgit@gitlab.com:org/repo.git (fetch)\n');
+    onExec('git remote get-url origin', 'git@gitlab.com:org/repo.git\n');
     onExec('git branch --show-current', 'feature/76-pr-create\n');
     onExec('glab mr create', 'https://gitlab.com/org/repo/-/merge_requests/7\n');
     onExec(
@@ -149,7 +149,7 @@ describe('pr_create handler', () => {
   });
 
   test('draft_flag_github — passes --draft to gh pr create', async () => {
-    onExec('git remote -v', 'origin\tgit@github.com:org/repo.git (fetch)\n');
+    onExec('git remote get-url origin', 'git@github.com:org/repo.git\n');
     onExec('git branch --show-current', 'feature/76-pr-create\n');
     onExec('gh pr create', 'https://github.com/org/repo/pull/99\n');
     onExec(
@@ -177,7 +177,7 @@ describe('pr_create handler', () => {
   });
 
   test('draft_flag_gitlab — passes --draft to glab mr create', async () => {
-    onExec('git remote -v', 'origin\tgit@gitlab.com:org/repo.git (fetch)\n');
+    onExec('git remote get-url origin', 'git@gitlab.com:org/repo.git\n');
     onExec('git branch --show-current', 'feature/76-pr-create\n');
     onExec('glab mr create', 'https://gitlab.com/org/repo/-/merge_requests/8\n');
     onExec(
@@ -221,7 +221,7 @@ describe('pr_create handler', () => {
   // ---- #159: auto-resolve default branch when base is omitted ------------
 
   test('default_branch_resolution_github — base omitted resolves via gh repo view', async () => {
-    onExec('git remote -v', 'origin\tgit@github.com:org/repo.git (fetch)\n');
+    onExec('git remote get-url origin', 'git@github.com:org/repo.git\n');
     onExec('git branch --show-current', 'feature/159-default-branch\n');
     // gh repo view --json defaultBranchRef --jq .defaultBranchRef.name
     onExec('gh repo view', 'main\n');
@@ -253,7 +253,7 @@ describe('pr_create handler', () => {
   });
 
   test('default_branch_resolution_gitlab — base omitted resolves via glab api', async () => {
-    onExec('git remote -v', 'origin\tgit@gitlab.com:org/repo.git (fetch)\n');
+    onExec('git remote get-url origin', 'git@gitlab.com:org/repo.git\n');
     onExec('git branch --show-current', 'feature/159-default-branch\n');
     // glab api projects/:id — no --jq flag (handler parses JSON in-process).
     onExec('glab api', () => {
@@ -299,7 +299,7 @@ describe('pr_create handler', () => {
   });
 
   test('explicit_base_wins — auto-resolution skipped when base is provided', async () => {
-    onExec('git remote -v', 'origin\tgit@github.com:org/repo.git (fetch)\n');
+    onExec('git remote get-url origin', 'git@github.com:org/repo.git\n');
     onExec('git branch --show-current', 'feature/159-default-branch\n');
     // gh repo view MUST NOT be called when explicit base provided — fail loudly.
     failExec('gh repo view', 'FAIL: repo view should not be called with explicit base', 99);
@@ -329,7 +329,7 @@ describe('pr_create handler', () => {
   });
 
   test('default_branch_resolution_failure — surfaces ok:false when gh repo view fails', async () => {
-    onExec('git remote -v', 'origin\tgit@github.com:org/repo.git (fetch)\n');
+    onExec('git remote get-url origin', 'git@github.com:org/repo.git\n');
     onExec('git branch --show-current', 'feature/159-default-branch\n');
     failExec('gh repo view', 'auth required');
 
@@ -343,7 +343,7 @@ describe('pr_create handler', () => {
   });
 
   test('explicit_head_overrides_git_branch — uses args.head when provided', async () => {
-    onExec('git remote -v', 'origin\tgit@github.com:org/repo.git (fetch)\n');
+    onExec('git remote get-url origin', 'git@github.com:org/repo.git\n');
     // git branch should NOT be called when head is provided — fail loudly.
     failExec(
       'git branch --show-current',
@@ -375,7 +375,7 @@ describe('pr_create handler', () => {
   });
 
   test('github_error_path — gh pr create fails, returns ok=false with error', async () => {
-    onExec('git remote -v', 'origin\tgit@github.com:org/repo.git (fetch)\n');
+    onExec('git remote get-url origin', 'git@github.com:org/repo.git\n');
     onExec('git branch --show-current', 'feature/76-pr-create\n');
     failExec('gh pr create', 'authentication error: not logged in');
 
@@ -391,7 +391,7 @@ describe('pr_create handler', () => {
   });
 
   test('github_idempotent — duplicate PR returns existing with created=false', async () => {
-    onExec('git remote -v', 'origin\tgit@github.com:org/repo.git (fetch)\n');
+    onExec('git remote get-url origin', 'git@github.com:org/repo.git\n');
     onExec('git branch --show-current', 'feature/76-pr-create\n');
     failExec(
       'gh pr create',
@@ -424,7 +424,7 @@ describe('pr_create handler', () => {
   });
 
   test('gitlab_idempotent — duplicate MR returns existing with created=false', async () => {
-    onExec('git remote -v', 'origin\tgit@gitlab.com:org/repo.git (fetch)\n');
+    onExec('git remote get-url origin', 'git@gitlab.com:org/repo.git\n');
     onExec('git branch --show-current', 'feature/76-pr-create\n');
     failExec(
       'glab mr create',
@@ -456,7 +456,7 @@ describe('pr_create handler', () => {
 
   test('route_with_repo_github — appends --repo to gh pr create/view when repo provided', async () => {
     // cwd remote is a DIFFERENT repo — repo arg must override.
-    onExec('git remote -v', 'origin\tgit@github.com:cwd-org/cwd-repo.git (fetch)\n');
+    onExec('git remote get-url origin', 'git@github.com:cwd-org/cwd-repo.git\n');
     onExec('git branch --show-current', 'feature/196-cross-repo\n');
     onExec(
       'gh pr create',
@@ -492,7 +492,7 @@ describe('pr_create handler', () => {
   });
 
   test('route_with_repo_gitlab — appends -R to glab mr create/view when repo provided', async () => {
-    onExec('git remote -v', 'origin\tgit@gitlab.com:cwd-org/cwd-repo.git (fetch)\n');
+    onExec('git remote get-url origin', 'git@gitlab.com:cwd-org/cwd-repo.git\n');
     onExec('git branch --show-current', 'feature/196-cross-repo\n');
     onExec(
       'glab mr create',
@@ -528,7 +528,7 @@ describe('pr_create handler', () => {
   });
 
   test('regression_without_repo — gh pr create argv has no --repo flag', async () => {
-    onExec('git remote -v', 'origin\tgit@github.com:org/repo.git (fetch)\n');
+    onExec('git remote get-url origin', 'git@github.com:org/repo.git\n');
     onExec('git branch --show-current', 'feature/xyz\n');
     onExec('gh pr create', 'https://github.com/org/repo/pull/100\n');
     onExec(
@@ -572,7 +572,7 @@ describe('pr_create handler', () => {
 
   test('fallback_platform_detection — uses git remote URL to route', async () => {
     // Remote URL identifies gitlab — handler must dispatch to glab path.
-    onExec('git remote -v', 'origin\thttps://gitlab.com/org/repo.git (fetch)\n');
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git\n');
     onExec('git branch --show-current', 'feature/76-pr-create\n');
     onExec('glab mr create', 'https://gitlab.com/org/repo/-/merge_requests/11\n');
     onExec(
@@ -599,7 +599,7 @@ describe('pr_create handler', () => {
   // ---- argv-shape assertion (Story 1.1 unit test ledger) ------------------
 
   test('execSync invocation matches gh CLI shape', async () => {
-    onExec('git remote -v', 'origin\tgit@github.com:org/repo.git (fetch)\n');
+    onExec('git remote get-url origin', 'git@github.com:org/repo.git\n');
     onExec('git branch --show-current', 'feature/argv-shape\n');
     onExec('gh pr create', 'https://github.com/org/repo/pull/123\n');
     onExec(

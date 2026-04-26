@@ -42,8 +42,24 @@ export type AdapterResult<T> =
 // just one type without re-touching the interface body.
 // ---------------------------------------------------------------------------
 
-export type PrCreateArgs = unknown;
-export type PrCreateResponse = unknown;
+export interface PrCreateArgs {
+  title: string;
+  body: string;
+  base?: string;
+  head?: string;
+  draft?: boolean;
+  repo?: string;
+}
+
+export interface PrCreateResponse {
+  number: number;
+  url: string;
+  state: 'open';
+  head: string;
+  base: string;
+  /** True when this call created the PR/MR; false when it pre-existed (idempotent path). */
+  created: boolean;
+}
 export type PrMergeArgs = unknown;
 export type PrMergeResponse = unknown;
 export type PrMergeWaitArgs = unknown;
