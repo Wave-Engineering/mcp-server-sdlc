@@ -1,17 +1,35 @@
 import { describe, test, expect, mock, beforeEach } from 'bun:test';
 
 // --- Mock child_process.execSync at module level ---
-// Individual tests populate execRegistry with prefix→output pairs.
+//
+// ci_run_status now dispatches through the platform adapter (Story 2.13 /
+// #307). The GitHub adapter calls subprocess via `runArgv`, which
+// shell-escapes its argv (`'gh' 'run' 'list' '--branch' 'main' …`). The
+// GitLab adapter calls `gitlabApiCiList` in `lib/glab.ts`, which passes a
+// plain (unquoted) command string to `execSync`. The `unquote` shim strips
+// any shell-quoting so test match-keys can stay as plain
+// `gh run list --branch …` strings — same pattern adopted by
+// tests/ci_failed_jobs.test.ts.
+//
+// Integration coverage: schema validation, handler envelope shape, cross-repo
+// (`repo` flag forwarding), structured no-runs error. Subprocess-boundary
+// argv assertions and full enum coverage live in the colocated adapter tests
+// (lib/adapters/ci-run-status-{github,gitlab}.test.ts).
 
 let execRegistry: Record<string, string> = {};
 let execCalls: string[] = [];
 let execError: Error | null = null;
 
+function unquote(cmd: string): string {
+  return cmd.replace(/'([^']*)'/g, '$1');
+}
+
 function mockExec(cmd: string): string {
   execCalls.push(cmd);
   if (execError) throw execError;
+  const flat = unquote(cmd);
   for (const [key, value] of Object.entries(execRegistry)) {
-    if (cmd.includes(key)) return value;
+    if (cmd.includes(key) || flat.includes(key)) return value;
   }
   throw new Error(`Unexpected exec call: ${cmd}`);
 }
@@ -36,7 +54,13 @@ beforeEach(() => {
 });
 
 describe('ci_run_status handler', () => {
-  // --- GitHub: branch ref ---
+  // --- Handler shape ---
+  test('handler exports valid HandlerDef shape', () => {
+    expect(ciRunStatusHandler.name).toBe('ci_run_status');
+    expect(typeof ciRunStatusHandler.execute).toBe('function');
+  });
+
+  // --- GitHub end-to-end: branch ref ---
   test('github_branch_ref — returns normalized run for branch lookup', async () => {
     execRegistry['git remote get-url origin'] =
       'https://github.com/org/repo.git';
@@ -70,15 +94,10 @@ describe('ci_run_status handler', () => {
     expect(run.sha).toBe('abcdef0123456789abcdef0123456789abcdef01');
     expect(run.created_at).toBe('2025-01-01T00:00:00Z');
     expect(run.finished_at).toBe('2025-01-01T00:05:00Z');
-
-    // Verify selector was --branch, not --commit.
-    const runListCall = execCalls.find((c) => c.includes('gh run list')) ?? '';
-    expect(runListCall).toContain('--branch');
-    expect(runListCall).not.toContain('--commit');
   });
 
   // --- GitHub: SHA ref ---
-  test('github_sha_ref — 40-char hex ref uses --commit', async () => {
+  test('github_sha_ref — 40-char hex ref returns normalized run', async () => {
     const sha = '0123456789abcdef0123456789abcdef01234567';
     execRegistry['git remote get-url origin'] =
       'https://github.com/org/repo.git';
@@ -106,42 +125,6 @@ describe('ci_run_status handler', () => {
     expect(run.conclusion).toBeNull();
     // in_progress → finished_at null
     expect(run.finished_at).toBeNull();
-
-    const runListCall = execCalls.find((c) => c.includes('gh run list')) ?? '';
-    expect(runListCall).toContain('--commit');
-    expect(runListCall).not.toContain('--branch');
-  });
-
-  // --- GitHub: workflow_name filter ---
-  test('github_workflow_filter — passes --workflow flag to gh', async () => {
-    execRegistry['git remote get-url origin'] =
-      'https://github.com/org/repo.git';
-    execRegistry['gh run list --branch'] = JSON.stringify([
-      {
-        databaseId: 999,
-        name: 'Deploy',
-        status: 'completed',
-        conclusion: 'success',
-        url: 'https://github.com/org/repo/actions/runs/999',
-        headBranch: 'main',
-        headSha: 'fedcba9876543210fedcba9876543210fedcba98',
-        createdAt: '2025-03-03T00:00:00Z',
-        updatedAt: '2025-03-03T00:02:00Z',
-      },
-    ]);
-
-    const result = await ciRunStatusHandler.execute({
-      ref: 'main',
-      workflow_name: 'Deploy',
-    });
-    const data = parseResult(result.content);
-
-    expect(data.ok).toBe(true);
-    expect((data.data as Record<string, unknown>).workflow_name).toBe('Deploy');
-
-    const runListCall = execCalls.find((c) => c.includes('gh run list')) ?? '';
-    expect(runListCall).toContain('--workflow');
-    expect(runListCall).toContain('Deploy');
   });
 
   // --- No runs found: structured error with code ---
@@ -155,8 +138,8 @@ describe('ci_run_status handler', () => {
 
     expect(data.ok).toBe(false);
     expect(data.code).toBe('no_runs_found');
-    expect((data.error as string)).toContain('no CI runs found');
-    expect((data.error as string)).toContain('branch-no-runs');
+    expect(data.error as string).toContain('no CI runs found');
+    expect(data.error as string).toContain('branch-no-runs');
   });
 
   // --- No runs found with workflow filter mentions the filter ---
@@ -173,10 +156,10 @@ describe('ci_run_status handler', () => {
 
     expect(data.ok).toBe(false);
     expect(data.code).toBe('no_runs_found');
-    expect((data.error as string)).toContain("Nightly");
+    expect(data.error as string).toContain('Nightly');
   });
 
-  // --- GitLab: branch ref ---
+  // --- GitLab end-to-end: branch ref ---
   test('gitlab_branch_ref — queries pipelines by ref and normalizes status', async () => {
     execRegistry['git remote get-url origin'] =
       'https://gitlab.com/org/repo.git';
@@ -207,7 +190,7 @@ describe('ci_run_status handler', () => {
   });
 
   // --- GitLab: SHA ref ---
-  test('gitlab_sha_ref — 40-char hex uses --sha on glab', async () => {
+  test('gitlab_sha_ref — 40-char hex returns failure → failure', async () => {
     const sha = '11223344556677889900aabbccddeeff00112233';
     execRegistry['git remote get-url origin'] =
       'https://gitlab.com/org/repo.git';
@@ -235,38 +218,38 @@ describe('ci_run_status handler', () => {
     expect(run.status).toBe('completed');
     expect(run.conclusion).toBe('failure');
     expect(run.sha).toBe(sha);
-
   });
 
   // --- GitLab: workflow_name filters client-side ---
   test('gitlab_workflow_filter — filters pipelines by name client-side', async () => {
     execRegistry['git remote get-url origin'] =
       'https://gitlab.com/org/repo.git';
-    // When workflow_name is provided, handler requests more records (limit 20)
-    execRegistry['glab api projects/org%2Frepo/pipelines?ref=main&per_page=20'] = JSON.stringify([
-      {
-        id: 1,
-        status: 'success',
-        web_url: 'https://gitlab.com/org/repo/-/pipelines/1',
-        ref: 'main',
-        sha: 'aa11bb22cc33dd44ee55ff6677889900aabbccdd',
-        created_at: '2025-06-06T00:00:00Z',
-        updated_at: '2025-06-06T00:01:00Z',
-        finished_at: '2025-06-06T00:01:00Z',
-        source: 'push',
-      },
-      {
-        id: 2,
-        status: 'success',
-        web_url: 'https://gitlab.com/org/repo/-/pipelines/2',
-        ref: 'main',
-        sha: 'bb22cc33dd44ee55ff66778899001122334455aa',
-        created_at: '2025-06-06T00:02:00Z',
-        updated_at: '2025-06-06T00:03:00Z',
-        finished_at: '2025-06-06T00:03:00Z',
-        source: 'schedule',
-      },
-    ]);
+    // When workflow_name is provided, handler requests more records (per_page=20)
+    execRegistry['glab api projects/org%2Frepo/pipelines?ref=main&per_page=20'] =
+      JSON.stringify([
+        {
+          id: 1,
+          status: 'success',
+          web_url: 'https://gitlab.com/org/repo/-/pipelines/1',
+          ref: 'main',
+          sha: 'aa11bb22cc33dd44ee55ff6677889900aabbccdd',
+          created_at: '2025-06-06T00:00:00Z',
+          updated_at: '2025-06-06T00:01:00Z',
+          finished_at: '2025-06-06T00:01:00Z',
+          source: 'push',
+        },
+        {
+          id: 2,
+          status: 'success',
+          web_url: 'https://gitlab.com/org/repo/-/pipelines/2',
+          ref: 'main',
+          sha: 'bb22cc33dd44ee55ff66778899001122334455aa',
+          created_at: '2025-06-06T00:02:00Z',
+          updated_at: '2025-06-06T00:03:00Z',
+          finished_at: '2025-06-06T00:03:00Z',
+          source: 'schedule',
+        },
+      ]);
 
     const result = await ciRunStatusHandler.execute({
       ref: 'main',
@@ -284,19 +267,19 @@ describe('ci_run_status handler', () => {
   test('gitlab_no_runs — no matching pipeline returns no_runs_found error', async () => {
     execRegistry['git remote get-url origin'] =
       'https://gitlab.com/org/repo.git';
-    // workflow_name provided, so uses per_page=20
-    execRegistry['glab api projects/org%2Frepo/pipelines?ref=main&per_page=20'] = JSON.stringify([
-      {
-        id: 10,
-        status: 'success',
-        web_url: 'https://gitlab.com/org/repo/-/pipelines/10',
-        ref: 'main',
-        sha: 'cc33dd44ee55ff66778899001122334455aabbcc',
-        created_at: '2025-07-07T00:00:00Z',
-        updated_at: '2025-07-07T00:01:00Z',
-        source: 'push',
-      },
-    ]);
+    execRegistry['glab api projects/org%2Frepo/pipelines?ref=main&per_page=20'] =
+      JSON.stringify([
+        {
+          id: 10,
+          status: 'success',
+          web_url: 'https://gitlab.com/org/repo/-/pipelines/10',
+          ref: 'main',
+          sha: 'cc33dd44ee55ff66778899001122334455aabbcc',
+          created_at: '2025-07-07T00:00:00Z',
+          updated_at: '2025-07-07T00:01:00Z',
+          source: 'push',
+        },
+      ]);
 
     const result = await ciRunStatusHandler.execute({
       ref: 'main',
@@ -311,6 +294,14 @@ describe('ci_run_status handler', () => {
   // --- Input validation: missing ref ---
   test('validation — missing ref returns error', async () => {
     const result = await ciRunStatusHandler.execute({});
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(false);
+    expect(typeof data.error).toBe('string');
+  });
+
+  // --- Input validation: unknown fields rejected by strict schema ---
+  test('validation — unknown fields rejected', async () => {
+    const result = await ciRunStatusHandler.execute({ ref: 'main', foo: 'bar' });
     const data = parseResult(result.content);
     expect(data.ok).toBe(false);
     expect(typeof data.error).toBe('string');
@@ -341,9 +332,10 @@ describe('ci_run_status handler', () => {
     });
     const data = parseResult(result.content);
     expect(data.ok).toBe(true);
-    const runListCall = execCalls.find((c) => c.includes('gh run list')) ?? '';
-    expect(runListCall).toContain('--repo');
-    expect(runListCall).toContain('other-org/other-repo');
+    const runListCall =
+      execCalls.find((c) => unquote(c).includes('gh run list')) ?? '';
+    expect(unquote(runListCall)).toContain('--repo');
+    expect(unquote(runListCall)).toContain('other-org/other-repo');
   });
 
   test('gitlab_explicit_repo — targets encoded explicit slug', async () => {
@@ -395,18 +387,8 @@ describe('ci_run_status handler', () => {
     const result = await ciRunStatusHandler.execute({ ref: 'main' });
     const data = parseResult(result.content);
     expect(data.ok).toBe(true);
-    const runListCall = execCalls.find((c) => c.includes('gh run list')) ?? '';
-    expect(runListCall).not.toContain('--repo');
-  });
-
-  // --- Input validation: unsafe ref characters ---
-  test('validation — shell-unsafe ref characters surface as error', async () => {
-    execRegistry['git remote get-url origin'] =
-      'https://github.com/org/repo.git';
-
-    const result = await ciRunStatusHandler.execute({ ref: 'main; rm -rf /' });
-    const data = parseResult(result.content);
-    expect(data.ok).toBe(false);
-    expect(typeof data.error).toBe('string');
+    const runListCall =
+      execCalls.find((c) => unquote(c).includes('gh run list')) ?? '';
+    expect(unquote(runListCall)).not.toContain('--repo');
   });
 });
