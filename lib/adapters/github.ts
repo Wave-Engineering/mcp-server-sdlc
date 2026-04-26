@@ -20,6 +20,7 @@ import { prDiffGithub } from './pr-diff-github.js';
 import { prFilesGithub } from './pr-files-github.js';
 import { prListGithub } from './pr-list-github.js';
 import { prStatusGithub } from './pr-status-github.js';
+import { prWaitCiGithub } from './pr-wait-ci-github.js';
 
 const stubMethod = async (_args: unknown) => ({
   platform_unsupported: true as const,
@@ -35,7 +36,7 @@ export const githubAdapter: PlatformAdapter = {
   prComment: prCommentGithub,
   prFiles: prFilesGithub,
   prList: prListGithub,
-  prWaitCi: stubMethod,
+  prWaitCi: prWaitCiGithub,
   ciWaitRun: stubMethod,
   ciRunStatus: stubMethod,
   ciRunLogs: stubMethod,

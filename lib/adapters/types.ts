@@ -171,8 +171,30 @@ export interface NormalizedPr {
 export interface PrListResponse {
   prs: NormalizedPr[];
 }
-export type PrWaitCiArgs = unknown;
-export type PrWaitCiResponse = unknown;
+export interface PrWaitCiArgs {
+  number: number;
+  poll_interval_sec: number;
+  timeout_sec: number;
+  repo?: string;
+}
+
+export type PrWaitCiFinalState = 'passed' | 'failed' | 'timed_out';
+
+export interface PrWaitCiChecks {
+  total: number;
+  passed: number;
+  failed: number;
+  pending: number;
+  summary: string;
+}
+
+export interface PrWaitCiResponse {
+  number: number;
+  final_state: PrWaitCiFinalState;
+  checks: PrWaitCiChecks;
+  waited_sec: number;
+  url: string;
+}
 
 export type CiWaitRunArgs = unknown;
 export type CiWaitRunResponse = unknown;

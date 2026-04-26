@@ -21,7 +21,6 @@ label_create.ts
 label_list.ts
 pr_merge.ts
 pr_merge_wait.ts
-pr_wait_ci.ts
 spec_acceptance_criteria.ts
 spec_dependencies.ts
 spec_get.ts

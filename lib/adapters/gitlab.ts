@@ -21,6 +21,7 @@ import { prDiffGitlab } from './pr-diff-gitlab.js';
 import { prFilesGitlab } from './pr-files-gitlab.js';
 import { prListGitlab } from './pr-list-gitlab.js';
 import { prStatusGitlab } from './pr-status-gitlab.js';
+import { prWaitCiGitlab } from './pr-wait-ci-gitlab.js';
 
 const stubMethod = async (_args: unknown) => ({
   platform_unsupported: true as const,
@@ -36,7 +37,7 @@ export const gitlabAdapter: PlatformAdapter = {
   prComment: prCommentGitlab,
   prFiles: prFilesGitlab,
   prList: prListGitlab,
-  prWaitCi: stubMethod,
+  prWaitCi: prWaitCiGitlab,
   ciWaitRun: stubMethod,
   ciRunStatus: stubMethod,
   ciRunLogs: stubMethod,
