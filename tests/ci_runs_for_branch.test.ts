@@ -1,15 +1,28 @@
 import { describe, test, expect, mock, beforeEach } from 'bun:test';
 
 // --- Mock child_process.execSync at module level ---
-// Individual tests register command substrings and the payloads they should return.
+//
+// ci_runs_for_branch now dispatches through the platform adapter (Story 2.14
+// / #308). The GitHub adapter calls subprocess via `runArgv`, which
+// shell-escapes its argv (`'gh' 'run' 'list' '--branch' 'main' …`). The
+// GitLab adapter calls `gitlabApiCiList` in `lib/glab.ts`, which passes a
+// plain (unquoted) command string to `execSync`. The `unquote` shim strips
+// any shell-quoting so test match-keys can stay as plain
+// `gh run list --branch …` strings — same pattern adopted by
+// tests/ci_run_status.test.ts.
 
 let execRegistry: Record<string, string> = {};
 const execCalls: string[] = [];
 
+function unquote(cmd: string): string {
+  return cmd.replace(/'([^']*)'/g, '$1');
+}
+
 function mockExec(cmd: string): string {
   execCalls.push(cmd);
+  const flat = unquote(cmd);
   for (const [key, value] of Object.entries(execRegistry)) {
-    if (cmd.includes(key)) return value;
+    if (cmd.includes(key) || flat.includes(key)) return value;
   }
   throw new Error(`Unexpected exec call: ${cmd}`);
 }
@@ -23,6 +36,10 @@ const { default: handler } = await import('../handlers/ci_runs_for_branch.ts');
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
   return JSON.parse(result.content[0].text) as Record<string, unknown>;
+}
+
+function findCall(needle: string): string | undefined {
+  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle));
 }
 
 beforeEach(() => {
@@ -99,10 +116,10 @@ describe('ci_runs_for_branch handler', () => {
     expect(runs[0].run_id).toBeGreaterThan(runs[1].run_id);
 
     // Default limit=10 applied
-    const runListCall = execCalls.find(c => c.includes('gh run list'));
+    const runListCall = findCall('gh run list');
     expect(runListCall).toBeDefined();
-    expect(runListCall).toContain('--limit 10');
-    expect(runListCall).not.toContain('--status');
+    expect(unquote(runListCall!)).toContain('--limit 10');
+    expect(unquote(runListCall!)).not.toContain('--status');
   });
 
   test('github_status_filter — success maps to --status success', async () => {
@@ -127,9 +144,9 @@ describe('ci_runs_for_branch handler', () => {
     const data = parseResult(result);
 
     expect(data.ok).toBe(true);
-    const runListCall = execCalls.find(c => c.includes('gh run list'));
-    expect(runListCall).toContain('--status success');
-    expect(runListCall).toContain('--limit 5');
+    const runListCall = findCall('gh run list');
+    expect(unquote(runListCall!)).toContain('--status success');
+    expect(unquote(runListCall!)).toContain('--limit 5');
   });
 
   test('github_status_filter — failure maps to --status failure', async () => {
@@ -138,8 +155,8 @@ describe('ci_runs_for_branch handler', () => {
 
     await handler.execute({ branch: 'feature/88-ci', status: 'failure' });
 
-    const runListCall = execCalls.find(c => c.includes('gh run list'));
-    expect(runListCall).toContain('--status failure');
+    const runListCall = findCall('gh run list');
+    expect(unquote(runListCall!)).toContain('--status failure');
   });
 
   test('github_status_filter — in_progress maps to --status in_progress', async () => {
@@ -148,8 +165,8 @@ describe('ci_runs_for_branch handler', () => {
 
     await handler.execute({ branch: 'feature/88-ci', status: 'in_progress' });
 
-    const runListCall = execCalls.find(c => c.includes('gh run list'));
-    expect(runListCall).toContain('--status in_progress');
+    const runListCall = findCall('gh run list');
+    expect(unquote(runListCall!)).toContain('--status in_progress');
   });
 
   test('github_empty_branch — empty result array returns ok with runs=[]', async () => {
@@ -288,9 +305,9 @@ describe('ci_runs_for_branch handler', () => {
     const data = parseResult(result);
     expect(data.ok).toBe(true);
 
-    const runListCall = execCalls.find((c) => c.includes('gh run list'));
+    const runListCall = findCall('gh run list');
     expect(runListCall).toBeDefined();
-    expect(runListCall).toContain('--repo other-org/other-repo');
+    expect(unquote(runListCall!)).toContain('--repo other-org/other-repo');
   });
 
   test('gitlab_explicit_repo — routes to encoded explicit slug', async () => {
@@ -324,8 +341,8 @@ describe('ci_runs_for_branch handler', () => {
 
     await handler.execute({ branch: 'feature/88-ci' });
 
-    const runListCall = execCalls.find((c) => c.includes('gh run list')) ?? '';
-    expect(runListCall).not.toContain('--repo');
+    const runListCall = findCall('gh run list') ?? '';
+    expect(unquote(runListCall)).not.toContain('--repo');
   });
 
   test('gitlab_empty_branch — empty pipeline list returns ok with runs=[]', async () => {

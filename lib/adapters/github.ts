@@ -17,6 +17,7 @@ import type { PlatformAdapter } from './types.js';
 import { ciFailedJobsGithub } from './ci-failed-jobs-github.js';
 import { ciRunLogsGithub } from './ci-run-logs-github.js';
 import { ciRunStatusGithub } from './ci-run-status-github.js';
+import { ciRunsForBranchGithub } from './ci-runs-for-branch-github.js';
 import { fetchIssueGithub } from './fetch-issue-github.js';
 import { fetchPrStateGithub } from './fetch-pr-state-github.js';
 import { prCommentGithub } from './pr-comment-github.js';
@@ -48,7 +49,7 @@ export const githubAdapter: PlatformAdapter = {
   ciRunStatus: ciRunStatusGithub,
   ciRunLogs: ciRunLogsGithub,
   ciFailedJobs: ciFailedJobsGithub,
-  ciRunsForBranch: stubMethod,
+  ciRunsForBranch: ciRunsForBranchGithub,
   labelCreate: stubMethod,
   labelList: stubMethod,
   workItem: stubMethod,
