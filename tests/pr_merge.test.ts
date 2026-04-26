@@ -61,11 +61,16 @@ function stubNoQueue() {
   );
 }
 
-function stubEnforcedQueue(method: string = 'SQUASH') {
+function stubEnforcedQueue() {
+  // Match the actual GitHub GraphQL response shape: detection asks for
+  // `__typename` (always-valid built-in scalar) — see #258 fix in
+  // lib/merge_queue_detect.ts. The previous form returned a `mergeMethod`
+  // field that doesn't exist in GitHub's schema; tests passed by accident
+  // because the parser only nullness-checks the mergeQueue object.
   onExec(
     'gh api graphql',
     JSON.stringify({
-      data: { repository: { mergeQueue: { mergeMethod: method } } },
+      data: { repository: { mergeQueue: { __typename: 'MergeQueue' } } },
     }),
   );
 }
@@ -132,6 +137,39 @@ describe('pr_merge handler — aggregate response (#225)', () => {
     expect(data.merge_commit_sha).toBe('abc123def456');
     expect(data.queue).toEqual({ enabled: false, position: null, enforced: false });
     expect(data.warnings).toEqual([]);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Regression #258 Bug 1: gh exits 0 doesn't mean "merged"
+  // ---------------------------------------------------------------------------
+  // When a merge queue / auto-merge is configured at the repo or branch level,
+  // `gh pr merge --squash --delete-branch` may exit 0 by enrolling the PR
+  // (queue add or auto-merge enable), NOT by performing the merge synchronously.
+  // The handler must read actual state, not assume gh-exit-0 => merged.
+  // Pre-fix behavior: line 286 hardcoded merged:true → pr_merge_wait skipped
+  // its polling loop → caller believed the merge had landed when it hadn't.
+  test('regression #258: direct exec exit 0 + state OPEN reports merged:false, merge_queue', async () => {
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git\n');
+    stubNoQueue();
+    onExec('gh pr merge 99 --squash --delete-branch', ''); // exits 0
+    onExec(
+      'gh pr view 99 --json state,url,mergeCommit',
+      JSON.stringify({
+        state: 'OPEN', // gh enrolled but didn't merge synchronously
+        url: 'https://github.com/org/repo/pull/99',
+        mergeCommit: null,
+      }),
+    );
+
+    const result = await prMergeHandler.execute({ number: 99 });
+    const data = parseResult(result);
+
+    expect(data.ok).toBe(true);
+    expect(data.enrolled).toBe(true);
+    expect(data.merged).toBe(false); // honest: gh enrolled, didn't merge
+    expect(data.pr_state).toBe('OPEN');
+    expect(data.merge_method).toBe('merge_queue'); // method reflects reality
+    expect(data.merge_commit_sha).toBeUndefined();
   });
 
   // ===========================================================================
