@@ -19,6 +19,7 @@ import { prCreateGithub } from './pr-create-github.js';
 import { prDiffGithub } from './pr-diff-github.js';
 import { prFilesGithub } from './pr-files-github.js';
 import { prListGithub } from './pr-list-github.js';
+import { prMergeGithub } from './pr-merge-github.js';
 import { prStatusGithub } from './pr-status-github.js';
 import { prWaitCiGithub } from './pr-wait-ci-github.js';
 
@@ -29,7 +30,7 @@ const stubMethod = async (_args: unknown) => ({
 
 export const githubAdapter: PlatformAdapter = {
   prCreate: prCreateGithub,
-  prMerge: stubMethod,
+  prMerge: prMergeGithub,
   prMergeWait: stubMethod,
   prStatus: prStatusGithub,
   prDiff: prDiffGithub,

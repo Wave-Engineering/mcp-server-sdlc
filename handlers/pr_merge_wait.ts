@@ -175,7 +175,7 @@ async function executeWait(
     return synthesizeAlreadyMerged(args.number, preState);
   }
 
-  const mergeResult = performMerge(platform, args) as MergeAggregate | MergeFailure;
+  const mergeResult = (await performMerge(platform, args)) as MergeAggregate | MergeFailure;
   if (isFailure(mergeResult)) return mergeResult;
   if (mergeResult.merged) {
     // Direct path — already on main. No need to poll.
