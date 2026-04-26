@@ -1,12 +1,11 @@
-// Origin Operations family handler.
-// See docs/handlers/origin-operations-guide.md for the canonical pattern,
-// gh ↔ glab field mappings, and normalized response schemas.
+// Origin Operations family handler — adapter-dispatching shell.
+// Subprocess + platform branching live in lib/adapters/pr-diff-{github,gitlab}.ts;
+// see docs/handlers/origin-operations-guide.md for the canonical pattern and
+// docs/platform-adapter-retrofit-devspec.md §5 for the contract.
 
-import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
-import { detectPlatform } from '../lib/shared/detect-platform.js';
-import { gitlabApiMr } from '../lib/glab.js';
+import { getAdapter } from '../lib/adapters/index.js';
 
 const inputSchema = z.object({
   number: z.number().int().positive(),
@@ -16,100 +15,8 @@ const inputSchema = z.object({
     .optional(),
 });
 
-type Input = z.infer<typeof inputSchema>;
-
-const MAX_LINES = 10000;
-const HEAD_KEEP = 5000;
-const TAIL_KEEP = 5000;
-
-function projectDir(): string {
-  return process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
-}
-
-function exec(cmd: string): string {
-  return execSync(cmd, {
-    cwd: projectDir(),
-    encoding: 'utf8',
-    maxBuffer: 256 * 1024 * 1024, // 256 MiB — diffs can be large
-  });
-}
-
-function repoFlag(repo: string | undefined): string {
-  return repo !== undefined ? ` --repo ${repo}` : '';
-}
-
-function parseSlugOpts(slug: string | undefined): { owner?: string; repo?: string } | undefined {
-  if (slug === undefined) return undefined;
-  const idx = slug.indexOf('/');
-  if (idx <= 0 || idx === slug.length - 1) return undefined;
-  return { owner: slug.slice(0, idx), repo: slug.slice(idx + 1) };
-}
-
-function getGithubDiff(num: number, repo?: string): string {
-  return exec(`gh pr diff ${num}${repoFlag(repo)}`);
-}
-
-function getGithubUrl(num: number, repo?: string): string {
-  const raw = exec(`gh pr view ${num} --json url${repoFlag(repo)}`);
-  const parsed = JSON.parse(raw) as { url: string };
-  return parsed.url;
-}
-
-function getGitlabDiff(num: number, repo?: string): string {
-  return exec(`glab mr diff ${num}${repoFlag(repo)}`);
-}
-
-function getGitlabUrl(num: number, repo?: string): string {
-  const mr = gitlabApiMr(num, parseSlugOpts(repo));
-  return mr.web_url;
-}
-
-function countLines(diff: string): number {
-  if (diff.length === 0) return 0;
-  let count = 0;
-  for (let i = 0; i < diff.length; i++) {
-    if (diff.charCodeAt(i) === 10) count++;
-  }
-  // If the diff doesn't end with a newline, the last line still counts.
-  if (diff.charCodeAt(diff.length - 1) !== 10) count++;
-  return count;
-}
-
-function countFiles(diff: string): number {
-  if (diff.length === 0) return 0;
-  const matches = diff.match(/^diff --git /gm);
-  return matches ? matches.length : 0;
-}
-
-interface TruncateResult {
-  diff: string;
-  truncated: boolean;
-}
-
-function maybeTruncate(diff: string, lineCount: number): TruncateResult {
-  if (lineCount <= MAX_LINES) {
-    return { diff, truncated: false };
-  }
-
-  // Split on newlines while preserving them.
-  const lines = diff.split('\n');
-  // If diff ends with '\n', split produces a trailing empty string; drop it
-  // so the keep-count math lines up with countLines() above.
-  const hadTrailingNewline = lines.length > 0 && lines[lines.length - 1] === '';
-  if (hadTrailingNewline) lines.pop();
-
-  const totalLines = lines.length;
-  const head = lines.slice(0, HEAD_KEEP);
-  const tail = lines.slice(totalLines - TAIL_KEEP);
-  const omitted = totalLines - HEAD_KEEP - TAIL_KEEP;
-
-  const joined =
-    head.join('\n') +
-    `\n... [${omitted} lines omitted] ...\n` +
-    tail.join('\n') +
-    (hadTrailingNewline ? '\n' : '');
-
-  return { diff: joined, truncated: true };
+function envelope(payload: unknown) {
+  return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
 }
 
 const prDiffHandler: HandlerDef = {
@@ -118,54 +25,25 @@ const prDiffHandler: HandlerDef = {
     'Fetch the unified diff for a PR/MR as a single string, with line/file counts and a safety-valve truncation above 10000 lines.',
   inputSchema,
   async execute(rawArgs: unknown) {
-    let args: Input;
+    let args;
     try {
       args = inputSchema.parse(rawArgs);
     } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error }) }],
-      };
+      return envelope({ ok: false, error: err instanceof Error ? err.message : String(err) });
     }
 
-    try {
-      const platform = detectPlatform();
-      const rawDiff =
-        platform === 'github'
-          ? getGithubDiff(args.number, args.repo)
-          : getGitlabDiff(args.number, args.repo);
-      const url =
-        platform === 'github'
-          ? getGithubUrl(args.number, args.repo)
-          : getGitlabUrl(args.number, args.repo);
+    const adapter = getAdapter({ repo: args.repo });
+    const result = await adapter.prDiff(args);
 
-      const rawLineCount = countLines(rawDiff);
-      const fileCount = countFiles(rawDiff);
-      const { diff, truncated } = maybeTruncate(rawDiff, rawLineCount);
-      const lineCount = truncated ? countLines(diff) : rawLineCount;
-
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify({
-              ok: true,
-              number: args.number,
-              diff,
-              line_count: lineCount,
-              file_count: fileCount,
-              url,
-              truncated,
-            }),
-          },
-        ],
-      };
-    } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error }) }],
-      };
+    // Per dev spec §4.4 step 4: surface `platform_unsupported` as a typed
+    // signal alongside `ok: true` — NOT as an error. The dispatch succeeded;
+    // the platform just doesn't have the concept. Callers branch on the
+    // discriminator instead of confusing it with a runtime failure.
+    if ('platform_unsupported' in result) {
+      return envelope({ ok: true, platform_unsupported: true, hint: result.hint });
     }
+    if (!result.ok) return envelope({ ok: false, error: result.error });
+    return envelope({ ok: true, ...result.data });
   },
 };
 
