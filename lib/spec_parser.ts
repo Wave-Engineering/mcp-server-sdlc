@@ -166,3 +166,74 @@ export function findBoldLabelDependencies(sections: Record<string, string>): str
   }
   return '';
 }
+
+/**
+ * A single parsed dependency ref extracted from a `## Dependencies` section
+ * or `**Dependencies:**` bold-label body. `kind` currently only carries the
+ * `blocks` relation — placeholder for future expansion.
+ */
+export interface Dependency {
+  ref: string;
+  kind: 'blocks' | 'none';
+}
+
+/**
+ * Parse a Dependencies section and extract issue references in any of these
+ * formats:
+ *
+ *   #123
+ *   org/repo#123
+ *   https://github.com/org/repo/issues/123
+ *   https://gitlab.com/org/repo/-/issues/123
+ *
+ * Normalized to `org/repo#N`. If a `#N` ref is seen, use `currentSlug` as the
+ * owning repo. "None" or empty content returns an empty list.
+ *
+ * Lives in `lib/` (not the handler) because `spec_dependencies` is
+ * platform-agnostic after the Story 2.5 adapter migration — the parser is
+ * shared-module material, same as `findBoldLabelDependencies`.
+ */
+export function parseDependenciesSection(
+  section: string,
+  currentSlug: string | null,
+): Dependency[] {
+  if (!section) return [];
+  const trimmed = section.trim();
+  if (/^none\b/i.test(trimmed) || trimmed.length === 0) return [];
+
+  const found = new Set<string>();
+  const deps: Dependency[] = [];
+
+  const urlRe =
+    /https?:\/\/(?:github\.com|gitlab\.com)\/([^\s/]+)\/([^\s/]+)\/(?:-\/)?issues\/(\d+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = urlRe.exec(section)) !== null) {
+    const ref = `${m[1]}/${m[2]}#${m[3]}`;
+    if (!found.has(ref)) {
+      found.add(ref);
+      deps.push({ ref, kind: 'blocks' });
+    }
+  }
+
+  const crossRe = /\b([^\s/#]+)\/([^\s/#]+)#(\d+)\b/g;
+  while ((m = crossRe.exec(section)) !== null) {
+    const candidate = `${m[1]}/${m[2]}#${m[3]}`;
+    if (m[1].startsWith('http') || m[1].includes('.')) continue;
+    if (!found.has(candidate)) {
+      found.add(candidate);
+      deps.push({ ref: candidate, kind: 'blocks' });
+    }
+  }
+
+  const shortRe = /(?<![/\w])#(\d+)\b/g;
+  while ((m = shortRe.exec(section)) !== null) {
+    const num = m[1];
+    const ref = currentSlug ? `${currentSlug}#${num}` : `#${num}`;
+    if (!found.has(ref)) {
+      found.add(ref);
+      deps.push({ ref, kind: 'blocks' });
+    }
+  }
+
+  return deps;
+}
