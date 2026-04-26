@@ -14,6 +14,7 @@
  */
 
 import type { PlatformAdapter } from './types.js';
+import { prCommentGithub } from './pr-comment-github.js';
 import { prCreateGithub } from './pr-create-github.js';
 import { prDiffGithub } from './pr-diff-github.js';
 import { prFilesGithub } from './pr-files-github.js';
@@ -31,7 +32,7 @@ export const githubAdapter: PlatformAdapter = {
   prMergeWait: stubMethod,
   prStatus: prStatusGithub,
   prDiff: prDiffGithub,
-  prComment: stubMethod,
+  prComment: prCommentGithub,
   prFiles: prFilesGithub,
   prList: prListGithub,
   prWaitCi: stubMethod,

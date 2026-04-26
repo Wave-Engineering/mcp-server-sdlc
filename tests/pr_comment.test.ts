@@ -393,10 +393,13 @@ describe('pr_comment handler', () => {
 
     await handler.execute({ number: 42, body: 'shape-check' });
 
-    // Exactly one gh call (the comment) and one git call (platform detect).
+    // Exactly one gh call (the comment, via the adapter's `runArgv` which
+    // shell-escapes every token) and one git call (platform detect — the
+    // adapter routing layer calls `detectPlatform()` which uses raw `execSync`
+    // without shell-escape, hence the unquoted match).
     const ghCalls = execCalls.filter((c) => c.includes("'gh'"));
     expect(ghCalls.length).toBe(1);
-    const gitCalls = execCalls.filter((c) => c.includes("'git'"));
+    const gitCalls = execCalls.filter((c) => c.includes('git remote get-url'));
     expect(gitCalls.length).toBe(1);
 
     // The single gh call is fully shell-escaped: every token wrapped in '...'.

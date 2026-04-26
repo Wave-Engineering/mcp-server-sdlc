@@ -19,7 +19,6 @@ epic_sub_issues.ts
 ibm.ts
 label_create.ts
 label_list.ts
-pr_comment.ts
 pr_merge.ts
 pr_merge_wait.ts
 pr_wait_ci.ts
