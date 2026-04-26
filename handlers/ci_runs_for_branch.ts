@@ -5,7 +5,8 @@
 import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
-import { detectPlatform, gitlabApiCiList } from '../lib/glab.js';
+import { detectPlatform } from '../lib/shared/detect-platform.js';
+import { gitlabApiCiList } from '../lib/glab.js';
 
 const inputSchema = z.object({
   branch: z.string().min(1, 'branch must be a non-empty string'),

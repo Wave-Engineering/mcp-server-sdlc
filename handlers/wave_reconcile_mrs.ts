@@ -2,7 +2,7 @@ import { execSync } from 'child_process';
 import { join } from 'path';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
-import { detectPlatform } from '../lib/glab';
+import { detectPlatform } from '../lib/shared/detect-platform.js';
 
 const inputSchema = z.object({
   wave_id: z.string().optional(),

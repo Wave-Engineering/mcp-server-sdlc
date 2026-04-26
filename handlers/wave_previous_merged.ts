@@ -2,7 +2,9 @@ import { execSync } from 'child_process';
 import { join } from 'path';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
-import { detectPlatform, gitlabApiIssue, parseRepoSlug } from '../lib/glab';
+import { detectPlatform } from '../lib/shared/detect-platform.js';
+import { parseRepoSlug } from '../lib/shared/parse-repo-slug.js';
+import { gitlabApiIssue } from '../lib/glab.js';
 
 const inputSchema = z.object({}).strict();
 

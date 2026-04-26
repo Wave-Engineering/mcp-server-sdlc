@@ -8,7 +8,8 @@
 
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
-import { detectPlatform, parseRepoSlug } from '../lib/glab.js';
+import { detectPlatform } from '../lib/shared/detect-platform.js';
+import { parseRepoSlug } from '../lib/shared/parse-repo-slug.js';
 import { fetchPrState, type PrStateInfo } from '../lib/pr_state.js';
 import { performMerge } from './pr_merge.js';
 

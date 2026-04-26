@@ -5,7 +5,7 @@
 import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
-import { detectPlatform } from '../lib/glab.js';
+import { detectPlatform } from '../lib/shared/detect-platform.js';
 
 const HARD_MAX_LINES = 10000;
 const DEFAULT_MAX_LINES = 2000;

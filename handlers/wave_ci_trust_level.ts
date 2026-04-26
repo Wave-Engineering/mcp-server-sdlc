@@ -1,7 +1,9 @@
 import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
-import { detectPlatform, parseRepoSlug, gitlabApiRepo } from '../lib/glab';
+import { detectPlatform } from '../lib/shared/detect-platform.js';
+import { parseRepoSlug } from '../lib/shared/parse-repo-slug.js';
+import { gitlabApiRepo } from '../lib/glab.js';
 
 const inputSchema = z.object({}).strict();
 

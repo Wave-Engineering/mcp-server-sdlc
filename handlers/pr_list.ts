@@ -5,7 +5,8 @@
 import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
-import { detectPlatform, gitlabApiMrList } from '../lib/glab';
+import { detectPlatform } from '../lib/shared/detect-platform.js';
+import { gitlabApiMrList } from '../lib/glab.js';
 
 const inputSchema = z.object({
   head: z.string().optional(),

@@ -5,7 +5,8 @@
 import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
-import { detectPlatform, gitlabApiMr } from '../lib/glab';
+import { detectPlatform } from '../lib/shared/detect-platform.js';
+import { gitlabApiMr } from '../lib/glab.js';
 
 const inputSchema = z.object({
   number: z.number().int().positive('number must be a positive integer'),
