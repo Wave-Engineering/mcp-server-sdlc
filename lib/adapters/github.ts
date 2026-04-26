@@ -14,6 +14,7 @@
  */
 
 import type { PlatformAdapter } from './types.js';
+import { ciFailedJobsGithub } from './ci-failed-jobs-github.js';
 import { fetchIssueGithub } from './fetch-issue-github.js';
 import { fetchPrStateGithub } from './fetch-pr-state-github.js';
 import { prCommentGithub } from './pr-comment-github.js';
@@ -44,7 +45,7 @@ export const githubAdapter: PlatformAdapter = {
   ciWaitRun: stubMethod,
   ciRunStatus: stubMethod,
   ciRunLogs: stubMethod,
-  ciFailedJobs: stubMethod,
+  ciFailedJobs: ciFailedJobsGithub,
   ciRunsForBranch: stubMethod,
   labelCreate: stubMethod,
   labelList: stubMethod,
