@@ -25,4 +25,3 @@ wave_init.ts
 wave_previous_merged.ts
 wave_reconcile_mrs.ts
 wave_topology.ts
-work_item.ts

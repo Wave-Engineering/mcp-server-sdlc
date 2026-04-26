@@ -31,6 +31,7 @@ import { prMergeGithub } from './pr-merge-github.js';
 import { prMergeWaitGithub } from './pr-merge-wait-github.js';
 import { prStatusGithub } from './pr-status-github.js';
 import { prWaitCiGithub } from './pr-wait-ci-github.js';
+import { workItemGithub } from './work-item-github.js';
 
 const stubMethod = async (_args: unknown) => ({
   platform_unsupported: true as const,
@@ -54,7 +55,7 @@ export const githubAdapter: PlatformAdapter = {
   ciRunsForBranch: ciRunsForBranchGithub,
   labelCreate: labelCreateGithub,
   labelList: labelListGithub,
-  workItem: stubMethod,
+  workItem: workItemGithub,
   ibm: stubMethod,
   epicSubIssues: stubMethod,
   specGet: stubMethod,

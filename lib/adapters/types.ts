@@ -490,8 +490,55 @@ export interface LabelListResponse {
   labels: NormalizedLabelListEntry[];
   count: number;
 }
-export type WorkItemArgs = unknown;
-export type WorkItemResponse = unknown;
+/**
+ * `work_item` args/response (Story 2.17, #311). Full-migration of the
+ * multi-shape "create an issue OR PR/MR" handler.
+ *
+ * `type` drives the sub-command an adapter picks:
+ *   - issue types (`epic | story | bug | chore | docs | feature | fix`) →
+ *     `gh issue create` / `glab issue create`
+ *   - `pr` → `gh pr create` (GitHub)    | GitLab returns `platform_unsupported`
+ *   - `mr` → `glab mr create` (GitLab)  | GitHub returns `platform_unsupported`
+ *
+ * The cross-platform asymmetry (PR on GitLab / MR on GitHub) is the typed
+ * `platform_unsupported` signal per R-03 / #281. Before this migration, the
+ * handler dispatched to the wrong platform's create fn on those inputs — e.g.
+ * `createGithubPR` ran on a GitLab repo for `type:'pr'`. The adapter boundary
+ * collapses dispatch into one method so the handler never branches on type
+ * OR platform.
+ *
+ * `head_branch`, `base_branch`, `draft` are PR/MR-only and silently ignored on
+ * issue types (matches pre-migration behavior — those fields are schema-opt).
+ * `labels` apply to both issue and PR/MR creation, with `type::<name>` auto-
+ * merged for issue types only (PRs/MRs do not receive auto type labels — they
+ * carry `size::*` / `priority::*` etc. via the caller's explicit labels list).
+ */
+export type WorkItemType =
+  | 'epic'
+  | 'story'
+  | 'feature'
+  | 'bug'
+  | 'chore'
+  | 'docs'
+  | 'fix'
+  | 'pr'
+  | 'mr';
+
+export interface WorkItemArgs {
+  type: WorkItemType;
+  title: string;
+  body?: string;
+  labels?: string[];
+  head_branch?: string;
+  base_branch?: string;
+  draft?: boolean;
+  repo?: string;
+}
+
+export interface WorkItemResponse {
+  url: string;
+  number: number;
+}
 export type IbmArgs = unknown;
 export type IbmResponse = unknown;
 export type EpicSubIssuesArgs = unknown;

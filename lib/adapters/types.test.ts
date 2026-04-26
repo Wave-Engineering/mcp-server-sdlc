@@ -53,6 +53,7 @@ describe('PlatformAdapter contract', () => {
   // Story 2.14 (#308): ciRunsForBranch
   // Story 2.15 (#309): labelCreate
   // Story 2.16 (#310): labelList
+  // Story 2.17 (#311): workItem (+ closes #281 cross-platform PR/MR asymmetry)
   const MIGRATED_METHODS = new Set<string>([
     'prCreate',
     'prDiff',
@@ -71,6 +72,7 @@ describe('PlatformAdapter contract', () => {
     'ciRunsForBranch',
     'labelCreate',
     'labelList',
+    'workItem',
   ]);
 
   test('still-stubbed methods return platform_unsupported', async () => {
