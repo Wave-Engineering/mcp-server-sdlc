@@ -101,8 +101,27 @@ export interface PrFilesResponse {
   total_additions: number;
   total_deletions: number;
 }
-export type PrListArgs = unknown;
-export type PrListResponse = unknown;
+export interface PrListArgs {
+  head?: string;
+  base?: string;
+  state: 'open' | 'closed' | 'merged' | 'all';
+  author?: string;
+  limit: number;
+  repo?: string;
+}
+
+export interface NormalizedPr {
+  number: number;
+  title: string;
+  state: string;
+  head: string;
+  base: string;
+  url: string;
+}
+
+export interface PrListResponse {
+  prs: NormalizedPr[];
+}
 export type PrWaitCiArgs = unknown;
 export type PrWaitCiResponse = unknown;
 

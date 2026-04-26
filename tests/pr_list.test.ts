@@ -2,17 +2,32 @@ import { describe, test, expect, mock, beforeEach } from 'bun:test';
 
 // --- Mock child_process.execSync at module level ---
 // We intercept execSync via a registry so individual tests can override calls.
+//
+// pr_list now dispatches through the platform adapter (Story 1.6 / #243), and
+// the GitHub adapter calls subprocess via `runArgv` which shell-escapes its
+// argv (`'gh' 'pr' 'list' '--state' 'open' '--limit' '20'`). The `unquote`
+// shim strips that quoting so test match-keys can stay as plain
+// `gh pr list` / `--limit 20` / `--state open` strings — same pattern adopted
+// by tests/pr_create.test.ts (PR #266), tests/pr_diff.test.ts (PR #267), and
+// tests/pr_files.test.ts (PR #268).
 
 let execRegistry: Record<string, string> = {};
 let execCalls: string[] = [];
 let execError: Error | null = null;
 
+function unquote(cmd: string): string {
+  return cmd.replace(/'([^']*)'/g, '$1');
+}
+
 function mockExec(cmd: string): string {
   execCalls.push(cmd);
   if (execError) throw execError;
-  // Match by prefix/substring
+  // Match by prefix/substring against both the raw and unquoted forms so
+  // existing match keys (which assume the pre-runArgv unquoted shape) still
+  // hit on the GitHub adapter's shell-escaped invocations.
+  const flat = unquote(cmd);
   for (const [key, value] of Object.entries(execRegistry)) {
-    if (cmd.includes(key)) return value;
+    if (cmd.includes(key) || flat.includes(key)) return value;
   }
   throw new Error(`Unexpected exec call: ${cmd}`);
 }
@@ -60,8 +75,8 @@ describe('pr_list handler', () => {
     expect(prs[0].base).toBe('main');
     expect(prs[0].url).toBe('https://github.com/org/repo/pull/7');
 
-    const ghCall = execCalls.find((c) => c.startsWith('gh pr list')) ?? '';
-    expect(ghCall).toContain("--head 'feature/42-thing'");
+    const ghCall = execCalls.find((c) => unquote(c).startsWith('gh pr list')) ?? '';
+    expect(unquote(ghCall)).toContain('--head feature/42-thing');
   });
 
   // --- github: state filter ---
@@ -71,14 +86,14 @@ describe('pr_list handler', () => {
 
     // explicit state
     await prListHandler.execute({ state: 'closed' });
-    let ghCall = execCalls.find((c) => c.startsWith('gh pr list')) ?? '';
-    expect(ghCall).toContain("--state 'closed'");
+    let ghCall = execCalls.find((c) => unquote(c).startsWith('gh pr list')) ?? '';
+    expect(unquote(ghCall)).toContain('--state closed');
 
     // default state
     execCalls = [];
     await prListHandler.execute({});
-    ghCall = execCalls.find((c) => c.startsWith('gh pr list')) ?? '';
-    expect(ghCall).toContain("--state 'open'");
+    ghCall = execCalls.find((c) => unquote(c).startsWith('gh pr list')) ?? '';
+    expect(unquote(ghCall)).toContain('--state open');
   });
 
   // --- github: author filter ---
@@ -87,8 +102,8 @@ describe('pr_list handler', () => {
     execRegistry['gh pr list'] = JSON.stringify([]);
 
     await prListHandler.execute({ author: '@me' });
-    const ghCall = execCalls.find((c) => c.startsWith('gh pr list')) ?? '';
-    expect(ghCall).toContain("--author '@me'");
+    const ghCall = execCalls.find((c) => unquote(c).startsWith('gh pr list')) ?? '';
+    expect(unquote(ghCall)).toContain('--author @me');
   });
 
   // --- github: author omitted ---
@@ -97,7 +112,7 @@ describe('pr_list handler', () => {
     execRegistry['gh pr list'] = JSON.stringify([]);
 
     await prListHandler.execute({});
-    const ghCall = execCalls.find((c) => c.startsWith('gh pr list')) ?? '';
+    const ghCall = execCalls.find((c) => unquote(c).startsWith('gh pr list')) ?? '';
     expect(ghCall).not.toContain('--author');
   });
 
@@ -107,8 +122,8 @@ describe('pr_list handler', () => {
     execRegistry['gh pr list'] = JSON.stringify([]);
 
     await prListHandler.execute({});
-    const ghCall = execCalls.find((c) => c.startsWith('gh pr list')) ?? '';
-    expect(ghCall).toContain('--limit 20');
+    const ghCall = execCalls.find((c) => unquote(c).startsWith('gh pr list')) ?? '';
+    expect(unquote(ghCall)).toContain('--limit 20');
   });
 
   // --- github: custom limit ---
@@ -117,8 +132,8 @@ describe('pr_list handler', () => {
     execRegistry['gh pr list'] = JSON.stringify([]);
 
     await prListHandler.execute({ limit: 5 });
-    const ghCall = execCalls.find((c) => c.startsWith('gh pr list')) ?? '';
-    expect(ghCall).toContain('--limit 5');
+    const ghCall = execCalls.find((c) => unquote(c).startsWith('gh pr list')) ?? '';
+    expect(unquote(ghCall)).toContain('--limit 5');
   });
 
   // --- github: base filter ---
@@ -127,8 +142,8 @@ describe('pr_list handler', () => {
     execRegistry['gh pr list'] = JSON.stringify([]);
 
     await prListHandler.execute({ base: 'main' });
-    const ghCall = execCalls.find((c) => c.startsWith('gh pr list')) ?? '';
-    expect(ghCall).toContain("--base 'main'");
+    const ghCall = execCalls.find((c) => unquote(c).startsWith('gh pr list')) ?? '';
+    expect(unquote(ghCall)).toContain('--base main');
   });
 
   // --- github: empty result ---
@@ -291,8 +306,8 @@ describe('pr_list handler', () => {
     execRegistry['gh pr list'] = JSON.stringify([]);
 
     await prListHandler.execute({ repo: 'Wave-Engineering/mcp-server-sdlc' });
-    const ghCall = execCalls.find((c) => c.startsWith('gh pr list')) ?? '';
-    expect(ghCall).toContain("--repo 'Wave-Engineering/mcp-server-sdlc'");
+    const ghCall = execCalls.find((c) => unquote(c).startsWith('gh pr list')) ?? '';
+    expect(unquote(ghCall)).toContain('--repo Wave-Engineering/mcp-server-sdlc');
   });
 
   test('route_with_repo — forwards owner/repo into glab api URL path (gitlab)', async () => {
@@ -312,7 +327,7 @@ describe('pr_list handler', () => {
     execRegistry['gh pr list'] = JSON.stringify([]);
 
     await prListHandler.execute({});
-    const ghCall = execCalls.find((c) => c.startsWith('gh pr list')) ?? '';
+    const ghCall = execCalls.find((c) => unquote(c).startsWith('gh pr list')) ?? '';
     expect(ghCall).not.toContain('--repo');
   });
 
