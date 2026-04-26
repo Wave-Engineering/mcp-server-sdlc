@@ -76,6 +76,11 @@ function findCall(needle: string): string {
 beforeEach(() => {
   execRegistry = [];
   execCalls = [];
+  // Story 1.11 routes prMergeGitlab's post-merge state lookup through
+  // getAdapter().fetchPrState(...) — which calls detectPlatform(). Stub the
+  // cwd-remote so detection picks GitLab and the routed call lands on
+  // fetchPrStateGitlab (matching this adapter's intent).
+  on('git remote get-url origin', 'https://gitlab.com/org/repo.git\n');
 });
 
 describe('prMergeGitlab — subprocess boundary', () => {

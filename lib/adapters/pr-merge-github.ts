@@ -7,25 +7,28 @@
  *
  * Preserves the #225 aggregate envelope shape — `{enrolled, merged,
  * merge_method, queue, pr_state, url, merge_commit_sha?, warnings}` — and the
- * #263 fix for honest merged-state reporting (read actual state via
- * `fetchGithubPrState` after gh exit-0 instead of trusting that gh==merged).
+ * #263 fix for honest merged-state reporting (read actual state via the
+ * `fetchPrState` adapter after gh exit-0 instead of trusting that gh==merged).
  *
- * The merge-queue detect helper (`detectMergeQueue`) and PR state fetcher
- * (`fetchGithubPrState`) stay where they are per Dev Spec §5.3 — this adapter
- * imports from them, it does NOT re-lift them.
+ * Story 1.11 (#248) routes `PR state` lookups through
+ * `getAdapter().fetchPrState(...)` — the FIRST hybrid sub-call dispatched
+ * via the platform adapter — instead of importing `lib/pr_state.ts` directly.
+ * The merge-queue detect helper (`detectMergeQueue`) stays as a `lib/` import
+ * (still GitHub-only).
  */
 
 import { execSync } from 'child_process';
 import { writeFileSync } from 'fs';
 import { detectMergeQueue, type MergeQueueInfo } from '../merge_queue_detect.js';
-import { fetchGithubPrState } from '../pr_state.js';
 import { parseRepoSlug } from '../shared/parse-repo-slug.js';
+import { getAdapter } from './index.js';
 import type {
   AdapterResult,
   PrMergeArgs,
   PrMergeResponse,
   PrMergeQueueState,
   PrMergeMethod,
+  PrStateInfo,
 } from './types.js';
 
 interface ExecError extends Error {
@@ -186,11 +189,27 @@ function decideIntent(
   return { useQueue: false, warnings };
 }
 
-function mergeGithubViaQueue(
+// Read PR state through the routed adapter (Story 1.11 hybrid sub-call). The
+// helper unwraps `AdapterResult<PrStateInfo>` into `PrStateInfo` and throws on
+// failure so the existing try/catch wrapper in `prMergeGithub` can surface it
+// as a typed `unexpected_error`.
+async function fetchPrStateRouted(
+  number: number,
+  repo: string | undefined,
+): Promise<PrStateInfo> {
+  const result = await getAdapter({ repo }).fetchPrState({ number, repo });
+  if ('platform_unsupported' in result) {
+    throw new Error(`fetchPrState platform_unsupported: ${result.hint}`);
+  }
+  if (!result.ok) throw new Error(result.error);
+  return result.data;
+}
+
+async function mergeGithubViaQueue(
   args: PrMergeArgs,
   queue: PrMergeQueueState,
   warnings: string[],
-): AdapterResult<PrMergeResponse> {
+): Promise<AdapterResult<PrMergeResponse>> {
   const cmd = buildGithubMergeCommand(args.number, true, args.squash_message, args.repo);
   try {
     exec(cmd);
@@ -204,7 +223,7 @@ function mergeGithubViaQueue(
   // Queue enrollment is eager: gh returns immediately, the PR remains OPEN
   // until the queue rebases + reruns CI + lands. Honest reporting per #225:
   // enrolled but not yet merged.
-  const info = fetchGithubPrState(args.number, args.repo);
+  const info = await fetchPrStateRouted(args.number, args.repo);
   return {
     ok: true,
     data: aggregateOk({
@@ -220,11 +239,11 @@ function mergeGithubViaQueue(
   };
 }
 
-function mergeGithubDirect(
+async function mergeGithubDirect(
   args: PrMergeArgs,
   queue: PrMergeQueueState,
   warnings: string[],
-): AdapterResult<PrMergeResponse> {
+): Promise<AdapterResult<PrMergeResponse>> {
   const directCmd = buildGithubMergeCommand(
     args.number,
     false,
@@ -238,7 +257,7 @@ function mergeGithubDirect(
     // than merged it synchronously. Read the actual state and report honestly
     // so callers (especially pr_merge_wait) don't trust a stale "merged:true".
     // See #258 for the regression history.
-    const info = fetchGithubPrState(args.number, args.repo);
+    const info = await fetchPrStateRouted(args.number, args.repo);
     const actuallyMerged = info.state === 'merged';
     return {
       ok: true,
@@ -288,7 +307,7 @@ function mergeGithubDirect(
       error: `gh pr merge --auto failed after merge-queue fallback: ${extractFailure(err).message}`,
     };
   }
-  const info = fetchGithubPrState(args.number, args.repo);
+  const info = await fetchPrStateRouted(args.number, args.repo);
   return {
     ok: true,
     data: aggregateOk({
@@ -316,8 +335,8 @@ export async function prMergeGithub(
     const intent = decideIntent(args, mqInfo);
 
     return intent.useQueue
-      ? mergeGithubViaQueue(args, queue, intent.warnings)
-      : mergeGithubDirect(args, queue, intent.warnings);
+      ? await mergeGithubViaQueue(args, queue, intent.warnings)
+      : await mergeGithubDirect(args, queue, intent.warnings);
   } catch (err) {
     return {
       ok: false,

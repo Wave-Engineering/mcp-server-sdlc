@@ -9,7 +9,6 @@
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { getAdapter } from '../lib/adapters/index.js';
-import type { PrMergeArgs, PrMergeResponse } from '../lib/adapters/types.js';
 
 const inputSchema = z.object({
   number: z.number().int().positive('number must be a positive integer'),
@@ -24,18 +23,6 @@ const inputSchema = z.object({
 
 function envelope(payload: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
-}
-
-// Compat shim for pr_merge_wait (#248); removed when Story 1.11 migrates it.
-type LegacyAggregate = ({ ok: true } & PrMergeResponse) | { ok: false; error: string };
-export async function performMerge(
-  _platform: 'github' | 'gitlab',
-  args: PrMergeArgs,
-): Promise<LegacyAggregate> {
-  const result = await getAdapter({ repo: args.repo }).prMerge(args);
-  if ('platform_unsupported' in result) return { ok: false, error: `platform_unsupported: ${result.hint}` };
-  if (!result.ok) return { ok: false, error: result.error };
-  return { ok: true, ...result.data };
 }
 
 const prMergeHandler: HandlerDef = {
