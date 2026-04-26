@@ -141,6 +141,9 @@ export async function prMergeGitlab(
         url: info.url,
         merge_commit_sha: info.mergeCommitSha,
         warnings: [],
+        // GitLab has no queue concept — queue_fallback always false. Required
+        // by PrMergeResponse since bug #280 / #294 added the field.
+        queue_fallback: false,
       },
     };
   } catch (err) {

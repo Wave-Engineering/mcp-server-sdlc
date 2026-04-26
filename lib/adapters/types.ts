@@ -87,6 +87,13 @@ export interface PrMergeResponse {
   url: string;
   merge_commit_sha?: string;
   warnings: string[];
+  /**
+   * True when a direct-merge invocation failed with the GitHub queue-strategy
+   * error and the adapter silently retried via `--auto` (queue-enqueue path).
+   * Defaults to `false` on every other path — including the eager
+   * enforced-queue path where `--auto` was chosen upfront. Bug #280 / #294.
+   */
+  queue_fallback: boolean;
 }
 export interface PrMergeWaitArgs {
   number: number;
