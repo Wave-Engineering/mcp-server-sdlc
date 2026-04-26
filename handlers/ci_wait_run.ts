@@ -20,6 +20,14 @@ const inputSchema = z
       .string()
       .regex(/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/, 'repo must be in owner/repo form')
       .optional(),
+    // Issue #259: anchor the wait to a specific commit SHA. When provided, the
+    // tool only returns runs whose head SHA equals expected_sha, polling until
+    // such a run appears (within timeout_sec) and then completes. Without it,
+    // the existing "most recent matching run" behavior is preserved.
+    expected_sha: z
+      .string()
+      .regex(/^[0-9a-f]{40}$/i, 'expected_sha must be a 40-char hex commit SHA')
+      .optional(),
   })
   .strict();
 
@@ -122,9 +130,21 @@ function githubListCmd(
   ref: string,
   workflowName: string | undefined,
   repo: string | undefined,
+  expectedSha: string | undefined,
 ): string {
   const quotedRef = shellQuote(ref);
-  const refFlag = isSha(ref) ? `--commit "${quotedRef}"` : `--branch "${quotedRef}"`;
+  // When expected_sha is set, the SHA filter is the authoritative anchor —
+  // always pass it as --commit. Per spec (#259), also pass --branch when the
+  // ref is a branch name, so gh narrows by both branch and commit.
+  let refFlag: string;
+  if (expectedSha) {
+    const quotedSha = shellQuote(expectedSha);
+    refFlag = isSha(ref)
+      ? `--commit "${quotedSha}"`
+      : `--branch "${quotedRef}" --commit "${quotedSha}"`;
+  } else {
+    refFlag = isSha(ref) ? `--commit "${quotedRef}"` : `--branch "${quotedRef}"`;
+  }
   const workflowFlag = workflowName
     ? ` --workflow "${shellQuote(workflowName)}"`
     : '';
@@ -150,8 +170,9 @@ function fetchGithubRuns(
   ref: string,
   workflowName: string | undefined,
   repo: string | undefined,
+  expectedSha: string | undefined,
 ): GithubRun[] {
-  const cmd = githubListCmd(ref, workflowName, repo);
+  const cmd = githubListCmd(ref, workflowName, repo, expectedSha);
   let raw: string;
   try {
     raw = exec(cmd);
@@ -213,10 +234,11 @@ function githubSnapshot(run: GithubRun): RunSnapshot {
 function fetchGitlabPipelines(
   ref: string,
   repo: string | undefined,
+  expectedSha: string | undefined,
 ): GitlabPipeline[] {
   try {
     const opts = splitRepoSlug(repo);
-    return gitlabApiCiList({ ref, limit: 20 }, opts);
+    return gitlabApiCiList({ ref, limit: 20, sha: expectedSha }, opts);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(
@@ -296,14 +318,31 @@ function fetchSnapshot(
   ref: string,
   workflowName: string | undefined,
   repo: string | undefined,
+  expectedSha: string | undefined,
 ): RunSnapshot | null {
   if (platform === 'github') {
-    const runs = fetchGithubRuns(ref, workflowName, repo);
-    const picked = pickGithubRun(runs, workflowName);
+    const runs = fetchGithubRuns(ref, workflowName, repo, expectedSha);
+    // Defense-in-depth: even if gh somehow returns runs that don't match the
+    // SHA filter (e.g. server-side filter quirks), drop any whose headSha
+    // doesn't equal expected_sha. This is what makes the "ignores other runs
+    // on the same branch" guarantee airtight.
+    const filtered = expectedSha
+      ? runs.filter(
+          (r) => r.headSha?.toLowerCase() === expectedSha.toLowerCase(),
+        )
+      : runs;
+    const picked = pickGithubRun(filtered, workflowName);
     return picked ? githubSnapshot(picked) : null;
   }
-  const pipelines = fetchGitlabPipelines(ref, repo);
-  const picked = pickGitlabPipeline(pipelines, workflowName);
+  const pipelines = fetchGitlabPipelines(ref, repo, expectedSha);
+  // Same defense-in-depth for GitLab — only return pipelines whose sha
+  // matches when expected_sha is provided.
+  const filtered = expectedSha
+    ? pipelines.filter(
+        (p) => p.sha?.toLowerCase() === expectedSha.toLowerCase(),
+      )
+    : pipelines;
+  const picked = pickGitlabPipeline(filtered, workflowName);
   return picked ? gitlabSnapshot(picked) : null;
 }
 
@@ -357,6 +396,12 @@ const ciWaitRunHandler: HandlerDef = {
     const ref = args.ref;
     const workflowName = args.workflow_name;
     const repo = args.repo;
+    // Issue #259: when expected_sha is provided, the wait is anchored to a
+    // specific commit. The no-run-yet window must be the full timeout (the
+    // new run for that SHA may legitimately take minutes to register), not
+    // the default 60s.
+    const expectedSha = args.expected_sha?.toLowerCase();
+    const noRunYetWindowSec = expectedSha ? timeoutSec : NO_RUN_YET_WINDOW_SEC;
 
     const platform = detectPlatform();
     const startMs = Date.now();
@@ -369,12 +414,14 @@ const ciWaitRunHandler: HandlerDef = {
       // matching its HEAD SHA, treat that as validation — don't wait for a
       // push-triggered run that will never arrive.
       if (platform === 'github') {
-        const initialRuns = fetchGithubRuns(ref, workflowName, repo);
+        const initialRuns = fetchGithubRuns(ref, workflowName, repo, expectedSha);
         if (initialRuns.length > 0) {
           const anyPush = initialRuns.some((r) => r.event === 'push');
           if (!anyPush) {
             // Resolve ref to a HEAD SHA for comparison against run.headSha.
-            let headSha: string | null = isSha(ref) ? ref.toLowerCase() : null;
+            // Issue #259: when expected_sha is provided, that IS the head SHA
+            // we care about — skip the branch-to-SHA resolution.
+            let headSha: string | null = expectedSha ?? (isSha(ref) ? ref.toLowerCase() : null);
             if (!headSha) {
               // When `repo` is explicitly provided, skip cwd-based slug
               // parsing and pass the caller's slug directly.
@@ -435,14 +482,19 @@ const ciWaitRunHandler: HandlerDef = {
       }
 
       // --- Phase 1: wait for a run to appear (no-run-yet window) ---
+      // When expected_sha is set the window equals timeout_sec so we don't
+      // give up early on a new run that just hasn't registered yet (#259).
       let snapshot: RunSnapshot | null = null;
-      while (elapsedSec() < NO_RUN_YET_WINDOW_SEC) {
-        snapshot = fetchSnapshot(platform, ref, workflowName, repo);
+      while (elapsedSec() < noRunYetWindowSec) {
+        snapshot = fetchSnapshot(platform, ref, workflowName, repo, expectedSha);
         if (snapshot) break;
         logPoll(ref, elapsedSec(), 'no_run_yet');
         // Also honor the overall timeout — don't exceed it here.
         if (elapsedSec() >= timeoutSec) break;
-        await sleepFn(NO_RUN_YET_POLL_SEC * 1000);
+        // Use the configured poll interval when waiting for a specific SHA;
+        // the 5s default is too aggressive over a long timeout.
+        const sleepSec = expectedSha ? pollIntervalSec : NO_RUN_YET_POLL_SEC;
+        await sleepFn(sleepSec * 1000);
       }
 
       if (!snapshot) {
@@ -451,16 +503,20 @@ const ciWaitRunHandler: HandlerDef = {
         const filterMsg = workflowName
           ? ` (filtered by workflow_name='${workflowName}')`
           : '';
+        const shaMsg = expectedSha
+          ? ` with head SHA '${expectedSha}'`
+          : '';
         return {
           content: [
             {
               type: 'text' as const,
               text: JSON.stringify({
                 ok: false,
-                error: `No CI run found for ref '${ref}'${filterMsg} after waiting ${waited}s. The pipeline may not have been triggered, or the ref has not been pushed to origin. Verify with: gh run list --${isSha(ref) ? 'commit' : 'branch'} ${ref}`,
+                error: `No CI run found for ref '${ref}'${shaMsg}${filterMsg} after waiting ${waited}s. The pipeline may not have been triggered, or the ref has not been pushed to origin. Verify with: gh run list --${isSha(ref) ? 'commit' : 'branch'} ${ref}`,
                 waited_sec: waited,
                 ref,
                 platform,
+                ...(expectedSha ? { expected_sha: expectedSha } : {}),
               }),
             },
           ],
@@ -494,7 +550,7 @@ const ciWaitRunHandler: HandlerDef = {
         }
         await sleepFn(pollIntervalSec * 1000);
         // Refresh snapshot.
-        const next = fetchSnapshot(platform, ref, workflowName, repo);
+        const next = fetchSnapshot(platform, ref, workflowName, repo, expectedSha);
         if (!next) {
           // Unusual — the run vanished between polls. Keep the previous snapshot and log.
           logPoll(ref, elapsedSec(), `${snapshot.status}(stale,no_run_returned)`);

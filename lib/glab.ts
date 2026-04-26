@@ -262,6 +262,7 @@ export function gitlabApiCiList(
   params: {
     ref?: string;
     limit?: number;
+    sha?: string;
   },
   opts?: { owner?: string; repo?: string },
 ): GitlabPipeline[] {
@@ -270,6 +271,9 @@ export function gitlabApiCiList(
 
   if (params.ref !== undefined) {
     queryParts.push(`ref=${encodeURIComponent(params.ref)}`);
+  }
+  if (params.sha !== undefined) {
+    queryParts.push(`sha=${encodeURIComponent(params.sha)}`);
   }
   if (params.limit !== undefined) {
     queryParts.push(`per_page=${String(params.limit)}`);
