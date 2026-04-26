@@ -601,6 +601,190 @@ describe('ci_wait_run handler', () => {
     expect(wrongApiCalls.length).toBe(0);
   });
 
+  // --- Issue #259: expected_sha anchors the wait to a specific commit ---
+
+  // expected_sha waits for the matching run to appear (no false positive on
+  // the previous run for the same branch).
+  test('expected_sha_waits_for_matching_run — polls until run for SHA appears, then succeeds', async () => {
+    const targetSha = 'a'.repeat(40);
+    const previousSha = 'b'.repeat(40);
+    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
+    // Sequence: first two polls return empty (gh filters by --commit, the new
+    // run hasn't registered yet), then the matching run appears in_progress,
+    // then completes.
+    execRegistry['gh run list'] = [
+      JSON.stringify([]), // pre-flight (empty for SHA filter)
+      JSON.stringify([]), // phase 1 first poll
+      JSON.stringify([]), // phase 1 second poll
+      JSON.stringify([
+        ghRun({
+          databaseId: 9001,
+          status: 'in_progress',
+          headSha: targetSha,
+        }),
+      ]),
+      JSON.stringify([
+        ghRun({
+          databaseId: 9001,
+          status: 'completed',
+          conclusion: 'success',
+          headSha: targetSha,
+        }),
+      ]),
+    ];
+
+    const result = await ciWaitRunHandler.execute({
+      ref: 'main',
+      expected_sha: targetSha,
+      timeout_sec: 600,
+    });
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(true);
+    expect(data.final_status).toBe('success');
+    expect(data.run_id).toBe(9001);
+    expect(data.sha).toBe(targetSha);
+    // Every gh run list call must have included --commit "<targetSha>" so we
+    // never even saw runs for `previousSha`.
+    const ghCalls = execCallLog.filter((c) => c.startsWith('gh run list'));
+    expect(ghCalls.length).toBeGreaterThan(0);
+    for (const c of ghCalls) {
+      expect(c).toContain(`--commit "${targetSha}"`);
+    }
+    // Sanity: previousSha must never have leaked into a query.
+    for (const c of ghCalls) {
+      expect(c).not.toContain(previousSha);
+    }
+  });
+
+  // expected_sha times out cleanly when the run never appears.
+  test('expected_sha_timeout — run for SHA never registers, returns no-run-found error', async () => {
+    const realDateNow = Date.now;
+    let fakeNow = realDateNow();
+    Date.now = () => fakeNow;
+    __setSleep(async (ms: number) => {
+      fakeNow += ms;
+    });
+    try {
+      const targetSha = 'c'.repeat(40);
+      execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
+      execRegistry['gh run list'] = JSON.stringify([]); // sticky empty
+
+      const result = await ciWaitRunHandler.execute({
+        ref: 'main',
+        expected_sha: targetSha,
+        timeout_sec: 60,
+        poll_interval_sec: 10,
+      });
+      const data = parseResult(result.content);
+      expect(data.ok).toBe(false);
+      expect((data.error as string).toLowerCase()).toContain('no ci run found');
+      expect((data.error as string)).toContain(targetSha);
+      expect(data.expected_sha).toBe(targetSha);
+      expect(data.waited_sec as number).toBeGreaterThanOrEqual(60);
+    } finally {
+      Date.now = realDateNow;
+    }
+  });
+
+  // Backwards-compat: omitting expected_sha preserves the existing behavior.
+  // Same shape as `immediate_failure` / `no_run_then_success` to make the
+  // regression intent explicit.
+  test('expected_sha_omitted_preserves_legacy — call without expected_sha works as before', async () => {
+    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
+    execRegistry['gh run list'] = JSON.stringify([
+      ghRun({ status: 'completed', conclusion: 'success' }),
+    ]);
+
+    const result = await ciWaitRunHandler.execute({ ref: 'main' });
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(true);
+    expect(data.final_status).toBe('success');
+    // The gh run list call must NOT have included --commit (ref is a branch
+    // name and no expected_sha was provided).
+    const ghCalls = execCallLog.filter((c) => c.startsWith('gh run list'));
+    expect(ghCalls.length).toBeGreaterThan(0);
+    expect(ghCalls[0]).toContain('--branch "main"');
+    expect(ghCalls[0]).not.toContain('--commit');
+  });
+
+  // expected_sha ignores other (more recent) runs on the same branch whose
+  // SHA doesn't match. This is the core regression for the false-positive
+  // bug described in #259.
+  test('expected_sha_ignores_other_runs — defense-in-depth: filter mismatched SHA even if returned', async () => {
+    const targetSha = 'd'.repeat(40);
+    const otherSha = 'e'.repeat(40);
+    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
+    // Simulate a misbehaving server (or stale cache) that returns a run with
+    // a DIFFERENT SHA despite the --commit filter. The handler must NOT pick
+    // it up — it must wait for a real match. We ratchet through:
+    //   poll 1 (pre-flight): mismatched run only → must be ignored
+    //   poll 2 (phase 1): mismatched run only → still ignored
+    //   poll 3 (phase 1): the real run appears, completed/success
+    execRegistry['gh run list'] = [
+      JSON.stringify([
+        ghRun({ databaseId: 1, status: 'completed', conclusion: 'success', headSha: otherSha, createdAt: '2026-04-08T00:00:00Z' }),
+      ]),
+      JSON.stringify([
+        ghRun({ databaseId: 1, status: 'completed', conclusion: 'success', headSha: otherSha, createdAt: '2026-04-08T00:00:00Z' }),
+      ]),
+      JSON.stringify([
+        ghRun({ databaseId: 1, status: 'completed', conclusion: 'success', headSha: otherSha, createdAt: '2026-04-08T00:00:00Z' }),
+        ghRun({ databaseId: 2, status: 'completed', conclusion: 'success', headSha: targetSha, createdAt: '2026-04-08T00:01:00Z' }),
+      ]),
+    ];
+
+    const result = await ciWaitRunHandler.execute({
+      ref: 'main',
+      expected_sha: targetSha,
+      timeout_sec: 600,
+      poll_interval_sec: 10,
+    });
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(true);
+    expect(data.final_status).toBe('success');
+    // Critical: the run picked must be the one for the target SHA, NOT the
+    // mismatched (and equally-recent) "previous" run.
+    expect(data.run_id).toBe(2);
+    expect(data.sha).toBe(targetSha);
+  });
+
+  // Validation: non-hex / wrong-length expected_sha is rejected at the schema.
+  test('expected_sha_validation — bad SHA format returns validation error', async () => {
+    const result = await ciWaitRunHandler.execute({
+      ref: 'main',
+      expected_sha: 'not-a-sha',
+    });
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(false);
+    expect((data.error as string).toLowerCase()).toContain('expected_sha');
+  });
+
+  // GitLab path: expected_sha forwards as the `sha=` query param and only
+  // pipelines matching that SHA are considered.
+  test('expected_sha_gitlab — forwards sha to glab API and filters response', async () => {
+    const targetSha = 'f'.repeat(40);
+    execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
+    execRegistry['glab api projects/org%2Frepo/pipelines?ref='] = JSON.stringify([
+      glabPipeline({ id: 7777, status: 'success', sha: targetSha }),
+    ]);
+
+    const result = await ciWaitRunHandler.execute({
+      ref: 'main',
+      expected_sha: targetSha,
+    });
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(true);
+    expect(data.final_status).toBe('success');
+    expect(data.run_id).toBe(7777);
+    expect(data.sha).toBe(targetSha);
+    // Verify the glab call carried the encoded sha=<targetSha> query param.
+    const glabCalls = execCallLog.filter((c) => c.startsWith('glab api'));
+    expect(glabCalls.length).toBeGreaterThan(0);
+    for (const c of glabCalls) {
+      expect(c).toContain(`sha=${targetSha}`);
+    }
+  });
+
   // Timeout still fires for push-triggered runs that never complete.
   // Verifies the pre-flight doesn't swallow the existing timeout path.
   test('timeout_still_fires_for_push_triggered — push run stays in_progress, times out', async () => {
