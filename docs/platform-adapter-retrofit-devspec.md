@@ -1,7 +1,7 @@
 <!-- DEV-SPEC-APPROVAL
 approved: true
 approved_by: BJ
-approved_at: 2026-04-25T21:43:22Z
+approved_at: 2026-04-26T19:21:56Z
 finalization_score: 7/7
 -->
 
@@ -1252,7 +1252,7 @@ Execute MV-01 through MV-04. File any bugs as separate issues. Update Phase 1 Do
 
 ---
 
-### Phase 2: Migrate remaining 23 handlers + close Phase-1 bug follow-ups (Epic)
+### Phase 2: Migrate remaining 23 handlers + close Phase-1 bug follow-ups (Epic #293)
 
 **Goal:** Complete the platform-aware handler migration. Land `fetchIssue` as the keystone sub-call, migrate the four non-`pr_*` handler families (CI, label/work-item, spec, wave), and close the four in-repo bug follow-ups from Phase 1 either as pre-work (bug blocking every migration) or inline with the handler they concern.
 
@@ -1335,7 +1335,7 @@ Wave 2.6  ─┬─ Story 2.18: Migrate ibm (+fetchPrForBranch)       (serial �
 
 ---
 
-#### Story 2.0: Fix `pr_merge skip_train` queue-strategy error on queue-enforced repos (bug #280)
+#### Story 2.0: Fix `pr_merge skip_train` queue-strategy error on queue-enforced repos (bug #280) (#294)
 
 **Wave:** 2.0
 **Repository:** `Wave-Engineering/mcp-server-sdlc`
@@ -1379,7 +1379,7 @@ Close bug #280 before any Phase 2 migration begins. The bug: on a repo with GitH
 
 ---
 
-#### Story 2.1: Land `fetchIssue` adapter + types refinement (keystone sub-call)
+#### Story 2.1: Land `fetchIssue` adapter + types refinement (keystone sub-call) (#295)
 
 **Wave:** 2.1
 **Repository:** `Wave-Engineering/mcp-server-sdlc`
@@ -1424,7 +1424,7 @@ Add the `fetchIssue` sub-call to the adapter — the single widest-reach platfor
 
 ---
 
-#### Story 2.2: Migrate `spec_get`
+#### Story 2.2: Migrate `spec_get` (#296)
 
 **Wave:** 2.2
 **Repository:** `Wave-Engineering/mcp-server-sdlc`
@@ -1461,7 +1461,7 @@ Migrate `spec_get` to consume the `fetchIssue` sub-call. The handler's markdown 
 
 ---
 
-#### Story 2.3: Migrate `spec_validate_structure`
+#### Story 2.3: Migrate `spec_validate_structure` (#297)
 
 **Wave:** 2.2
 **Repository:** `Wave-Engineering/mcp-server-sdlc`
@@ -1494,7 +1494,7 @@ Migrate `spec_validate_structure` to consume `fetchIssue`. H2-section validation
 
 ---
 
-#### Story 2.4: Migrate `spec_acceptance_criteria`
+#### Story 2.4: Migrate `spec_acceptance_criteria` (#298)
 
 **Wave:** 2.2
 **Repository:** `Wave-Engineering/mcp-server-sdlc`
@@ -1527,7 +1527,7 @@ Migrate `spec_acceptance_criteria` to consume `fetchIssue`. Checklist-regex pars
 
 ---
 
-#### Story 2.5: Migrate `spec_dependencies`
+#### Story 2.5: Migrate `spec_dependencies` (#299)
 
 **Wave:** 2.2
 **Repository:** `Wave-Engineering/mcp-server-sdlc`
@@ -1560,7 +1560,7 @@ Migrate `spec_dependencies` to consume `fetchIssue`. `## Dependencies` section p
 
 ---
 
-#### Story 2.6: Migrate `epic_sub_issues`
+#### Story 2.6: Migrate `epic_sub_issues` (#300)
 
 **Wave:** 2.2
 **Repository:** `Wave-Engineering/mcp-server-sdlc`
@@ -1600,7 +1600,7 @@ Migrate `epic_sub_issues` to consume `fetchIssue`. The ~200 LoC of markdown tabl
 
 ---
 
-#### Story 2.7: Migrate `dod_load_manifest` + close #283 (cross-repo GitLab gap)
+#### Story 2.7: Migrate `dod_load_manifest` + close #283 (cross-repo GitLab gap) (#301)
 
 **Wave:** 2.3
 **Repository:** `Wave-Engineering/mcp-server-sdlc`
@@ -1641,7 +1641,7 @@ Migrate `dod_load_manifest` to consume `fetchIssue`. **Close #283 in the same PR
 
 ---
 
-#### Story 2.8: Migrate `wave_compute`
+#### Story 2.8: Migrate `wave_compute` (#302)
 
 **Wave:** 2.3
 **Repository:** `Wave-Engineering/mcp-server-sdlc`
@@ -1674,7 +1674,7 @@ Migrate `wave_compute` to consume `fetchIssue`. All wave-computation, sub-issue 
 
 ---
 
-#### Story 2.9: Migrate `wave_dependency_graph`
+#### Story 2.9: Migrate `wave_dependency_graph` (#303)
 
 **Wave:** 2.3
 **Repository:** `Wave-Engineering/mcp-server-sdlc`
@@ -1707,7 +1707,7 @@ Migrate `wave_dependency_graph` to consume `fetchIssue`. Dependency-parsing logi
 
 ---
 
-#### Story 2.10: Migrate `wave_topology`
+#### Story 2.10: Migrate `wave_topology` (#304)
 
 **Wave:** 2.3
 **Repository:** `Wave-Engineering/mcp-server-sdlc`
@@ -1740,7 +1740,7 @@ Migrate `wave_topology` to consume `fetchIssue`. Same shape as `wave_dependency_
 
 ---
 
-#### Story 2.11: Migrate `ci_failed_jobs` (full-migration)
+#### Story 2.11: Migrate `ci_failed_jobs` (full-migration) (#305)
 
 **Wave:** 2.4
 **Repository:** `Wave-Engineering/mcp-server-sdlc`
@@ -1787,7 +1787,7 @@ Full-migration: lift entire handler into adapter pair. The handler is a thin pla
 
 ---
 
-#### Story 2.12: Migrate `ci_run_logs` (full-migration)
+#### Story 2.12: Migrate `ci_run_logs` (full-migration) (#306)
 
 **Wave:** 2.4
 **Repository:** `Wave-Engineering/mcp-server-sdlc`
@@ -1835,7 +1835,7 @@ Full-migration: `fetchGithub()` (gh run view --log / --log-failed) vs `fetchGitl
 
 ---
 
-#### Story 2.13: Migrate `ci_run_status` (full-migration)
+#### Story 2.13: Migrate `ci_run_status` (full-migration) (#307)
 
 **Wave:** 2.4
 **Repository:** `Wave-Engineering/mcp-server-sdlc`
@@ -1880,7 +1880,7 @@ Full-migration: `ghQueryRuns` / `glQueryRuns` + `normalizeGh` / `normalizeGl` st
 
 ---
 
-#### Story 2.14: Migrate `ci_runs_for_branch` (full-migration)
+#### Story 2.14: Migrate `ci_runs_for_branch` (full-migration) (#308)
 
 **Wave:** 2.4
 **Repository:** `Wave-Engineering/mcp-server-sdlc`
@@ -1924,7 +1924,7 @@ Full-migration: `githubStatusFlag` / `gitlabStatusFlag` translation + platform l
 
 ---
 
-#### Story 2.15: Migrate `label_create` (full-migration)
+#### Story 2.15: Migrate `label_create` (full-migration) (#309)
 
 **Wave:** 2.5
 **Repository:** `Wave-Engineering/mcp-server-sdlc`
@@ -1971,7 +1971,7 @@ Full-migration: create-with-idempotent-duplicate-fallback. Platform-specific col
 
 ---
 
-#### Story 2.16: Migrate `label_list` (full-migration)
+#### Story 2.16: Migrate `label_list` (full-migration) (#310)
 
 **Wave:** 2.5
 **Repository:** `Wave-Engineering/mcp-server-sdlc`
@@ -2014,7 +2014,7 @@ Full-migration: smallest handler in the survey (~108 LoC). Trivial lift with col
 
 ---
 
-#### Story 2.17: Migrate `work_item` (full-migration) + close #281
+#### Story 2.17: Migrate `work_item` (full-migration) + close #281 (#311)
 
 **Wave:** 2.5
 **Repository:** `Wave-Engineering/mcp-server-sdlc`
@@ -2062,7 +2062,7 @@ Full-migration: today the handler dispatches to one of four create functions (`c
 
 ---
 
-#### Story 2.18: Migrate `ibm` (+ land `fetchPrForBranch` sub-call)
+#### Story 2.18: Migrate `ibm` (+ land `fetchPrForBranch` sub-call) (#312)
 
 **Wave:** 2.6
 **Repository:** `Wave-Engineering/mcp-server-sdlc`
@@ -2108,7 +2108,7 @@ Hybrid migration: branch-name parsing, protected-branch check, branch-to-issue-n
 
 ---
 
-#### Story 2.19: Migrate `ci_wait_run` (+ land `ciListRuns` + `resolveBranchSha` sub-calls)
+#### Story 2.19: Migrate `ci_wait_run` (+ land `ciListRuns` + `resolveBranchSha` sub-calls) (#313)
 
 **Wave:** 2.6
 **Repository:** `Wave-Engineering/mcp-server-sdlc`
@@ -2158,7 +2158,7 @@ Hybrid migration: owner of the non-platform polling loop (Phase 0 merge-queue pr
 
 ---
 
-#### Story 2.20: Migrate `wave_previous_merged` (+ land `fetchIssueClosure` sub-call)
+#### Story 2.20: Migrate `wave_previous_merged` (+ land `fetchIssueClosure` sub-call) (#314)
 
 **Wave:** 2.6
 **Repository:** `Wave-Engineering/mcp-server-sdlc`
@@ -2204,7 +2204,7 @@ Hybrid migration: state-file parsing + deferral filtering stays. Platform surfac
 
 ---
 
-#### Story 2.21: Migrate `wave_reconcile_mrs` (+ land `findMergedPrForBranchPrefix` sub-call) + address #282
+#### Story 2.21: Migrate `wave_reconcile_mrs` (+ land `findMergedPrForBranchPrefix` sub-call) + address #282 (#315)
 
 **Wave:** 2.6
 **Repository:** `Wave-Engineering/mcp-server-sdlc`
@@ -2253,7 +2253,7 @@ Hybrid migration: state read + per-issue branch-prefix search + `wave-status rec
 
 ---
 
-#### Story 2.22: Migrate `wave_init` (+ land `createBranch` sub-call; reuses `resolveBranchSha`)
+#### Story 2.22: Migrate `wave_init` (+ land `createBranch` sub-call; reuses `resolveBranchSha`) (#316)
 
 **Wave:** 2.6
 **Repository:** `Wave-Engineering/mcp-server-sdlc`
@@ -2300,7 +2300,7 @@ Hybrid migration: state.json writes + `wave-status` CLI shell-out stay. Platform
 
 ---
 
-#### Story 2.23: Migrate `wave_finalize` (+ land `findExistingPr` sub-call; reuses `prCreate`)
+#### Story 2.23: Migrate `wave_finalize` (+ land `findExistingPr` sub-call; reuses `prCreate`) (#317)
 
 **Wave:** 2.6
 **Repository:** `Wave-Engineering/mcp-server-sdlc`
@@ -2346,7 +2346,7 @@ Hybrid migration: 509 LoC handler with artifact-tree walker, body composition, S
 
 ---
 
-#### Story 2.24: Migrate `wave_ci_trust_level` (+ land `fetchCiTrustSignal` sub-call; final migration)
+#### Story 2.24: Migrate `wave_ci_trust_level` (+ land `fetchCiTrustSignal` sub-call; final migration) (#318)
 
 **Wave:** 2.6
 **Repository:** `Wave-Engineering/mcp-server-sdlc`
@@ -2395,7 +2395,7 @@ Hybrid migration (final Phase 2 story): platform-specific ruleset/branch-protect
 
 ---
 
-### Phase 3: Cleanup, docs, release (Epic)
+### Phase 3: Cleanup, docs, release (Epic #319)
 
 **Goal:** Delete `lib/glab.ts`, write the adapter-architecture reference doc, supersede the origin-operations guide, tag v1.8.0, and execute the final manual verification gates (MV-05, MV-06) plus VRTM population.
 
@@ -2442,7 +2442,7 @@ Wave 3.5  ─── Story 3.6: Phase 3 closing — MV-05 + MV-06 + VRTM
 
 ---
 
-#### Story 3.1: Delete `lib/glab.ts`
+#### Story 3.1: Delete `lib/glab.ts` (#320)
 
 **Wave:** 3.1
 **Repository:** `Wave-Engineering/mcp-server-sdlc`
@@ -2478,7 +2478,7 @@ Remove `lib/glab.ts` — the `gitlabApi*` helpers it exports have been fully con
 
 ---
 
-#### Story 3.2: Rewrite `docs/handlers/origin-operations-guide.md` §2.4 with supersession note
+#### Story 3.2: Rewrite `docs/handlers/origin-operations-guide.md` §2.4 with supersession note (#321)
 
 **Wave:** 3.2
 **Repository:** `Wave-Engineering/mcp-server-sdlc`
@@ -2510,7 +2510,7 @@ Update the Origin Operations guide to reflect the new architecture. §2.4 previo
 
 ---
 
-#### Story 3.3: Write `docs/adapters/README.md`
+#### Story 3.3: Write `docs/adapters/README.md` (#322)
 
 **Wave:** 3.2
 **Repository:** `Wave-Engineering/mcp-server-sdlc`
@@ -2553,7 +2553,7 @@ Author the canonical adapter-architecture reference. Target audience: maintainer
 
 ---
 
-#### Story 3.4: Update root `README.md` with adapter architecture section
+#### Story 3.4: Update root `README.md` with adapter architecture section (#323)
 
 **Wave:** 3.3
 **Repository:** `Wave-Engineering/mcp-server-sdlc`
@@ -2584,7 +2584,7 @@ Surface the adapter architecture at the project root. A one-paragraph summary + 
 
 ---
 
-#### Story 3.5: Tag `v1.8.0` + write release notes
+#### Story 3.5: Tag `v1.8.0` + write release notes (#324)
 
 **Wave:** 3.4
 **Repository:** `Wave-Engineering/mcp-server-sdlc`
@@ -2621,7 +2621,7 @@ Create the `v1.8.0` release. CI builds the binaries via existing `release.yml`. 
 
 ---
 
-#### Story 3.6: Phase 3 Closing — MV-05, MV-06, VRTM
+#### Story 3.6: Phase 3 Closing — MV-05, MV-06, VRTM (#325)
 
 **Wave:** 3.5
 **Repository:** `Wave-Engineering/mcp-server-sdlc`
