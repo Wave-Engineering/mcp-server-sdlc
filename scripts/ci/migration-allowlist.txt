@@ -15,7 +15,6 @@ epic_sub_issues.ts
 ibm.ts
 spec_acceptance_criteria.ts
 spec_dependencies.ts
-spec_get.ts
 spec_validate_structure.ts
 wave_ci_trust_level.ts
 wave_compute.ts
