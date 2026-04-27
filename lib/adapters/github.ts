@@ -20,6 +20,7 @@ import { ciRunLogsGithub } from './ci-run-logs-github.js';
 import { ciRunStatusGithub } from './ci-run-status-github.js';
 import { ciRunsForBranchGithub } from './ci-runs-for-branch-github.js';
 import { fetchIssueGithub } from './fetch-issue-github.js';
+import { fetchIssueClosureGithub } from './fetch-issue-closure-github.js';
 import { fetchPrForBranchGithub } from './fetch-pr-for-branch-github.js';
 import { fetchPrStateGithub } from './fetch-pr-state-github.js';
 import { resolveBranchShaGithub } from './resolve-branch-sha-github.js';
@@ -68,6 +69,7 @@ export const githubAdapter: PlatformAdapter = {
   fetchIssue: fetchIssueGithub,
   fetchPrState: fetchPrStateGithub,
   fetchPrForBranch: fetchPrForBranchGithub,
+  fetchIssueClosure: fetchIssueClosureGithub,
   ciListRuns: ciListRunsGithub,
   resolveBranchSha: resolveBranchShaGithub,
 };
