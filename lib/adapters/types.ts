@@ -277,6 +277,64 @@ export type CiWaitRunArgs = unknown;
 export type CiWaitRunResponse = unknown;
 
 /**
+ * Hybrid sub-call (Story 2.19, #313). `ciListRuns` is the slim per-ref CI-run
+ * lister used by `ci_wait_run`'s polling loop and the Phase 0 merge-queue
+ * pre-flight. Narrower than `ciRunsForBranch` (which returns the full
+ * `CiRunsForBranchRun[]` for a branch only, and never exposes `event`); this
+ * call returns the shape the wait loop actually needs: `event` (for
+ * `merge_group` detection) and `head_sha` (for the expected_sha anchor).
+ *
+ * GitLab pipelines don't carry a trigger-event in the way GitHub Actions runs
+ * do, so `event` is always `null` on GitLab. `head_sha` is populated on both
+ * platforms.
+ *
+ * `workflow_name` / `expected_sha` filter behavior mirrors the pre-migration
+ * handler: GitHub pushes both into the argv (`--workflow`, `--commit`) so the
+ * server narrows; GitLab pushes `expected_sha` as `?sha=` and filters
+ * `workflow_name` client-side against `source`.
+ */
+export interface CiListRunsArgs {
+  ref: string;
+  workflow_name?: string;
+  repo?: string;
+  expected_sha?: string;
+  limit: number;
+}
+
+export interface NormalizedCiRun {
+  run_id: number;
+  workflow_name: string;
+  /** Raw platform status — GitHub `queued | in_progress | completed | …`; GitLab `created | running | success | …`. Consumers that need a normalized status should go through `ciRunStatus`. */
+  status: string;
+  /** Raw platform conclusion or `null` when still running. Same caveat as `status`. */
+  conclusion: string | null;
+  url: string;
+  head_sha: string;
+  head_branch: string | null;
+  created_at: string | null;
+  /** GitHub: workflow event trigger (`push | pull_request | merge_group | …`). GitLab: always `null`. */
+  event: string | null;
+}
+
+export type CiListRunsResponse = NormalizedCiRun[];
+
+/**
+ * Hybrid sub-call (Story 2.19, #313). `resolveBranchSha` collapses the
+ * `fetchBranchToSha` helper lifted from the pre-migration `ci_wait_run`
+ * handler. Returns `{ sha }` on success or `null` when the ref cannot be
+ * resolved. On GitLab the concept doesn't apply (pipelines attach to branch
+ * names directly); GitLab returns `platform_unsupported` with a hint.
+ */
+export interface ResolveBranchShaArgs {
+  branch: string;
+  repo?: string;
+}
+
+export interface ResolveBranchShaResponse {
+  sha: string;
+}
+
+/**
  * `ci_run_status` args/response (Story 2.13, #307). Full-migration of the
  * latest-run lookup for a commit SHA or branch ref, optionally filtered by
  * workflow name.
@@ -654,11 +712,20 @@ export interface PlatformAdapter {
   // and post-merge URL/sha lookup.
   // `fetchIssue` (Story 2.1) is the keystone sub-call for Phase 2 — consumed
   // by 10 handlers that all read the same normalized issue shape.
+  // `ciListRuns` + `resolveBranchSha` (Story 2.19) are the `ci_wait_run`
+  // keystone sub-calls — consumed by the polling loop in
+  // `lib/ci-wait-run-poll.ts` and the Phase 0 merge-queue pre-flight.
   fetchIssue(args: FetchIssueArgs): Promise<AdapterResult<AdapterIssue>>;
   fetchPrState(args: FetchPrStateArgs): Promise<AdapterResult<PrStateInfo>>;
   fetchPrForBranch(
     args: FetchPrForBranchArgs,
   ): Promise<AdapterResult<PrForBranchRef | null>>;
+  ciListRuns(
+    args: CiListRunsArgs,
+  ): Promise<AdapterResult<CiListRunsResponse>>;
+  resolveBranchSha(
+    args: ResolveBranchShaArgs,
+  ): Promise<AdapterResult<ResolveBranchShaResponse | null>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -697,6 +764,8 @@ export const PLATFORM_ADAPTER_METHODS = [
   'fetchIssue',
   'fetchPrState',
   'fetchPrForBranch',
+  'ciListRuns',
+  'resolveBranchSha',
 ] as const;
 
 export type PlatformAdapterMethod = (typeof PLATFORM_ADAPTER_METHODS)[number];

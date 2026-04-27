@@ -9,7 +9,6 @@
 # off-by-one that was reconciled to disk reality).
 #
 # Format: one basename per line. Comments (#) and blank lines ignored.
-ci_wait_run.ts
 wave_ci_trust_level.ts
 wave_finalize.ts
 wave_init.ts
