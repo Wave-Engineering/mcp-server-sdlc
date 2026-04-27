@@ -9,4 +9,7 @@
 # off-by-one that was reconciled to disk reality).
 #
 # Format: one basename per line. Comments (#) and blank lines ignored.
-wave_ci_trust_level.ts
+#
+# Phase 2 closed out by Story 2.24 (#318, wave_ci_trust_level migration) —
+# this list is now empty, which means the gate-greps enforce against ALL
+# handlers in the tree. Phase 3 Story 3.6 deletes this file entirely.
