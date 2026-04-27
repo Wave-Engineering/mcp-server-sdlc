@@ -590,6 +590,28 @@ export interface AdapterIssue {
  */
 export type IssueData = AdapterIssue;
 
+// Hybrid sub-call (Story 2.18, #312). `fetchPrForBranch` is the `ibm`
+// keystone sub-call: find the open PR/MR for a given source branch. Narrower
+// than `prList` (which returns the full normalized PR record for N items);
+// this returns just `{ url, number }` or `null` when no match exists. The
+// existing `ibm` handler used this shape via local `getGithubPrUrl` /
+// `getGitlabMrUrl` helpers — this call lifts them onto the platform adapter
+// so the handler becomes a thin dispatcher with zero platform branching.
+//
+// Default state semantics: `'open'` matches the pre-migration `ibm`
+// behavior (gh pr list defaults to open; gitlab was filter-free but only the
+// open-PR case was surfaced in the handler's response).
+export interface FetchPrForBranchArgs {
+  branch: string;
+  state?: 'open' | 'closed' | 'merged' | 'all';
+  repo?: string;
+}
+
+export interface PrForBranchRef {
+  url: string;
+  number: number;
+}
+
 // ---------------------------------------------------------------------------
 // The interface
 // ---------------------------------------------------------------------------
@@ -634,6 +656,9 @@ export interface PlatformAdapter {
   // by 10 handlers that all read the same normalized issue shape.
   fetchIssue(args: FetchIssueArgs): Promise<AdapterResult<AdapterIssue>>;
   fetchPrState(args: FetchPrStateArgs): Promise<AdapterResult<PrStateInfo>>;
+  fetchPrForBranch(
+    args: FetchPrForBranchArgs,
+  ): Promise<AdapterResult<PrForBranchRef | null>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -671,6 +696,7 @@ export const PLATFORM_ADAPTER_METHODS = [
   'specDependencies',
   'fetchIssue',
   'fetchPrState',
+  'fetchPrForBranch',
 ] as const;
 
 export type PlatformAdapterMethod = (typeof PLATFORM_ADAPTER_METHODS)[number];
