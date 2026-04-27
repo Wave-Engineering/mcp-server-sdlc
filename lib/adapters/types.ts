@@ -765,6 +765,49 @@ export interface FindMergedPrForBranchPrefixArgs {
   repo?: string;
 }
 
+/**
+ * Hybrid sub-call (Story 2.24, #318 — FINAL Phase 2 migration).
+ * `fetchCiTrustSignal` is the narrow "does this platform guarantee
+ * pre-merge CI == post-merge CI?" probe lifted from
+ * `handlers/wave_ci_trust_level.ts`'s `checkGithubTrust` / `checkGitlabTrust`
+ * helpers.
+ *
+ * Returns the narrow `(level, reason)` pair that drives the trust-level
+ * classification — the trust-level cache and TTL stay in the handler (the
+ * adapter is the cache-miss path). Consumed ONLY by `wave_ci_trust_level`;
+ * this sub-call is narrower than any of the other CI-family methods because
+ * it probes repo-level settings (rulesets, branch protection,
+ * `merge_trains_enabled`) rather than per-run / per-PR state.
+ *
+ * Two-step dispatch diverges per platform:
+ * - GitHub: `gh api repos/<slug>/rulesets` is queried first (merge queue
+ *   lives in a ruleset); on cache miss the adapter falls back to
+ *   `gh api repos/<slug>/branches/main/protection` and checks the
+ *   `required_status_checks.strict` flag.
+ * - GitLab: `glab api projects/<path>` via `gitlabApiRepo()` (the supported
+ *   path until Phase-3 Story 3.1 deletes `lib/glab.ts`); `merge_trains_enabled`
+ *   is the lone pre-merge-authoritative signal — merge pipelines alone are
+ *   not sufficient (they still allow merge before CI completes).
+ *
+ * Failure modes (subprocess error, JSON parse error, unrecognized platform)
+ * collapse to `level: 'unknown'` at the HANDLER level — the adapter itself
+ * returns `{ok: false, …}` for subprocess failures and the handler folds
+ * that into the classification envelope.
+ */
+export type CiTrustLevel =
+  | 'pre_merge_authoritative'
+  | 'post_merge_required'
+  | 'unknown';
+
+export interface FetchCiTrustSignalArgs {
+  repo?: string;
+}
+
+export interface CiTrustSignal {
+  level: CiTrustLevel;
+  reason: string;
+}
+
 // ---------------------------------------------------------------------------
 // The interface
 // ---------------------------------------------------------------------------
@@ -831,6 +874,9 @@ export interface PlatformAdapter {
   findExistingPr(
     args: FindExistingPrArgs,
   ): Promise<AdapterResult<NormalizedPr | null>>;
+  fetchCiTrustSignal(
+    args: FetchCiTrustSignalArgs,
+  ): Promise<AdapterResult<CiTrustSignal>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -875,6 +921,7 @@ export const PLATFORM_ADAPTER_METHODS = [
   'resolveBranchSha',
   'createBranch',
   'findExistingPr',
+  'fetchCiTrustSignal',
 ] as const;
 
 export type PlatformAdapterMethod = (typeof PLATFORM_ADAPTER_METHODS)[number];

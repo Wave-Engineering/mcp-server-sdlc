@@ -79,6 +79,13 @@ describe('PlatformAdapter contract', () => {
   //                    the narrow `(head, base, state) -> NormalizedPr | null`
   //                    idempotency lookup lifted from the handler-local
   //                    `findExistingGithubPr` / `findExistingGitlabMr` helpers).
+  // Story 2.24 (#318): wave_ci_trust_level hybrid migration (+ fetchCiTrustSignal
+  //                    — the narrow `(level, reason)` classification probe
+  //                    lifted from the handler-local `checkGithubTrust` /
+  //                    `checkGitlabTrust` helpers). FINAL Phase 2 migration:
+  //                    after this lands the `handlers/` tree has zero
+  //                    `gitlabApi*` importers, unblocking Phase 3 Story 3.1
+  //                    (delete `lib/glab.ts`).
   const MIGRATED_METHODS = new Set<string>([
     'prCreate',
     'prDiff',
@@ -105,6 +112,7 @@ describe('PlatformAdapter contract', () => {
     'workItem',
     'createBranch',
     'findExistingPr',
+    'fetchCiTrustSignal',
   ]);
 
   test('still-stubbed methods return platform_unsupported', async () => {
