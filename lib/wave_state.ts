@@ -90,7 +90,7 @@ export type KahunaDisposition = z.infer<typeof KahunaDispositionSchema>;
 export const KahunaBranchHistoryEntrySchema = z
   .object({
     branch: z.string().min(1),
-    epic_id: z.number().int().positive(),
+    plan_id: z.number().int().positive(),
     created_at: z.string().min(1),
     resolved_at: z.string().min(1),
     disposition: KahunaDispositionSchema,

@@ -182,13 +182,13 @@ export interface KahunaBootstrapDeps {
 
 export async function bootstrapKahunaBranch(
   cwd: string,
-  kahuna: { epic_id: number; slug: string },
+  kahuna: { plan_id: number; slug: string },
   baseBranch: string,
   readState: () => Promise<{ kahuna_branch?: string | null }>,
   deps: KahunaBootstrapDeps,
 ): Promise<KahunaBootstrapResult | KahunaBootstrapError> {
   void cwd;
-  const desired = `kahuna/${kahuna.epic_id}-${kahuna.slug}`;
+  const desired = `kahuna/${kahuna.plan_id}-${kahuna.slug}`;
   const state = await readState();
   const recorded = state.kahuna_branch ?? null;
 
