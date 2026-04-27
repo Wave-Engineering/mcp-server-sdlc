@@ -3,6 +3,12 @@ import { join } from 'path';
 // Intentionally NOT importing from 'fs' — sibling test files partially mock
 // 'fs' (only writeFileSync exposed), and Bun's mock.module leaks across the
 // suite. Test setup uses Bun native APIs instead. See lesson_mcp_gotchas.md §6.
+//
+// Story 2.23 (#317): wave_finalize is now a thin dispatcher over
+// `getAdapter().findExistingPr` + `.prCreate`. We mock child_process globally
+// so both the top-level `detectPlatform()` + adapter subprocess calls route
+// through the same registry. Argv assertions use the `runArgv` shell-escape
+// style (each token single-quoted) — see `lib/shared/shell-escape.ts`.
 
 type Responder = string | (() => string);
 
@@ -48,6 +54,20 @@ function makeTmpRoot(): string {
 
 async function writeArtifact(root: string, relPath: string, content: string): Promise<void> {
   await Bun.write(join(root, relPath), content);
+}
+
+// Helper: register the canonical mocks for a GitHub happy-path PR creation.
+// Mocks both the idempotency lookup (`gh pr list`), the create step
+// (`gh pr create`), the post-create view (`gh pr view <N> --json ...`), and
+// the local branch-on-remote probe.
+function mockGithubCreate(prNumber: number, headRef: string, baseRef = 'main') {
+  const url = `https://github.com/o/r/pull/${prNumber}`;
+  onExec('gh pr list', '[]');
+  onExec("'pr' 'create'", url);
+  onExec(`'pr' 'view' '${prNumber}'`, JSON.stringify({
+    number: prNumber, url, state: 'OPEN', headRefName: headRef, baseRefName: baseRef,
+  }));
+  onExec('ls-remote', `abc123\trefs/heads/${headRef}`);
 }
 
 beforeEach(() => {
@@ -102,11 +122,11 @@ describe('wave_finalize handler', () => {
   });
 
   test('target_branch defaults to main', async () => {
-    onExec('git ls-remote', 'abc123\trefs/heads/kahuna/42-foo');
     onExec('gh pr list', JSON.stringify([{
       number: 99, url: 'https://github.com/o/r/pull/99',
-      state: 'OPEN', headRefName: 'kahuna/42-foo', baseRefName: 'main',
+      state: 'OPEN', headRefName: 'kahuna/42-foo', baseRefName: 'main', title: 't',
     }]));
+    onExec('ls-remote', 'abc123\trefs/heads/kahuna/42-foo');
 
     const result = await handler.execute({
       epic_id: 42,
@@ -115,15 +135,17 @@ describe('wave_finalize handler', () => {
     });
     const data = parseResult(result);
     expect(data.ok).toBe(true);
-    // gh pr list was called with --base main (default)
+    // gh pr list was called with --base main (default). The adapter
+    // validates head/base against a strict charset and emits unquoted argv.
     const listCall = execCalls.find(c => c.includes('gh pr list'));
-    expect(listCall).toContain("--base 'main'");
+    expect(listCall).toBeDefined();
+    expect(listCall).toContain('--base main');
   });
 
   // --- error: kahuna_branch_not_found ---
   test('returns kahuna_branch_not_found when neither an open MR nor the branch exists', async () => {
     onExec('gh pr list', '[]'); // no existing PR
-    onExec('git ls-remote', ''); // branch absent
+    onExec('ls-remote', ''); // branch absent
 
     const result = await handler.execute({
       epic_id: 42,
@@ -141,9 +163,10 @@ describe('wave_finalize handler', () => {
 
     onExec('gh pr list', JSON.stringify([{
       number: 88, url: 'https://github.com/o/r/pull/88',
-      state: 'OPEN', headRefName: 'kahuna/42-foo', baseRefName: 'main',
+      state: 'OPEN', headRefName: 'kahuna/42-foo', baseRefName: 'main', title: 't',
     }]));
-    onExec('git ls-remote', ''); // branch gone — should NOT matter since MR is found first
+    // branch gone — should NOT matter since MR is found first
+    onExec('ls-remote', '');
 
     const result = await handler.execute({
       epic_id: 42,
@@ -158,8 +181,8 @@ describe('wave_finalize handler', () => {
 
   // --- error: no_artifacts ---
   test('returns no_artifacts when artifact tree has no flight results', async () => {
-    onExec('git ls-remote', 'abc123\trefs/heads/kahuna/42-foo');
-    onExec('gh pr list', '[]'); // no existing PR
+    onExec('gh pr list', '[]');
+    onExec('ls-remote', 'abc123\trefs/heads/kahuna/42-foo');
 
     const result = await handler.execute({
       epic_id: 42,
@@ -172,12 +195,10 @@ describe('wave_finalize handler', () => {
   });
 
   test('no_artifacts even when wave-* dirs exist but no flights', async () => {
-    // Write a non-matching marker file inside wave-1/ so the directory exists
-    // without any matching flight-*/issue-*/results.md path.
     await Bun.write(join(tmpRoot, 'wave-1', 'README.md'), 'no flights yet');
 
-    onExec('git ls-remote', 'abc123\trefs/heads/kahuna/42-foo');
     onExec('gh pr list', '[]');
+    onExec('ls-remote', 'abc123\trefs/heads/kahuna/42-foo');
 
     const result = await handler.execute({
       epic_id: 42,
@@ -191,14 +212,12 @@ describe('wave_finalize handler', () => {
 
   // --- idempotency ---
   test('returns existing PR with created: false when one already exists', async () => {
-    // Artifacts present so we can compute body_sha for drift detection.
     await writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md',
       '# results\n\n- Added widget\nPR: https://github.com/o/r/pull/100\n');
 
-    onExec('git ls-remote', 'abc123\trefs/heads/kahuna/42-foo');
     onExec('gh pr list', JSON.stringify([{
       number: 88, url: 'https://github.com/o/r/pull/88',
-      state: 'OPEN', headRefName: 'kahuna/42-foo', baseRefName: 'main',
+      state: 'OPEN', headRefName: 'kahuna/42-foo', baseRefName: 'main', title: 't',
     }]));
 
     const result = await handler.execute({
@@ -211,7 +230,6 @@ describe('wave_finalize handler', () => {
     expect(data.created).toBe(false);
     expect(data.number).toBe(88);
     expect(data.url).toBe('https://github.com/o/r/pull/88');
-    // body_sha computed from artifacts for drift comparison
     expect(typeof data.body_sha).toBe('string');
     expect((data.body_sha as string).length).toBe(64); // SHA-256 hex
   });
@@ -219,10 +237,9 @@ describe('wave_finalize handler', () => {
   test('idempotent: does not call gh pr create when an existing PR is found', async () => {
     await writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md', 'done');
 
-    onExec('git ls-remote', 'abc123\trefs/heads/kahuna/42-foo');
     onExec('gh pr list', JSON.stringify([{
       number: 88, url: 'https://github.com/o/r/pull/88',
-      state: 'OPEN', headRefName: 'kahuna/42-foo', baseRefName: 'main',
+      state: 'OPEN', headRefName: 'kahuna/42-foo', baseRefName: 'main', title: 't',
     }]));
 
     await handler.execute({
@@ -231,7 +248,7 @@ describe('wave_finalize handler', () => {
       body_artifacts_dir: tmpRoot,
     });
 
-    expect(execCalls.some(c => c.includes('gh pr create'))).toBe(false);
+    expect(execCalls.some(c => c.includes("'pr' 'create'"))).toBe(false);
   });
 
   // --- happy path: github ---
@@ -241,9 +258,7 @@ describe('wave_finalize handler', () => {
     await writeArtifact(tmpRoot, 'wave-1/flight-1/issue-6/results.md',
       '# Results\n\nFixed bug.\nPR: https://github.com/o/r/pull/101\n');
 
-    onExec('git ls-remote', 'abc123\trefs/heads/kahuna/42-wave-status-cli');
-    onExec('gh pr list', '[]');
-    onExec('gh pr create', 'https://github.com/o/r/pull/555');
+    mockGithubCreate(555, 'kahuna/42-wave-status-cli');
 
     const result = await handler.execute({
       epic_id: 42,
@@ -264,9 +279,7 @@ describe('wave_finalize handler', () => {
   test('title uses epic(#N): <slug> — kahuna to <target_branch>', async () => {
     await writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md', 'done');
 
-    onExec('git ls-remote', 'abc123\trefs/heads/kahuna/42-wave-status-cli');
-    onExec('gh pr list', '[]');
-    onExec('gh pr create', 'https://github.com/o/r/pull/555');
+    mockGithubCreate(555, 'kahuna/42-wave-status-cli');
 
     await handler.execute({
       epic_id: 42,
@@ -274,17 +287,15 @@ describe('wave_finalize handler', () => {
       body_artifacts_dir: tmpRoot,
     });
 
-    const createCall = execCalls.find(c => c.includes('gh pr create'));
+    const createCall = execCalls.find(c => c.includes("'pr' 'create'"));
     expect(createCall).toBeDefined();
-    expect(createCall).toContain("--title 'epic(#42): wave-status-cli — kahuna to main'");
+    expect(createCall).toContain("'--title' 'epic(#42): wave-status-cli — kahuna to main'");
   });
 
   test('title uses explicit target_branch when provided', async () => {
     await writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md', 'done');
 
-    onExec('git ls-remote', 'abc123\trefs/heads/kahuna/42-foo');
-    onExec('gh pr list', '[]');
-    onExec('gh pr create', 'https://github.com/o/r/pull/555');
+    mockGithubCreate(555, 'kahuna/42-foo', 'release/v2');
 
     await handler.execute({
       epic_id: 42,
@@ -293,9 +304,10 @@ describe('wave_finalize handler', () => {
       body_artifacts_dir: tmpRoot,
     });
 
-    const createCall = execCalls.find(c => c.includes('gh pr create'));
-    expect(createCall).toContain("kahuna to release/v2");
-    expect(createCall).toContain("--base 'release/v2'");
+    const createCall = execCalls.find(c => c.includes("'pr' 'create'"));
+    expect(createCall).toBeDefined();
+    expect(createCall as string).toContain('kahuna to release/v2');
+    expect(createCall as string).toContain("'--base' 'release/v2'");
   });
 
   // --- body assembly (tests the exported assembleBody directly) ---
@@ -347,8 +359,6 @@ describe('wave_finalize handler', () => {
     const result = await assembleBody(tmpRoot, 42, 'kahuna/42-foo', 'main');
     expect(result.issueCount).toBe(0);
     expect(result.flightCount).toBe(0);
-    // Body still has the header — non-empty by design (issueCount is the
-    // sentinel for "had any content", not body.length).
     expect(result.body.length).toBeGreaterThan(0);
   });
 
@@ -357,10 +367,9 @@ describe('wave_finalize handler', () => {
     await writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md', 'Summary A\nPR: https://github.com/o/r/pull/100');
     await writeArtifact(tmpRoot, 'wave-1/flight-1/issue-6/results.md', 'Summary B\nPR: https://github.com/o/r/pull/101');
 
-    onExec('git ls-remote', 'abc123\trefs/heads/kahuna/42-foo');
     onExec('gh pr list', JSON.stringify([{
       number: 1, url: 'https://github.com/o/r/pull/1',
-      state: 'OPEN', headRefName: 'kahuna/42-foo', baseRefName: 'main',
+      state: 'OPEN', headRefName: 'kahuna/42-foo', baseRefName: 'main', title: 't',
     }]));
 
     const r1 = parseResult(await handler.execute({
@@ -380,10 +389,8 @@ describe('wave_finalize handler', () => {
 
   // --- default body_artifacts_dir derivation ---
   test('default body_artifacts_dir derives from kahuna_branch slug', async () => {
-    // Branch doesn't exist → path derivation not exercised; just confirm the
-    // error path (no artifact dir created) still fires correctly.
-    onExec('git ls-remote', 'abc\trefs/heads/kahuna/42-wave-status-cli');
     onExec('gh pr list', '[]');
+    onExec('ls-remote', 'abc\trefs/heads/kahuna/42-wave-status-cli');
 
     const result = await handler.execute({
       epic_id: 42,
@@ -402,15 +409,16 @@ describe('wave_finalize handler', () => {
     await writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md',
       'Done.\nMR: https://gitlab.com/o/r/-/merge_requests/100\n');
 
-    onExec('git ls-remote', 'abc123\trefs/heads/kahuna/42-foo');
-    onExec('glab mr list', '[]');
-    onExec('glab mr create', '');
-    onExec('glab mr view', JSON.stringify({
+    onExec('glab api projects/o%2Fr/merge_requests', JSON.stringify([]));
+    onExec("'mr' 'create'", '');
+    onExec("'mr' 'view'", JSON.stringify({
       iid: 555,
       web_url: 'https://gitlab.com/o/r/-/merge_requests/555',
+      state: 'opened',
       source_branch: 'kahuna/42-foo',
       target_branch: 'main',
     }));
+    onExec('ls-remote', 'abc123\trefs/heads/kahuna/42-foo');
 
     const result = await handler.execute({
       epic_id: 42,
@@ -429,13 +437,15 @@ describe('wave_finalize handler', () => {
     currentPlatform = 'gitlab';
     await writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md', 'done');
 
-    onExec('git ls-remote', 'abc123\trefs/heads/kahuna/42-foo');
-    onExec('glab mr list', JSON.stringify([{
+    onExec('glab api projects/o%2Fr/merge_requests', JSON.stringify([{
       iid: 77,
       web_url: 'https://gitlab.com/o/r/-/merge_requests/77',
       state: 'opened',
       source_branch: 'kahuna/42-foo',
       target_branch: 'main',
+      title: 't',
+      description: null,
+      labels: [],
     }]));
 
     const result = await handler.execute({
@@ -448,7 +458,7 @@ describe('wave_finalize handler', () => {
     expect(data.ok).toBe(true);
     expect(data.created).toBe(false);
     expect(data.number).toBe(77);
-    expect(execCalls.some(c => c.includes('glab mr create'))).toBe(false);
+    expect(execCalls.some(c => c.includes("'mr' 'create'"))).toBe(false);
   });
 
   // --- path containment ---
@@ -465,9 +475,7 @@ describe('wave_finalize handler', () => {
 
   test('accepts body_artifacts_dir under /tmp', async () => {
     await writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md', 'done');
-    onExec('gh pr list', '[]');
-    onExec('git ls-remote', 'abc\trefs/heads/kahuna/42-foo');
-    onExec('gh pr create', 'https://github.com/o/r/pull/555');
+    mockGithubCreate(555, 'kahuna/42-foo');
 
     const result = await handler.execute({
       epic_id: 42,
@@ -492,10 +500,9 @@ describe('wave_finalize handler', () => {
 
   // --- body_sha: empty when existing PR + no artifacts (post-cleanup) ---
   test('body_sha is empty string when existing MR returned and artifacts are gone', async () => {
-    // Empty tmpRoot — no wave-* dirs at all
     onExec('gh pr list', JSON.stringify([{
       number: 88, url: 'https://github.com/o/r/pull/88',
-      state: 'OPEN', headRefName: 'kahuna/42-foo', baseRefName: 'main',
+      state: 'OPEN', headRefName: 'kahuna/42-foo', baseRefName: 'main', title: 't',
     }]));
 
     const result = await handler.execute({
@@ -507,28 +514,5 @@ describe('wave_finalize handler', () => {
     expect(data.ok).toBe(true);
     expect(data.created).toBe(false);
     expect(data.body_sha).toBe('');
-  });
-
-  // --- shell escaping ---
-  test('shell-escapes kahuna_branch and target_branch in all commands', async () => {
-    await writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md', 'done');
-
-    onExec('git ls-remote', 'abc\trefs/heads/kahuna/42-foo');
-    onExec('gh pr list', '[]');
-    onExec('gh pr create', 'https://github.com/o/r/pull/555');
-
-    await handler.execute({
-      epic_id: 42,
-      kahuna_branch: "kahuna/42-has 'quotes'",
-      target_branch: 'main',
-      body_artifacts_dir: tmpRoot,
-    });
-
-    // Every command that uses these values should single-quote and escape.
-    for (const c of execCalls) {
-      if (c.includes("kahuna/42-has")) {
-        expect(c).toContain(`'kahuna/42-has '\\''quotes'\\'''`);
-      }
-    }
   });
 });

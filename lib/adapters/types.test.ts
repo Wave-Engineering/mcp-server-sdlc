@@ -75,6 +75,10 @@ describe('PlatformAdapter contract', () => {
   //                    promotes `resolveBranchShaGitlab` from a permanent
   //                    `platform_unsupported` stub to a real implementation
   //                    so GitLab can resolve the base-branch HEAD SHA).
+  // Story 2.23 (#317): wave_finalize hybrid migration (+ findExistingPr —
+  //                    the narrow `(head, base, state) -> NormalizedPr | null`
+  //                    idempotency lookup lifted from the handler-local
+  //                    `findExistingGithubPr` / `findExistingGitlabMr` helpers).
   const MIGRATED_METHODS = new Set<string>([
     'prCreate',
     'prDiff',
@@ -100,6 +104,7 @@ describe('PlatformAdapter contract', () => {
     'resolveBranchSha',
     'workItem',
     'createBranch',
+    'findExistingPr',
   ]);
 
   test('still-stubbed methods return platform_unsupported', async () => {
