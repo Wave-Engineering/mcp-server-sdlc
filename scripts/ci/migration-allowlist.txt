@@ -12,5 +12,4 @@
 wave_ci_trust_level.ts
 wave_finalize.ts
 wave_init.ts
-wave_previous_merged.ts
 wave_reconcile_mrs.ts

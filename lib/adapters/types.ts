@@ -670,6 +670,30 @@ export interface PrForBranchRef {
   number: number;
 }
 
+/**
+ * Hybrid sub-call (Story 2.20, #314). `fetchIssueClosure` collapses the
+ * platform-branching `queryIssueClosure` helper lifted from the pre-migration
+ * `wave_previous_merged` handler. Returns the narrow `(state,
+ * closedByMergedPR)` pair that drives the wave-completion contract check —
+ * does NOT return the full issue body/labels like `fetchIssue` does.
+ *
+ * GitHub uses a GraphQL query against `closedByPullRequestsReferences` and
+ * `timelineItems[ClosedEvent]` (body-keyword closures like `Closes #N` are
+ * missed by the REST events API — #183). GitLab stays on the state-only
+ * interpretation: CLOSED implies merged. GitLab's commit-trailer style
+ * populates closer info through a different code path and the #183 repro was
+ * GitHub-specific.
+ */
+export interface FetchIssueClosureArgs {
+  number: number;
+  repo?: string;
+}
+
+export interface IssueClosureInfo {
+  state: 'OPEN' | 'CLOSED';
+  closedByMergedPR: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // The interface
 // ---------------------------------------------------------------------------
@@ -720,6 +744,9 @@ export interface PlatformAdapter {
   fetchPrForBranch(
     args: FetchPrForBranchArgs,
   ): Promise<AdapterResult<PrForBranchRef | null>>;
+  fetchIssueClosure(
+    args: FetchIssueClosureArgs,
+  ): Promise<AdapterResult<IssueClosureInfo>>;
   ciListRuns(
     args: CiListRunsArgs,
   ): Promise<AdapterResult<CiListRunsResponse>>;
@@ -764,6 +791,7 @@ export const PLATFORM_ADAPTER_METHODS = [
   'fetchIssue',
   'fetchPrState',
   'fetchPrForBranch',
+  'fetchIssueClosure',
   'ciListRuns',
   'resolveBranchSha',
 ] as const;

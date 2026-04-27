@@ -21,6 +21,7 @@ import { ciRunLogsGitlab } from './ci-run-logs-gitlab.js';
 import { ciRunStatusGitlab } from './ci-run-status-gitlab.js';
 import { ciRunsForBranchGitlab } from './ci-runs-for-branch-gitlab.js';
 import { fetchIssueGitlab } from './fetch-issue-gitlab.js';
+import { fetchIssueClosureGitlab } from './fetch-issue-closure-gitlab.js';
 import { fetchPrForBranchGitlab } from './fetch-pr-for-branch-gitlab.js';
 import { fetchPrStateGitlab } from './fetch-pr-state-gitlab.js';
 import { resolveBranchShaGitlab } from './resolve-branch-sha-gitlab.js';
@@ -69,6 +70,7 @@ export const gitlabAdapter: PlatformAdapter = {
   fetchIssue: fetchIssueGitlab,
   fetchPrState: fetchPrStateGitlab,
   fetchPrForBranch: fetchPrForBranchGitlab,
+  fetchIssueClosure: fetchIssueClosureGitlab,
   ciListRuns: ciListRunsGitlab,
   resolveBranchSha: resolveBranchShaGitlab,
 };

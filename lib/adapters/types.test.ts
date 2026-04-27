@@ -60,6 +60,9 @@ describe('PlatformAdapter contract', () => {
   //                    `ciWaitRun` itself remains stubbed — the handler routes
   //                    through the two sub-calls inside lib/ci-wait-run-poll.ts,
   //                    not through the top-level method.
+  // Story 2.20 (#314): wave_previous_merged hybrid migration (+
+  //                    fetchIssueClosure — the narrow state/closed-by-merged-PR
+  //                    pair lifted from the handler-local `queryIssueClosure`).
   const MIGRATED_METHODS = new Set<string>([
     'prCreate',
     'prDiff',
@@ -72,6 +75,7 @@ describe('PlatformAdapter contract', () => {
     'prMergeWait',
     'fetchPrState',
     'fetchIssue',
+    'fetchIssueClosure',
     'fetchPrForBranch',
     'ciFailedJobs',
     'ciListRuns',
