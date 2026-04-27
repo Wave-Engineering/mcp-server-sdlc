@@ -6,7 +6,7 @@
  *
  * GitLab divergences from the GitHub flow:
  * - There is no `glab` CLI subcommand that returns per-file additions/deletions.
- *   We fetch the MR via `gitlabApiMr` (per Dev Spec §5.3 — `lib/glab.ts` stays
+ *   We fetch the MR via `gitlabApiMr` (per Dev Spec §5.3 — `lib/gitlab-api.ts` stays
  *   as the shared GitLab REST client) and parse hunk stats from each
  *   change's unified `diff` field.
  * - File status (added/modified/removed/renamed) is derived from the boolean
@@ -20,7 +20,7 @@
  */
 
 import { execSync } from 'child_process';
-import { gitlabApiMr } from '../glab.js';
+import { gitlabApiMr } from '../gitlab-api.js';
 import type {
   AdapterResult,
   PrFilesArgs,

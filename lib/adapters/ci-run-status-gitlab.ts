@@ -12,9 +12,8 @@
  *   best-effort matching. When `workflow_name` is set we fetch a deeper
  *   window (20) so the filter has something to chew on; otherwise just 1.
  * - `gitlabApiCiList` (the `glab api projects/.../pipelines` wrapper) lives
- *   in `lib/glab.ts` today and is shared with `ci_wait_run` +
- *   `ci_runs_for_branch`. Per Story 2.13's spec note, THIS adapter owns the
- *   call-site; `lib/glab.ts` is deleted wholesale in Phase 3 Story 3.1.
+ *   in `lib/gitlab-api.ts` and is shared with `ci_wait_run` +
+ *   `ci_runs_for_branch`.
  * - Status enum mapping diverges: GitLab statuses (`created`, `pending`,
  *   `running`, `success`, `failed`, `canceled`, `skipped`, …) normalize
  *   differently than GitHub's, so `normalizeGl*` lives here next to the
@@ -22,7 +21,7 @@
  */
 
 import { execSync } from 'child_process';
-import { gitlabApiCiList, type GitlabPipeline } from '../glab.js';
+import { gitlabApiCiList, type GitlabPipeline } from '../gitlab-api.js';
 import type {
   AdapterResult,
   CiRunConclusion,

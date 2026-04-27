@@ -13,8 +13,7 @@
  *   in_progress | all`) to the GitLab-native vocabulary (`success | failed |
  *   running`). This lives next to the query that produces the raw values.
  * - `gitlabApiCiList` (the `glab api projects/.../pipelines` wrapper) lives
- *   in `lib/glab.ts` today and is shared with `ci_wait_run` + `ci_run_status`.
- *   Per dev spec §5, `lib/glab.ts` is deleted wholesale in Phase 3 Story 3.1.
+ *   in `lib/gitlab-api.ts` and is shared with `ci_wait_run` + `ci_run_status`.
  * - `workflow_name` falls back to the pipeline `source` field (push,
  *   merge_request_event, schedule, …); GitLab pipelines don't carry a
  *   separate workflow name the way GitHub runs do.
@@ -23,7 +22,7 @@
  */
 
 import { execSync } from 'child_process';
-import { gitlabApiCiList } from '../glab.js';
+import { gitlabApiCiList } from '../gitlab-api.js';
 import type {
   AdapterResult,
   CiRunsForBranchArgs,

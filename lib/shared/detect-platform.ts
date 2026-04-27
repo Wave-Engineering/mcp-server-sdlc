@@ -7,9 +7,9 @@
  * inverted the check (`url.includes('github')`) which gives the wrong answer
  * for self-hosted enterprise deployments.
  *
- * Moved from `lib/glab.ts` per R-17 (Story 1.2). `lib/glab.ts` re-exports
- * these functions during the transition; final deletion of the re-exports
- * happens in Phase 3.
+ * Moved here per R-17 (Story 1.2) — the single source of truth for platform
+ * detection lives in `lib/shared/`, and GitLab-specific REST wrappers live
+ * in `lib/gitlab-api.ts`.
  */
 
 import { execSync } from 'child_process';

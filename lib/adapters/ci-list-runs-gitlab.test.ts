@@ -6,10 +6,9 @@ import type { AdapterResult, CiListRunsResponse } from './types.ts';
 // owns the argv-shape and normalization assertions.
 //
 // The adapter routes its subprocess through `gitlabApiCiList` in
-// `lib/glab.ts` today (per Story 2.19 spec — `lib/glab.ts` deletion is
-// deferred to Phase 3 Story 3.1). So we mock `child_process.execSync`
-// directly AND stub `parseRepoSlug` so `gitlabApiCiList`'s `git remote`
-// peek doesn't need a real repo.
+// `lib/gitlab-api.ts`. So we mock `child_process.execSync` directly AND stub
+// `parseRepoSlug` so `gitlabApiCiList`'s `git remote` peek doesn't need a
+// real repo.
 
 interface ThrowableError extends Error {
   stderr?: string;

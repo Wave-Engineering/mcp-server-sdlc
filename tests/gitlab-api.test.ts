@@ -1,3 +1,11 @@
+/**
+ * Tests for `lib/gitlab-api.ts` — the GitLab REST (`glab api`) typed wrappers.
+ *
+ * `detectPlatform` and `parseRepoSlug` coverage lives in
+ * `lib/shared/detect-platform.test.ts` and `lib/shared/parse-repo-slug.test.ts`
+ * respectively.
+ */
+
 import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
 
 interface ExecCall {
@@ -15,15 +23,13 @@ mock.module('child_process', () => ({ execSync: mockExecSync }));
 
 // Import after mocking
 const {
-  detectPlatform,
-  parseRepoSlug,
   gitlabProjectPath,
   gitlabApiIssue,
   gitlabApiMr,
   gitlabApiMrList,
   gitlabApiCiList,
   gitlabApiRepo,
-} = await import('../lib/glab.ts');
+} = await import('../lib/gitlab-api.ts');
 
 function resetMocks() {
   execCalls = [];
@@ -31,164 +37,9 @@ function resetMocks() {
   mockExecSync.mockClear();
 }
 
-describe('glab adapter', () => {
+describe('gitlab-api', () => {
   beforeEach(() => resetMocks());
   afterEach(() => resetMocks());
-
-  describe('detectPlatform', () => {
-    test('returns "gitlab" for gitlab.com URL', () => {
-      execMockFn = (cmd: string) => {
-        if (cmd === 'git remote get-url origin') {
-          return 'https://gitlab.com/owner/repo.git';
-        }
-        return '';
-      };
-      expect(detectPlatform()).toBe('gitlab');
-    });
-
-    test('returns "gitlab" for self-hosted GitLab URL', () => {
-      execMockFn = (cmd: string) => {
-        if (cmd === 'git remote get-url origin') {
-          return 'https://gitlab.company.com/owner/repo.git';
-        }
-        return '';
-      };
-      expect(detectPlatform()).toBe('gitlab');
-    });
-
-    test('returns "gitlab" for SSH GitLab URL', () => {
-      execMockFn = (cmd: string) => {
-        if (cmd === 'git remote get-url origin') {
-          return 'git@gitlab.com:owner/repo.git';
-        }
-        return '';
-      };
-      expect(detectPlatform()).toBe('gitlab');
-    });
-
-    test('returns "github" for github.com URL', () => {
-      execMockFn = (cmd: string) => {
-        if (cmd === 'git remote get-url origin') {
-          return 'https://github.com/owner/repo.git';
-        }
-        return '';
-      };
-      expect(detectPlatform()).toBe('github');
-    });
-
-    test('returns "github" for GitHub Enterprise URL', () => {
-      execMockFn = (cmd: string) => {
-        if (cmd === 'git remote get-url origin') {
-          return 'https://github.company.com/owner/repo.git';
-        }
-        return '';
-      };
-      expect(detectPlatform()).toBe('github');
-    });
-
-    test('falls back to "github" when git remote fails', () => {
-      execMockFn = () => {
-        throw new Error('fatal: not a git repository');
-      };
-      expect(detectPlatform()).toBe('github');
-    });
-
-    test('falls back to "github" when remote is missing', () => {
-      execMockFn = () => {
-        throw new Error('fatal: No such remote');
-      };
-      expect(detectPlatform()).toBe('github');
-    });
-  });
-
-  describe('parseRepoSlug', () => {
-    test('parses HTTPS URL with .git suffix', () => {
-      execMockFn = (cmd: string) => {
-        if (cmd === 'git remote get-url origin') {
-          return 'https://gitlab.com/owner/repo.git';
-        }
-        return '';
-      };
-      expect(parseRepoSlug()).toBe('owner/repo');
-    });
-
-    test('parses HTTPS URL without .git suffix', () => {
-      execMockFn = (cmd: string) => {
-        if (cmd === 'git remote get-url origin') {
-          return 'https://gitlab.com/owner/repo';
-        }
-        return '';
-      };
-      expect(parseRepoSlug()).toBe('owner/repo');
-    });
-
-    test('parses SSH URL with .git suffix', () => {
-      execMockFn = (cmd: string) => {
-        if (cmd === 'git remote get-url origin') {
-          return 'git@gitlab.com:owner/repo.git';
-        }
-        return '';
-      };
-      expect(parseRepoSlug()).toBe('owner/repo');
-    });
-
-    test('parses SSH URL without .git suffix', () => {
-      execMockFn = (cmd: string) => {
-        if (cmd === 'git remote get-url origin') {
-          return 'git@gitlab.com:owner/repo';
-        }
-        return '';
-      };
-      expect(parseRepoSlug()).toBe('owner/repo');
-    });
-
-    test('parses URL with hyphens in owner/repo', () => {
-      execMockFn = (cmd: string) => {
-        if (cmd === 'git remote get-url origin') {
-          return 'https://gitlab.com/my-org/my-repo.git';
-        }
-        return '';
-      };
-      expect(parseRepoSlug()).toBe('my-org/my-repo');
-    });
-
-    test('parses SSH URL with nested GitLab groups', () => {
-      execMockFn = (cmd: string) => {
-        if (cmd === 'git remote get-url origin') {
-          return 'git@gitlab.com:analogicdev/internal/tools/perkollate.git';
-        }
-        return '';
-      };
-      expect(parseRepoSlug()).toBe('analogicdev/internal/tools/perkollate');
-    });
-
-    test('parses HTTPS URL with nested GitLab groups', () => {
-      execMockFn = (cmd: string) => {
-        if (cmd === 'git remote get-url origin') {
-          return 'https://gitlab.com/org/sub/group/repo.git';
-        }
-        return '';
-      };
-      expect(parseRepoSlug()).toBe('org/sub/group/repo');
-    });
-
-    test('returns null when git remote fails', () => {
-      execMockFn = () => {
-        throw new Error('fatal: not a git repository');
-      };
-      expect(parseRepoSlug()).toBeNull();
-    });
-
-    test('returns null for malformed URL', () => {
-      execMockFn = (cmd: string) => {
-        if (cmd === 'git remote get-url origin') {
-          return 'not-a-valid-url';
-        }
-        return '';
-      };
-      expect(parseRepoSlug()).toBeNull();
-    });
-  });
 
   describe('gitlabProjectPath', () => {
     test('returns URL-encoded project path', () => {

@@ -85,7 +85,7 @@ describe('PlatformAdapter contract', () => {
   //                    `checkGitlabTrust` helpers). FINAL Phase 2 migration:
   //                    after this lands the `handlers/` tree has zero
   //                    `gitlabApi*` importers, unblocking Phase 3 Story 3.1
-  //                    (delete `lib/glab.ts`).
+  //                    (delete the pre-retrofit GitLab helper module).
   const MIGRATED_METHODS = new Set<string>([
     'prCreate',
     'prDiff',

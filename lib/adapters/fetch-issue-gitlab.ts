@@ -2,9 +2,8 @@
  * GitLab `fetchIssue` adapter implementation — the Phase-2 keystone hybrid
  * sub-call (Story 2.1, #295).
  *
- * Uses the typed `gitlabApiIssue` wrapper from `lib/glab.ts` (the supported
- * path until Phase-3 Story 3.1 deletes `lib/glab.ts` as part of the final
- * consumer migration). Normalizes GitLab's `state` vocabulary (`opened` /
+ * Uses the typed `gitlabApiIssue` wrapper from `lib/gitlab-api.ts`.
+ * Normalizes GitLab's `state` vocabulary (`opened` /
  * `closed`) into the adapter-level `IssueState` (`OPEN` / `CLOSED`), and
  * coerces GitLab's nullable `description` to a body string.
  *
@@ -12,7 +11,7 @@
  * we surface it as `number` to match the normalized `AdapterIssue` shape.
  */
 
-import { gitlabApiIssue } from '../glab.js';
+import { gitlabApiIssue } from '../gitlab-api.js';
 import type {
   AdapterIssue,
   AdapterResult,

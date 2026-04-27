@@ -7,11 +7,10 @@
  * GitLab — merge pipelines alone are not sufficient (they still allow merge
  * before CI completes).
  *
- * Uses the typed `gitlabApiRepo` wrapper from `lib/glab.ts` (the supported
- * path until Phase-3 Story 3.1 deletes `lib/glab.ts`).
+ * Uses the typed `gitlabApiRepo` wrapper from `lib/gitlab-api.ts`.
  */
 
-import { gitlabApiRepo } from '../glab.js';
+import { gitlabApiRepo } from '../gitlab-api.js';
 import type {
   AdapterResult,
   CiTrustSignal,

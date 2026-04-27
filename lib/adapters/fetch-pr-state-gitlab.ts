@@ -7,12 +7,12 @@
  *   - `prMergeWait` for "block until merged" polling
  *   - `prMerge` (both platforms) for post-merge URL/sha lookup
  *
- * Uses the typed `gitlabApiMr` wrapper from `lib/glab.ts` rather than calling
+ * Uses the typed `gitlabApiMr` wrapper from `lib/gitlab-api.ts` rather than calling
  * `execSync('glab api ...')` directly — same pattern as `prMergeGitlab` and
  * the rest of the GitLab adapter family.
  */
 
-import { gitlabApiMr } from '../glab.js';
+import { gitlabApiMr } from '../gitlab-api.js';
 import type {
   AdapterResult,
   FetchPrStateArgs,

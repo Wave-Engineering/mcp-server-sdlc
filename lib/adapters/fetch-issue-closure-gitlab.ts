@@ -10,11 +10,10 @@
  * separate feature — keeping the code path untouched avoids a cross-platform
  * regression.
  *
- * Uses the typed `gitlabApiIssue` wrapper from `lib/glab.ts` (the supported
- * path until Phase-3 Story 3.1 deletes `lib/glab.ts`).
+ * Uses the typed `gitlabApiIssue` wrapper from `lib/gitlab-api.ts`.
  */
 
-import { gitlabApiIssue } from '../glab.js';
+import { gitlabApiIssue } from '../gitlab-api.js';
 import type {
   AdapterResult,
   FetchIssueClosureArgs,

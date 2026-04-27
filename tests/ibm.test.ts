@@ -176,7 +176,7 @@ describe('ibm handler', () => {
     const branch = 'feature/5-gitlab-test';
     execRegistry['git branch --show-current'] = branch;
     execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
-    // New API-based calls via lib/glab
+    // New API-based calls via lib/gitlab-api
     execRegistry['glab api projects/org%2Frepo/issues/5'] = JSON.stringify({
       iid: 5,
       state: 'opened',

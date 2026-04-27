@@ -63,7 +63,8 @@ describe('parseRepoSlug (lib/shared/)', () => {
 
   // Helper-move regression test (per Story 1.2 AC):
   // proves the function still works when imported from its new lib/shared/
-  // location — the goal of the move was to share without coupling to lib/glab.ts.
+  // location — the goal of the move was to share without coupling to the
+  // GitLab-specific REST wrapper module.
   test('helper-move regression: import works from lib/shared/', () => {
     execMockFn = () => 'https://github.com/Wave-Engineering/mcp-server-sdlc.git';
     expect(parseRepoSlug()).toBe('Wave-Engineering/mcp-server-sdlc');

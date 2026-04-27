@@ -4,17 +4,17 @@
  *
  * Lifted from `handlers/ibm.ts`'s local `getGitlabMrUrl` helper. Returns
  * `{url, number}` (or `null` when no MR matches the source branch). Uses
- * the typed `gitlabApiMrList` wrapper from `lib/glab.ts` rather than
+ * the typed `gitlabApiMrList` wrapper from `lib/gitlab-api.ts` rather than
  * calling `execSync('glab api ...')` directly — same pattern as
  * `fetch-pr-state-gitlab.ts` and the rest of the GitLab adapter family.
  *
  * State vocabulary is the caller-facing enum
  * (`'open' | 'closed' | 'merged' | 'all'`) — `gitlabApiMrList` internally
  * translates `'open' → 'opened'` and omits the query param entirely for
- * `'all'`. See `lib/glab.ts` §214 for the mapping table.
+ * `'all'`. See `lib/gitlab-api.ts` §214 for the mapping table.
  */
 
-import { gitlabApiMrList } from '../glab.js';
+import { gitlabApiMrList } from '../gitlab-api.js';
 import type {
   AdapterResult,
   FetchPrForBranchArgs,
