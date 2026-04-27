@@ -4,6 +4,8 @@
 
 **Goal:** give you every pattern, skeleton, field mapping, and response schema you need to land a new handler in one pass — without reverse-engineering the convention from neighboring files.
 
+> **Platform branching note.** The inline `detectPlatform()` + `if (platform === 'github'|'gitlab')` pattern that earlier revisions of this guide documented has been **superseded** by the platform adapter (`lib/adapters/*`). New platform-aware work goes through `PlatformAdapter`; inline branching and direct `gh`/`glab` shell-outs are blocked in CI by [`scripts/ci/gate-greps.sh`](../../scripts/ci/gate-greps.sh). See [§2.4](#24-superseded--use-the-platform-adapter) and [`docs/adapters/README.md`](../adapters/README.md).
+
 **Read this if you are about to touch any of:**
 `pr_create`, `pr_status`, `pr_wait_ci`, `pr_merge`, `pr_diff`, `pr_comment`, `pr_files`, `pr_list`, `ci_run_status`, `ci_run_logs`, `ci_failed_jobs`, `ci_runs_for_branch`, `ci_wait_run`.
 
@@ -16,7 +18,7 @@
    - [2.1 File layout & registry codegen](#21-file-layout--registry-codegen)
    - [2.2 Canonical `HandlerDef` skeleton](#22-canonical-handlerdef-skeleton)
    - [2.3 Platform detection boilerplate](#23-platform-detection-boilerplate)
-   - [2.4 Why per-handler duplication (no `lib/platform.ts`)](#24-why-per-handler-duplication-no-libplatformts)
+   - [2.4 Superseded — use the platform adapter](#24-superseded--use-the-platform-adapter)
    - [2.5 Shell-out convention: `child_process.execSync`](#25-shell-out-convention-childprocessexecsync)
    - [2.6 Error envelope + common error codes](#26-error-envelope--common-error-codes)
    - [2.7 Test convention](#27-test-convention)
@@ -29,19 +31,19 @@
 
 ## 1. Orientation
 
-Every Origin Operations tool is a thin, platform-neutral shell around `gh` or `glab`. The same call works whether the repo lives on GitHub or GitLab; the handler detects platform at call time, shells to the right binary, parses the JSON, and reshapes it into a normalized response.
+Every Origin Operations tool is a thin, platform-neutral shell around `gh` or `glab`. The same call works whether the repo lives on GitHub or GitLab; the handler resolves a `PlatformAdapter` at entry, calls its typed methods, and reshapes the result into a normalized response.
 
 What the handler does NOT do:
 - It does not cache, rate-limit, or retry (caller handles retries).
 - It does not embed judgment (commit-message drafting, review reasoning — those stay in skills).
 - It does not touch the filesystem beyond `/tmp` for transient payloads.
-- It does not `import` from `lib/` for platform concerns. See [§2.4](#24-why-per-handler-duplication-no-libplatformts).
+- It does not branch on platform inline and does not shell out to `gh`/`glab` directly. See [§2.4](#24-superseded--use-the-platform-adapter) and [`docs/adapters/README.md`](../adapters/README.md).
 
 What the handler DOES:
 - Validates input with a zod schema.
-- Detects platform inline (~5–10 lines).
-- Shells to `gh` / `glab` via `child_process.execSync`.
-- Parses JSON, reshapes into the family's normalized response schema (see [§4](#4-normalized-response-schemas-zod)).
+- Resolves the platform adapter (`lib/adapters/*`) once at entry.
+- Calls adapter methods (the adapter encapsulates `gh` / `glab` invocation).
+- Reshapes the adapter result into the family's normalized response schema (see [§4](#4-normalized-response-schemas-zod)).
 - Wraps everything in an `{ ok: true, data }` / `{ ok: false, error }` envelope.
 
 ---
@@ -64,22 +66,22 @@ tests/
 - Do NOT touch `handlers/_registry.ts`, `index.ts`, `routing.test.ts`, `smoke.sh`, or anything in `scripts/ci/`.
 - Run `./scripts/ci/validate.sh` — codegen runs first, tsc lints everything, bun runs tests, then the smoke test asserts the new tool is exposed.
 
-> **Max parallelism:** this codegen pattern exists so multiple contributors can land handlers in parallel without touching shared files. Don't defeat it by adding imports to a shared lib. See [§2.4](#24-why-per-handler-duplication-no-libplatformts).
+> **Max parallelism:** this codegen pattern exists so multiple contributors can land handlers in parallel without touching shared files — the registry is never edited by hand. Platform concerns, by contrast, now route through the shared `PlatformAdapter` (`lib/adapters/*`); see [§2.4](#24-superseded--use-the-platform-adapter).
 
 ### 2.2 Canonical `HandlerDef` skeleton
 
-Copy-paste and rename. Every Origin Operations handler follows this exact shape.
+Every Origin Operations handler follows the shape below: validate input, resolve the platform adapter, call one or more adapter methods, reshape into the normalized response. The concrete per-platform logic lives in `lib/adapters/*-github.ts` / `lib/adapters/*-gitlab.ts` — **not** in the handler file.
 
 ```typescript
 // handlers/<tool_name>.ts
 //
 // Origin Operations family. See docs/handlers/origin-operations-guide.md
 // for the pattern reference, gh ↔ glab field mapping, and normalized
-// response schemas.
+// response schemas. Platform convention: docs/adapters/README.md.
 
-import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
+import { resolvePlatformAdapter } from '../lib/adapters/index.js';
 
 // ---- input schema ---------------------------------------------------------
 
@@ -89,59 +91,6 @@ const inputSchema = z.object({
 });
 
 type Input = z.infer<typeof inputSchema>;
-
-// ---- platform detection (inline — see §2.3 and §2.4) ----------------------
-
-function exec(cmd: string): string {
-  return execSync(cmd, { encoding: 'utf8' }).trim();
-}
-
-function detectPlatform(): 'github' | 'gitlab' {
-  try {
-    const url = exec('git remote get-url origin');
-    return url.includes('github') ? 'github' : 'gitlab';
-  } catch {
-    return 'github';
-  }
-}
-
-// ---- platform implementations --------------------------------------------
-
-function runGithub(args: Input) {
-  const raw = exec(`gh pr view ${args.number} --json number,state,url,headRefName,baseRefName`);
-  const parsed = JSON.parse(raw) as {
-    number: number;
-    state: string;
-    url: string;
-    headRefName: string;
-    baseRefName: string;
-  };
-  return {
-    number: parsed.number,
-    state: parsed.state.toLowerCase(),
-    url: parsed.url,
-    head: parsed.headRefName,
-    base: parsed.baseRefName,
-  };
-}
-
-function runGitlab(args: Input) {
-  const raw = exec(`glab mr view ${args.number} --output json`);
-  const parsed = JSON.parse(raw) as {
-    iid: number;
-    state: string;
-    web_url: string;
-    source_branch: string;
-    target_branch: string;
-  };
-  return {
-    number: parsed.iid,
-    state: parsed.state === 'opened' ? 'open' : parsed.state,
-    url: parsed.web_url,
-    head: parsed.source_branch,
-    base: parsed.target_branch,
-  };
-}
 
 // ---- handler definition ---------------------------------------------------
 
@@ -161,8 +110,8 @@ const myHandler: HandlerDef = {
     }
 
     try {
-      const platform = detectPlatform();
-      const data = platform === 'github' ? runGithub(args) : runGitlab(args);
+      const adapter = resolvePlatformAdapter();
+      const data = await adapter.viewPr({ number: args.number });
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, data }) }],
       };
@@ -178,53 +127,49 @@ const myHandler: HandlerDef = {
 export default myHandler;
 ```
 
-**Non-negotiables** (tsc and routing tests will catch you otherwise):
+> The exact adapter surface, resolver import path, and naming conventions live in [`docs/adapters/README.md`](../adapters/README.md). The skeleton above is illustrative — use the adapter method names that actually exist in `lib/adapters/*`.
+
+**Non-negotiables** (tsc, routing tests, and [`scripts/ci/gate-greps.sh`](../../scripts/ci/gate-greps.sh) will catch you otherwise):
 - Default export is the `HandlerDef` object. No named exports.
 - `inputSchema` is a zod schema attached to the `HandlerDef`.
 - `execute` is `async` and returns `{ content: [{ type: 'text', text: JSON.stringify(...) }] }`.
 - Every response — success, validation failure, runtime failure — uses the same `{ ok, data?, error? }` envelope, JSON-stringified into the single text block.
+- No inline `if (platform === 'github'|'gitlab')`, no `execSync('gh ...')` / `execSync('glab ...')`, no `Bun.spawnSync(...)` in the handler file. Use the adapter.
 
-### 2.3 Platform detection boilerplate
+### 2.3 Platform detection — resolve the adapter
 
-This is the 5–10 line stanza every handler in the family copies. Do not extract it. Do not import it. It is intentionally inline. See [§2.4](#24-why-per-handler-duplication-no-libplatformts) for why.
+> **Superseded — do not copy an inline `detectPlatform()` stanza into your handler.** Resolve the platform adapter instead.
 
 ```typescript
-import { execSync } from 'child_process';
+import { resolvePlatformAdapter } from '../lib/adapters/index.js';
 
-function exec(cmd: string): string {
-  return execSync(cmd, { encoding: 'utf8' }).trim();
-}
-
-function detectPlatform(): 'github' | 'gitlab' {
-  try {
-    const url = exec('git remote get-url origin');
-    return url.includes('github') ? 'github' : 'gitlab';
-  } catch {
-    return 'github';
-  }
-}
+const adapter = resolvePlatformAdapter();
+// adapter is a PlatformAdapter — typed methods, one impl per platform.
 ```
 
-That's it. This is a proven, copy-pasteable block — it's what `handlers/ibm.ts` does today and what every Origin Operations handler should do.
+The resolver encapsulates the `git remote get-url origin` probe and returns the correct `PlatformAdapter` implementation. Handlers MUST NOT re-implement the probe, MUST NOT branch on the returned platform string, and MUST NOT shell out to `gh`/`glab` directly. [`scripts/ci/gate-greps.sh`](../../scripts/ci/gate-greps.sh) enforces this in CI.
 
-**Notes:**
-- No `.claude-project.md` read. The epic spec mentions it as an aspirational first step, but the actual convention — see `handlers/ibm.ts` — is `git remote get-url origin` directly. Stay consistent with what exists.
-- The `catch` returning `'github'` is the default. If you're in a non-git directory (tests, usually) the handler still runs and returns the github branch; mock the command in tests to force gitlab.
-- If you need the current branch, use `exec('git branch --show-current')`. Don't import anything.
+For the full `PlatformAdapter` surface (method signatures per op, error conventions, and how to add a new method) see [`docs/adapters/README.md`](../adapters/README.md).
 
-### 2.4 Why per-handler duplication (no `lib/platform.ts`)
+### 2.4 Superseded — use the platform adapter
 
-Deliberate. Not an oversight.
+> **Superseded.** The inline platform-branching convention that used to live here is off-limits for new work. **See [`docs/adapters/README.md`](../adapters/README.md) for the current convention.**
+>
+> This section previously documented per-handler duplication of a `detectPlatform()` stanza plus inline `if (platform === 'github'|'gitlab')` branches. That shape was a Wave-1 expediency and has since been replaced by the platform adapter (`lib/adapters/*`). Historical rationale for the old approach is preserved in the commit history; the current rule is in the adapter README.
 
-- **Origin Operations is a Wave-1 parallel burst.** 13 handler stories plus this guide land simultaneously. A shared `lib/platform.ts` would turn that into a single-file bottleneck with merge conflicts and cross-story serialization.
-- **The duplicated cost is ~10 lines per handler** — worth it to keep stories independent.
-- **No `import` from `lib/` for platform concerns.** If you find yourself reaching for shared code, stop and duplicate instead. Deduplication is a later-epic concern, after the shape has stabilized across all 13 tools.
+**The current rule, in one paragraph:**
 
-If a pattern repeats verbatim across 10+ handlers and becomes a clear pain point, that's a follow-up chore — not this epic. Optimize after the curve flattens, not before.
+Every platform-aware operation adds a method to the `PlatformAdapter` interface plus two concrete implementations — one each in `lib/adapters/<op>-github.ts` and `lib/adapters/<op>-gitlab.ts`. Handlers resolve the adapter once at entry and call its methods; they **must not** branch on platform inline and **must not** shell out to `gh`/`glab` directly. Inline branching and direct subprocess invocation are enforced off-limits by [`scripts/ci/gate-greps.sh`](../../scripts/ci/gate-greps.sh), which runs in CI and fails the build if a non-allowlisted handler in `handlers/*.ts` contains `if (platform === 'github'|'gitlab')` or `execSync('gh ...'|'glab ...')` / `Bun.spawnSync(...)`. The allowlist shrinks to empty by the end of the adapter-retrofit phase; new handlers start outside the allowlist and stay outside it.
 
-### 2.5 Shell-out convention: `child_process.execSync`
+For the full pattern — `PlatformAdapter` surface, resolver entry point, test convention for the split files, and migration recipe — see [`docs/adapters/README.md`](../adapters/README.md).
 
-**Use `child_process.execSync`.** This is the codebase reality: 27 of 36 handlers shell out, and every single one uses `execSync` from `child_process`. Examples: `handlers/ibm.ts`, `handlers/work_item.ts`, `handlers/wave_init.ts`, `handlers/wave_compute.ts`, etc.
+### 2.5 Shell-out convention (adapter-only)
+
+> **Handlers do not shell out.** Shell-outs to `gh`/`glab` live exclusively in `lib/adapters/*-github.ts` and `lib/adapters/*-gitlab.ts`. If you find yourself reaching for `execSync` or `Bun.spawnSync` in a handler file, stop — add a method to `PlatformAdapter` instead. [`scripts/ci/gate-greps.sh`](../../scripts/ci/gate-greps.sh) will fail the build if you don't.
+
+The guidance below applies inside adapter implementation files.
+
+**Use `child_process.execSync` inside adapter files.** Examples: `lib/adapters/fetch-pr-github.ts`, `lib/adapters/fetch-pr-gitlab.ts`, and the rest of `lib/adapters/*.ts`.
 
 ```typescript
 import { execSync } from 'child_process';
@@ -234,13 +179,13 @@ const raw = execSync('gh pr view 42 --json number,state,url', { encoding: 'utf8'
 const parsed = JSON.parse(raw);
 ```
 
-**Why not `Bun.spawnSync`?** Earlier epic prose (including the parent epic #311 and some sub-issue specs) recommends `Bun.spawnSync` on the grounds of Bun-native APIs and easier mocking. That guidance was aspirational and never executed at scale — every handler shipped to date uses `child_process.execSync`, the test infrastructure (`mock.module('child_process', …)`) is built around it, and switching individual handlers to `Bun.spawnSync` breaks the test pattern the rest of the family depends on. **Match the convention, not the aspiration.**
+**Why not `Bun.spawnSync`?** Earlier epic prose recommended `Bun.spawnSync`. That guidance was aspirational; the adapter implementations and their test infrastructure (`mock.module('child_process', …)`) are built around `child_process.execSync`. **Match the convention, not the aspiration.**
 
-**Gotchas:**
-- `execSync` throws on non-zero exit. Always wrap in `try/catch` and convert to the `{ ok: false, error }` envelope.
+**Gotchas (adapter-side):**
+- `execSync` throws on non-zero exit. Wrap in `try/catch` at the adapter boundary; adapters translate platform errors into typed results that handlers reshape into the `{ ok: false, error }` envelope.
 - `execSync` returns a `Buffer` unless you pass `{ encoding: 'utf8' }`. Always pass the encoding.
 - Always `.trim()` the output before parsing or comparing — `gh`/`glab` often append a trailing newline.
-- For commands with user-provided strings (titles, bodies), either pass via `--body-file` with a temp file (see `handlers/work_item.ts:writeTempBody`) or be paranoid about quoting. Prefer the temp-file route for anything multi-line or containing special characters.
+- For commands with user-provided strings (titles, bodies), either pass via `--body-file` with a temp file (see `handlers/work_item.ts:writeTempBody` for the pattern) or be paranoid about quoting. Prefer the temp-file route for anything multi-line or containing special characters.
 - For `gh`/`glab` JSON flags: `gh` uses `--json field1,field2,...`; `glab` uses `--output json` (no field selection). Parse the entire GitLab response and pick what you need.
 
 ### 2.6 Error envelope + common error codes
@@ -287,7 +232,11 @@ Tests live **flat in `tests/`** — there is no `tests/handlers/` subdirectory. 
 
 > The parent epic's issue prose says `tests/handlers/<tool>.test.ts`. That is wrong. Every existing test file is flat. Match the convention that compiles, not the convention that was written down.
 
-The canonical test pattern mocks `child_process.execSync` at module load time via a call-registry. Copy-paste this skeleton from `tests/ibm.test.ts`:
+Handler tests under the adapter convention MOCK THE ADAPTER, not `child_process`. The adapter has its own tests in `lib/adapters/*.test.ts` — those mock `child_process.execSync` at the `gh`/`glab` boundary. Keeping the two layers of mocking separate is what makes the split worth paying for. See [`docs/adapters/README.md`](../adapters/README.md) for the adapter-level test pattern.
+
+The legacy `mock.module('child_process', …)` skeleton below is retained for context (it matches adapter-internal tests and handler tests that predate the retrofit). **For new handler tests, mock the adapter instead** — use `mock.module('../lib/adapters/index.js', () => ({ resolvePlatformAdapter: () => fakeAdapter }))` or an equivalent.
+
+Legacy `child_process`-mock skeleton (still used inside adapter tests):
 
 ```typescript
 // tests/my_tool.test.ts
@@ -377,10 +326,10 @@ describe('my_tool handler', () => {
 ```typescript
 // Origin Operations family. See docs/handlers/origin-operations-guide.md
 // for the pattern reference, gh ↔ glab field mapping, and normalized
-// response schemas.
+// response schemas. Platform convention: docs/adapters/README.md.
 ```
 
-Three lines. It's not a doc comment — just a comment block. It satisfies the AC's "cross-referenced from at least one existing Origin Operations handler file via comment header" requirement as the tool handlers land alongside this guide in Wave 1.
+Four lines. It's not a doc comment — just a comment block. It satisfies the AC's "cross-referenced from at least one existing Origin Operations handler file via comment header" requirement, and it points contributors at both the field-mapping guide (this document) and the adapter convention.
 
 > **Note for reviewers of this doc story:** this guide ships in the same Wave-1 parallel burst as the 13 handler files. Handler authors paste the stanza above when they create their file. This doc does not reach into any handler file directly (parallel-worktree safety rule).
 
@@ -631,9 +580,10 @@ These are the wire-level schemas every handler in the family returns as its succ
 
 ```typescript
 // docs/handlers/origin-operations-guide.md — §4
-// NOTE: these schemas are a reference. Each handler declares them inline in its
-// own file. We do NOT import from a shared schemas.ts — intentional duplication
-// for max Wave-1 parallelism. See §2.4.
+// NOTE: these schemas are a reference. Handlers and adapters reshape platform
+// responses into this shape before returning. Adapters own the platform-specific
+// parsing; handlers own the { ok, data?, error? } envelope. See §2.4 and
+// docs/adapters/README.md.
 
 import { z } from 'zod';
 
@@ -833,17 +783,17 @@ Before you open your PR on a new Origin Operations handler, walk this list:
 
 - [ ] File at `handlers/<tool>.ts`, default export is a `HandlerDef`.
 - [ ] Comment-header stanza from [§2.8](#28-cross-reference-header) at the top.
-- [ ] `import { execSync } from 'child_process'` — not `Bun.spawnSync`.
-- [ ] Platform detection inline ([§2.3](#23-platform-detection-boilerplate)) — no import from `lib/`.
+- [ ] Handler resolves the platform adapter via `resolvePlatformAdapter()` and calls its methods — no `execSync`/`Bun.spawnSync`, no inline `if (platform === ...)`. See [§2.4](#24-superseded--use-the-platform-adapter) and [`docs/adapters/README.md`](../adapters/README.md).
 - [ ] zod `inputSchema` validates every argument, including optional ones with defaults.
 - [ ] Response shape matches the relevant schema in [§4](#4-normalized-response-schemas-zod) (field names, nullability, primitive types).
-- [ ] Every `execSync` call wrapped in `try/catch` → `{ ok: false, error }` envelope.
+- [ ] Adapter errors wrapped in `try/catch` → `{ ok: false, error }` envelope (with `code` for deterministic failures).
 - [ ] Error codes for deterministic failures match the table in [§2.6](#26-error-envelope--common-error-codes).
-- [ ] GitHub AND GitLab paths both exercised, with the same normalized response shape.
-- [ ] Gotchas from the relevant §3 subsection addressed (e.g., GitLab additions/deletions computed from diff hunks; GitLab stage is nullable; SHA-vs-branch ref detection).
+- [ ] GitHub AND GitLab adapter paths both exercised (handler test mocks the adapter; adapter impls each have their own `lib/adapters/*.test.ts`).
+- [ ] Gotchas from the relevant §3 subsection addressed (e.g., GitLab additions/deletions computed from diff hunks; GitLab stage is nullable; SHA-vs-branch ref detection) — applied inside the adapter implementation.
 - [ ] Test file at `tests/<tool>.test.ts` — **flat**, not under `tests/handlers/`.
-- [ ] Test file uses `mock.module('child_process', ...)` pattern from [§2.7](#27-test-convention).
-- [ ] Test covers: GitHub happy path, GitLab happy path, validation failure, at least one error-code case.
+- [ ] Handler test mocks the adapter (see [§2.7](#27-test-convention)); adapter tests under `lib/adapters/` mock `child_process.execSync` at their own boundary.
+- [ ] Test covers: GitHub adapter path, GitLab adapter path, validation failure, at least one error-code case.
+- [ ] [`scripts/ci/gate-greps.sh`](../../scripts/ci/gate-greps.sh) passes locally (no inline platform branching or direct subprocess invocation in the handler).
 - [ ] `./scripts/ci/validate.sh` passes locally (codegen → tsc → shellcheck → bun test → smoke).
 - [ ] You did NOT modify: `handlers/_registry.ts`, `index.ts`, `routing.test.ts`, `scripts/ci/smoke.sh`, or anything in `scripts/ci/`.
 
