@@ -2,6 +2,14 @@
 
 SDLC workflow MCP server for Claude Code agents.
 
+## Adapter architecture
+
+This server is cross-platform — every tool that touches a code host (GitHub or GitLab) dispatches through a single typed **platform adapter** rather than shelling out to `gh` / `glab` inline. Handlers stay platform-agnostic: they resolve the adapter via `getAdapter()`, call one interface method, and unwrap a three-way `AdapterResult<T>` (`ok: true` for success, `ok: false` for runtime failure, `platform_unsupported: true` for structural cross-platform asymmetry). The third arm is what replaces the old silent-ignore bug class — e.g. `skip_train: true` on GitLab used to fake-succeed; it now surfaces as an explicit typed signal.
+
+The canonical exemplars of the pattern live in `lib/adapters/pr-merge-github.ts` and `lib/adapters/pr-merge-gitlab.ts` (per R-03 of the retrofit dev spec) — one pair of per-method per-platform files, colocated `.test.ts` files mocking at the `child_process` boundary, and an assembler (`lib/adapters/github.ts` / `lib/adapters/gitlab.ts`) that wires them into the `PlatformAdapter` interface declared in `lib/adapters/types.ts`.
+
+Two CI gate-greps (`scripts/ci/gate-greps.sh`) enforce the dispatch model: Gate 1 (R-09) forbids `platform === 'github' | 'gitlab'` branching inside `handlers/`, and Gate 2 (R-10) forbids direct `execSync('gh ...')` / `execSync('glab ...')` / `Bun.spawnSync` calls from handler files. A runtime contract test (`lib/adapters/types.test.ts`) additionally asserts that every method in `PLATFORM_ADAPTER_METHODS` is implemented on both adapters. See **[docs/adapters/README.md](docs/adapters/README.md)** for the full contract, file layout, dispatch model, hybrid sub-call pattern, testing conventions, and the guide for adding a new platform-aware method.
+
 ## Prerequisites
 
 - [Bun](https://bun.sh) >= 1.0
