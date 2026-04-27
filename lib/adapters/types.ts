@@ -694,6 +694,30 @@ export interface IssueClosureInfo {
   closedByMergedPR: boolean;
 }
 
+/**
+ * Hybrid sub-call (Story 2.21, #315). `findMergedPrForBranchPrefix` collapses
+ * the handler-local `queryGithubMergedPrs` / `queryGitlabMergedMrs` helpers
+ * lifted from the pre-migration `wave_reconcile_mrs` handler. Returns the
+ * first merged PR/MR whose source branch starts with `prefix`, or `null` when
+ * no merged PR/MR matches.
+ *
+ * Narrower than `prList`: the reconcile flow only needs a single URL, and
+ * `prList` does not support the prefix-match semantics (it filters on an
+ * exact `--head` branch). The scan is strictly client-side — the platform
+ * CLIs do not expose a server-side `branch-prefix` filter.
+ *
+ * `limit` caps the merged-list window scanned client-side. The pre-migration
+ * handler hardcoded 50 (bug #282) — the adapter exposes it as an arg with a
+ * default of 100 so callers can widen the window when a wave contains more
+ * than 50 merged PRs. GitLab has no native `--limit`; the adapter feeds
+ * `limit` into `per_page`.
+ */
+export interface FindMergedPrForBranchPrefixArgs {
+  prefix: string;
+  limit?: number;
+  repo?: string;
+}
+
 // ---------------------------------------------------------------------------
 // The interface
 // ---------------------------------------------------------------------------
@@ -747,6 +771,9 @@ export interface PlatformAdapter {
   fetchIssueClosure(
     args: FetchIssueClosureArgs,
   ): Promise<AdapterResult<IssueClosureInfo>>;
+  findMergedPrForBranchPrefix(
+    args: FindMergedPrForBranchPrefixArgs,
+  ): Promise<AdapterResult<{ url: string } | null>>;
   ciListRuns(
     args: CiListRunsArgs,
   ): Promise<AdapterResult<CiListRunsResponse>>;
@@ -792,6 +819,7 @@ export const PLATFORM_ADAPTER_METHODS = [
   'fetchPrState',
   'fetchPrForBranch',
   'fetchIssueClosure',
+  'findMergedPrForBranchPrefix',
   'ciListRuns',
   'resolveBranchSha',
 ] as const;

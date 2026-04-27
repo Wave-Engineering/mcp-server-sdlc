@@ -63,6 +63,12 @@ describe('PlatformAdapter contract', () => {
   // Story 2.20 (#314): wave_previous_merged hybrid migration (+
   //                    fetchIssueClosure — the narrow state/closed-by-merged-PR
   //                    pair lifted from the handler-local `queryIssueClosure`).
+  // Story 2.21 (#315): wave_reconcile_mrs hybrid migration (+
+  //                    findMergedPrForBranchPrefix — the prefix-match merged
+  //                    PR/MR lookup lifted from the handler-local
+  //                    `queryGithubMergedPrs` / `queryGitlabMergedMrs` helpers;
+  //                    also closes #282 by exposing a configurable `limit`
+  //                    instead of the pre-migration hardcoded 50).
   const MIGRATED_METHODS = new Set<string>([
     'prCreate',
     'prDiff',
@@ -77,6 +83,7 @@ describe('PlatformAdapter contract', () => {
     'fetchIssue',
     'fetchIssueClosure',
     'fetchPrForBranch',
+    'findMergedPrForBranchPrefix',
     'ciFailedJobs',
     'ciListRuns',
     'ciRunLogs',
