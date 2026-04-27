@@ -14,11 +14,10 @@
  * direct adapter users see the widened behavior too. GitLab's REST API uses
  * `per_page` — `gitlabApiMrList` forwards the caller's `limit` unchanged.
  *
- * Uses the typed `gitlabApiMrList` wrapper from `lib/glab.ts` (the supported
- * path until Phase-3 Story 3.1 deletes `lib/glab.ts`).
+ * Uses the typed `gitlabApiMrList` wrapper from `lib/gitlab-api.ts`.
  */
 
-import { gitlabApiMrList } from '../glab.js';
+import { gitlabApiMrList } from '../gitlab-api.js';
 import type {
   AdapterResult,
   FindMergedPrForBranchPrefixArgs,

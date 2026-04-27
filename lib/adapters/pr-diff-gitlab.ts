@@ -6,7 +6,7 @@
  *
  * GitLab divergences from the GitHub flow:
  * - `glab mr diff <iid>` for the unified diff (no `--json` mode needed).
- * - URL is fetched via `gitlabApiMr` (per Dev Spec §5.3 — the `lib/glab.ts`
+ * - URL is fetched via `gitlabApiMr` (per Dev Spec §5.3 — the `lib/gitlab-api.ts`
  *   wrapper stays). `glab mr view --output json` is unsupported in glab 1.36;
  *   the API path returns the canonical `web_url` directly.
  *
@@ -15,7 +15,7 @@
 
 import { execSync } from 'child_process';
 import { runArgv } from '../shared/error-norm.js';
-import { gitlabApiMr } from '../glab.js';
+import { gitlabApiMr } from '../gitlab-api.js';
 import type {
   AdapterResult,
   PrDiffArgs,
@@ -101,7 +101,7 @@ export async function prDiffGitlab(
     const rawDiff = diffResult.stdout;
 
     // Fetch the canonical MR URL via the typed `gitlabApiMr` wrapper. Per
-    // Dev Spec §5.3, `lib/glab.ts` stays as the shared GitLab REST client;
+    // Dev Spec §5.3, `lib/gitlab-api.ts` stays as the shared GitLab REST client;
     // adapters layer on top rather than reimplementing it.
     const mr = gitlabApiMr(args.number, parseSlugOpts(args.repo));
     const url = mr.web_url;

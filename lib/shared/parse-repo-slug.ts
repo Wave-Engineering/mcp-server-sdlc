@@ -5,9 +5,9 @@
  * paths. The single source of truth for slug parsing — handlers and adapters
  * import from here rather than rolling local copies.
  *
- * Moved from `lib/glab.ts` per R-17 (Story 1.2). `lib/glab.ts` re-exports
- * these functions during the transition; final deletion of the re-exports
- * happens in Phase 3.
+ * Moved here per R-17 (Story 1.2) — the single source of truth for slug
+ * parsing lives in `lib/shared/`, and GitLab-specific REST wrappers live
+ * in `lib/gitlab-api.ts`.
  */
 
 import { execSync } from 'child_process';

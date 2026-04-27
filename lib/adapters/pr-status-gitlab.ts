@@ -7,8 +7,8 @@
  * GitLab divergences from the GitHub flow:
  * - There is no `glab pr status` equivalent that returns the full state +
  *   detailed_merge_status + pipeline shape we need; we delegate to
- *   `gitlabApiMr` (from `lib/glab.ts`) which speaks the GitLab REST API
- *   directly. Per Dev Spec §5.3, `lib/glab.ts` stays as the shared GitLab
+ *   `gitlabApiMr` (from `lib/gitlab-api.ts`) which speaks the GitLab REST API
+ *   directly. Per Dev Spec §5.3, `lib/gitlab-api.ts` stays as the shared GitLab
  *   REST client during the retrofit.
  *
  * **Story 1.7 (#244) — explicit pipeline-status fallthrough.**
@@ -31,7 +31,7 @@
  */
 
 import { execSync } from 'child_process';
-import { gitlabApiMr } from '../glab.js';
+import { gitlabApiMr } from '../gitlab-api.js';
 import type {
   AdapterResult,
   PrStatusArgs,

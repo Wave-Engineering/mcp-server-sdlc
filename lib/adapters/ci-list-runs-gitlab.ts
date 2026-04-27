@@ -17,13 +17,12 @@
  * - `expected_sha` threads through as the `?sha=` query param on the GitLab
  *   REST endpoint; `gitlabApiCiList` handles the encoding.
  *
- * `gitlabApiCiList` lives in `lib/glab.ts` today and is shared across the
- * CI family. Phase 3 Story 3.1 deletes `lib/glab.ts` wholesale; this adapter
- * will in-line the `glab api` invocation at that time.
+ * `gitlabApiCiList` lives in `lib/gitlab-api.ts` and is shared across the
+ * CI family (`ci_wait_run`, `ci_run_status`, `ci_runs_for_branch`).
  */
 
 import { execSync } from 'child_process';
-import { gitlabApiCiList, type GitlabPipeline } from '../glab.js';
+import { gitlabApiCiList, type GitlabPipeline } from '../gitlab-api.js';
 import type {
   AdapterResult,
   CiListRunsArgs,

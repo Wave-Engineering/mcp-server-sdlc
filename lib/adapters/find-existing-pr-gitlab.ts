@@ -5,7 +5,7 @@
  * Lifted from `handlers/wave_finalize.ts`'s local `findExistingGitlabMr`
  * helper. Returns the first MR matching `(head, base, state)` normalized to
  * the adapter's `NormalizedPr` shape, or `null` when no match exists. Uses
- * the typed `gitlabApiMrList` wrapper from `lib/glab.ts` — same pattern as
+ * the typed `gitlabApiMrList` wrapper from `lib/gitlab-api.ts` — same pattern as
  * the sibling `fetch-pr-for-branch-gitlab.ts`.
  *
  * State vocabulary is the caller-facing enum (`'open' | 'closed' | 'merged'`)
@@ -16,7 +16,7 @@
  * normalized `'open' | ...` form should post-process.
  */
 
-import { gitlabApiMrList } from '../glab.js';
+import { gitlabApiMrList } from '../gitlab-api.js';
 import type {
   AdapterResult,
   FindExistingPrArgs,

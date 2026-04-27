@@ -5,7 +5,7 @@ import { describe, test, expect, mock, beforeEach } from 'bun:test';
 // ci_runs_for_branch now dispatches through the platform adapter (Story 2.14
 // / #308). The GitHub adapter calls subprocess via `runArgv`, which
 // shell-escapes its argv (`'gh' 'run' 'list' '--branch' 'main' …`). The
-// GitLab adapter calls `gitlabApiCiList` in `lib/glab.ts`, which passes a
+// GitLab adapter calls `gitlabApiCiList` in `lib/gitlab-api.ts`, which passes a
 // plain (unquoted) command string to `execSync`. The `unquote` shim strips
 // any shell-quoting so test match-keys can stay as plain
 // `gh run list --branch …` strings — same pattern adopted by

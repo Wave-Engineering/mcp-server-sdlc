@@ -19,7 +19,7 @@
  */
 
 import { execSync } from 'child_process';
-import { gitlabApiMr } from '../glab.js';
+import { gitlabApiMr } from '../gitlab-api.js';
 import {
   defaultDeps,
   runPollLoop,

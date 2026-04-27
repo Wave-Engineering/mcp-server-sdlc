@@ -7,10 +7,9 @@ import type { AdapterResult, CiRunStatusResponse } from './types.ts';
 // enum-normalization assertions.
 //
 // The adapter routes its subprocess through `gitlabApiCiList` in
-// `lib/glab.ts` (per Story 2.13 spec note — `lib/glab.ts` deletion is
-// deferred to Phase 3 Story 3.1). That means we mock `child_process.execSync`
-// directly AND stub `parseRepoSlug` so `gitlabApiCiList`'s `git remote` peek
-// doesn't need a real repo.
+// `lib/gitlab-api.ts`. That means we mock `child_process.execSync` directly
+// AND stub `parseRepoSlug` so `gitlabApiCiList`'s `git remote` peek doesn't
+// need a real repo.
 
 interface ThrowableError extends Error {
   stderr?: string;

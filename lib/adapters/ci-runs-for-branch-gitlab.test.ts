@@ -7,8 +7,7 @@ import type { AdapterResult, CiRunsForBranchResponse } from './types.ts';
 // and response-normalization assertions.
 //
 // The adapter routes its subprocess through `gitlabApiCiList` in
-// `lib/glab.ts` (per dev spec §5 — `lib/glab.ts` deletion is deferred to
-// Phase 3 Story 3.1). We mock `child_process.execSync` directly and register
+// `lib/gitlab-api.ts`. We mock `child_process.execSync` directly and register
 // the `git remote get-url origin` response in the same registry so
 // `parseRepoSlug`'s call lands on our mock. Avoiding `mock.module` on
 // `../shared/parse-repo-slug.js` keeps the process-global mock registry

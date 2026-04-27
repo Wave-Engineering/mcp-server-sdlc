@@ -6,8 +6,8 @@
  *
  * GitLab divergences from the GitHub flow:
  * - There is no `glab pr list` equivalent that returns the JSON shape we need;
- *   we delegate to `gitlabApiMrList` (from `lib/glab.ts`) which speaks the
- *   GitLab REST API directly. Per Dev Spec §5.3, `lib/glab.ts` stays as the
+ *   we delegate to `gitlabApiMrList` (from `lib/gitlab-api.ts`) which speaks the
+ *   GitLab REST API directly. Per Dev Spec §5.3, `lib/gitlab-api.ts` stays as the
  *   shared GitLab REST client during the retrofit.
  * - State translation (`open` → `opened`, etc.) and per_page mapping live
  *   inside `gitlabApiMrList`; this adapter is just a thin call site.
@@ -17,7 +17,7 @@
  */
 
 import { execSync } from 'child_process';
-import { gitlabApiMrList } from '../glab.js';
+import { gitlabApiMrList } from '../gitlab-api.js';
 import type {
   AdapterResult,
   NormalizedPr,

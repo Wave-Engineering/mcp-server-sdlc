@@ -1,15 +1,10 @@
 /**
- * Shared GitLab CLI adapter.
+ * Shared GitLab REST API (`glab api`) wrappers used by GitLab platform
+ * adapters in `lib/adapters/*-gitlab.ts`.
  *
- * Consolidates platform detection, repo slug parsing, and typed wrappers
- * around the `glab api` CLI for every GitLab-backed handler.
- *
- * Lives in `lib/` so the handler registry codegen ignores it (same as
- * `lib/dependency_graph.ts` and `lib/spec_parser.ts`).
- *
- * Reference implementation that this adapter generalizes:
- * - `handlers/ci_run_logs.ts:81-108` (fetchGitlab pattern)
- * - `handlers/ci_failed_jobs.ts:96` (glab api projects/.../pipelines/<id>/jobs)
+ * Strictly GitLab-specific: REST response types and typed wrappers around
+ * `glab api projects/...` endpoints. `detectPlatform`, `detectPlatformForRef`,
+ * and `parseRepoSlug` live in `lib/shared/` (Story 1.2, R-17).
  *
  * Why `glab api` and not `glab <sub> view --output json`:
  * `glab 1.36.0` has no `--output` flag on any view or list subcommand
@@ -20,16 +15,6 @@
 import { execSync } from 'child_process';
 import { parseRepoSlug } from './shared/parse-repo-slug.js';
 
-// ---------------------------------------------------------------------------
-// Re-exports — `detectPlatform`, `detectPlatformForRef`, and `parseRepoSlug`
-// moved to `lib/shared/` per Story 1.2 (R-17). These re-exports keep existing
-// importers working during the transition; they are deleted in Phase 3 once
-// every importer is updated to point at the new location directly.
-// ---------------------------------------------------------------------------
-
-export { detectPlatform, detectPlatformForRef, type Platform } from './shared/detect-platform.js';
-export { parseRepoSlug } from './shared/parse-repo-slug.js';
-
 /**
  * URL-encoded project path suitable for `glab api projects/<path>/...`
  * endpoints. GitLab REST API v4 accepts either the numeric project ID or the
@@ -37,9 +22,6 @@ export { parseRepoSlug } from './shared/parse-repo-slug.js';
  *
  * Throws if the origin URL cannot be parsed. Callers that want a graceful
  * fallback should catch the error and fall through to the GitHub code path.
- *
- * Stays in `lib/glab.ts` (not `lib/shared/`) because it's a GitLab-specific
- * helper; it folds into the GitLab adapter during Phase 2 migration.
  */
 export function gitlabProjectPath(): string {
   const slug = parseRepoSlug();

@@ -784,10 +784,10 @@ export interface FindMergedPrForBranchPrefixArgs {
  *   lives in a ruleset); on cache miss the adapter falls back to
  *   `gh api repos/<slug>/branches/main/protection` and checks the
  *   `required_status_checks.strict` flag.
- * - GitLab: `glab api projects/<path>` via `gitlabApiRepo()` (the supported
- *   path until Phase-3 Story 3.1 deletes `lib/glab.ts`); `merge_trains_enabled`
- *   is the lone pre-merge-authoritative signal — merge pipelines alone are
- *   not sufficient (they still allow merge before CI completes).
+ * - GitLab: `glab api projects/<path>` via `gitlabApiRepo()` (imported from
+ *   `lib/gitlab-api.ts`); `merge_trains_enabled` is the lone
+ *   pre-merge-authoritative signal — merge pipelines alone are not sufficient
+ *   (they still allow merge before CI completes).
  *
  * Failure modes (subprocess error, JSON parse error, unrecognized platform)
  * collapse to `level: 'unknown'` at the HANDLER level — the adapter itself
