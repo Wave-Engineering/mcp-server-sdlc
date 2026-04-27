@@ -1,4 +1,4 @@
-import { describe, test, expect } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 
 // This handler uses Bun.file() for local reads and does not shell out, so
 // tests operate against real temp files in /tmp. No module mocks are needed
@@ -84,28 +84,49 @@ function happyWith(mutator: (spec: string) => string): string {
 // -----------------------------------------------------------------------------
 
 describe('devspec_finalize handler', () => {
+  // Point CLAUDE_PROJECT_DIR at a clean empty temp dir so the depends_on check
+  // sees no phases-waves.json and passes with "not yet written" — these tests
+  // exercise the markdown-spec checks, not the JSON plan.
+  const ORIGINAL_PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR;
+  let emptyProjectDir = '';
+
+  beforeEach(async () => {
+    emptyProjectDir = `/tmp/devspec-finalize-empty-${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
+    // Create the directory by writing and removing a sentinel file.
+    await Bun.write(`${emptyProjectDir}/.sentinel`, '');
+    process.env.CLAUDE_PROJECT_DIR = emptyProjectDir;
+  });
+
+  afterEach(() => {
+    if (ORIGINAL_PROJECT_DIR === undefined) {
+      delete process.env.CLAUDE_PROJECT_DIR;
+    } else {
+      process.env.CLAUDE_PROJECT_DIR = ORIGINAL_PROJECT_DIR;
+    }
+  });
+
   test('handler exports valid HandlerDef shape', () => {
     expect(handler.name).toBe('devspec_finalize');
     expect(typeof handler.execute).toBe('function');
   });
 
-  test('happy path — all 7 checks pass on a well-formed spec', async () => {
+  test('happy path — all 8 checks pass on a well-formed spec', async () => {
     const path = await writeTempSpec(HAPPY_SPEC);
     const result = await handler.execute({ path });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
     expect(parsed.path).toBe(path);
-    expect(parsed.total).toBe(7);
-    if (parsed.passed !== 7) {
+    expect(parsed.total).toBe(8);
+    if (parsed.passed !== 8) {
       const failed = parsed.checks.filter((c: { pass: boolean }) => !c.pass);
       throw new Error(
-        `expected all 7 checks to pass, got ${parsed.passed}/7. failed: ${JSON.stringify(failed)}`,
+        `expected all 8 checks to pass, got ${parsed.passed}/8. failed: ${JSON.stringify(failed)}`,
       );
     }
-    expect(parsed.passed).toBe(7);
+    expect(parsed.passed).toBe(8);
     expect(parsed.ready_for_approval).toBe(true);
     expect(Array.isArray(parsed.checks)).toBe(true);
-    expect(parsed.checks.length).toBe(7);
+    expect(parsed.checks.length).toBe(8);
     for (const c of parsed.checks) {
       expect(typeof c.check).toBe('string');
       expect(typeof c.pass).toBe('boolean');
@@ -276,12 +297,13 @@ describe('devspec_finalize handler', () => {
     expect(parsed).toHaveProperty('path');
     expect(parsed).toHaveProperty('checks');
     expect(parsed).toHaveProperty('passed');
-    expect(parsed).toHaveProperty('total', 7);
+    expect(parsed).toHaveProperty('total', 8);
     expect(parsed).toHaveProperty('ready_for_approval');
     const names = parsed.checks.map((c: { check: string }) => c.check).sort();
     expect(names).toEqual(
       [
         'audience_facing',
+        'depends_on',
         'dod_references',
         'mv_coverage',
         'tier1_paths',

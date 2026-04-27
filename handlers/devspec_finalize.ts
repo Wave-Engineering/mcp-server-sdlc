@@ -1,9 +1,33 @@
+import { join } from 'path';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 
 const inputSchema = z.object({
   path: z.string().min(1, 'path must be a non-empty string'),
 });
+
+// -----------------------------------------------------------------------------
+// phases-waves.json resolution (for the depends_on check)
+// -----------------------------------------------------------------------------
+
+function projectDir(): string {
+  return process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  return await Bun.file(path).exists();
+}
+
+/**
+ * Resolve the project's phases-waves.json path. Mirrors the logic in
+ * wave_next_pending: prefer `.sdlc/waves/phases-waves.json` if `.sdlc/` exists;
+ * otherwise fall back to `.claude/status/phases-waves.json`.
+ */
+async function resolvePhasesWavesPath(root: string): Promise<string> {
+  const sdlc = join(root, '.sdlc');
+  if (await fileExists(sdlc)) return join(sdlc, 'waves', 'phases-waves.json');
+  return join(root, '.claude', 'status', 'phases-waves.json');
+}
 
 interface ManifestRow {
   id: string;
@@ -413,6 +437,122 @@ function checkAudienceFacing(rows: ManifestRow[]): CheckResult {
   };
 }
 
+interface PhasesWavesStory {
+  number?: number;
+  id?: string | number;
+  title?: string;
+  depends_on?: unknown;
+}
+
+interface PhasesWavesWave {
+  id?: string;
+  stories?: PhasesWavesStory[];
+  issues?: PhasesWavesStory[];
+}
+
+interface PhasesWavesPhase {
+  name?: string;
+  waves?: PhasesWavesWave[];
+}
+
+interface PhasesWavesData {
+  phases?: PhasesWavesPhase[];
+}
+
+/**
+ * Return a human-readable ref for a story (prefer numeric `number`, then `id`,
+ * then the title, then a positional fallback).
+ */
+function storyRef(story: PhasesWavesStory, waveId: string, index: number): string {
+  if (typeof story.number === 'number') return `#${story.number}`;
+  if (story.id != null && String(story.id).length > 0) return String(story.id);
+  if (typeof story.title === 'string' && story.title.length > 0) return story.title;
+  return `${waveId}[${index}]`;
+}
+
+/**
+ * Check that every Story across every Wave in `phases-waves.json` has a
+ * `depends_on` field. An empty array `[]` is valid; a missing field or `null`
+ * is invalid. Required for Category B drift detection per Dev Spec §5.4.3.
+ *
+ * If `phases-waves.json` does not exist yet (finalize runs BEFORE
+ * `/devspec upshift` writes it), the check is treated as vacuously true with
+ * informative evidence — authoring hasn't reached that stage yet.
+ */
+async function checkDependsOn(): Promise<CheckResult> {
+  let planPath: string;
+  try {
+    planPath = await resolvePhasesWavesPath(projectDir());
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      check: 'depends_on',
+      pass: false,
+      evidence: `failed to resolve phases-waves.json path: ${msg}`,
+    };
+  }
+
+  if (!(await fileExists(planPath))) {
+    return {
+      check: 'depends_on',
+      pass: true,
+      evidence: `phases-waves.json not yet written (${planPath}); check deferred until post-upshift`,
+    };
+  }
+
+  let plan: PhasesWavesData;
+  try {
+    plan = (await Bun.file(planPath).json()) as PhasesWavesData;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      check: 'depends_on',
+      pass: false,
+      evidence: `failed to parse ${planPath}: ${msg}`,
+    };
+  }
+
+  const offenders: string[] = [];
+  let totalStories = 0;
+
+  for (const phase of plan.phases ?? []) {
+    for (const wave of phase.waves ?? []) {
+      const waveId = wave.id ?? '(unnamed wave)';
+      const stories = wave.stories ?? wave.issues ?? [];
+      for (let i = 0; i < stories.length; i++) {
+        const story = stories[i];
+        totalStories += 1;
+        // Missing field OR explicit null → invalid. Empty array is valid.
+        if (!Object.prototype.hasOwnProperty.call(story, 'depends_on') || story.depends_on === null) {
+          offenders.push(storyRef(story, waveId, i));
+        }
+      }
+    }
+  }
+
+  if (totalStories === 0) {
+    return {
+      check: 'depends_on',
+      pass: true,
+      evidence: `no Stories found in ${planPath}`,
+    };
+  }
+
+  if (offenders.length === 0) {
+    return {
+      check: 'depends_on',
+      pass: true,
+      evidence: `${totalStories}/${totalStories} Stories in phases-waves.json have a depends_on field`,
+    };
+  }
+
+  return {
+    check: 'depends_on',
+    pass: false,
+    evidence: `Stories missing required 'depends_on' field (may be empty array): ${offenders.join(', ')}`,
+  };
+}
+
 function checkDodReferences(section7Md: string | null): CheckResult {
   if (section7Md === null) {
     return {
@@ -456,7 +596,7 @@ async function readSpec(path: string): Promise<string> {
 const devspecFinalizeHandler: HandlerDef = {
   name: 'devspec_finalize',
   description:
-    'Run the 7 mechanical finalization checks from Dev Spec Section 7.2 and return pass/fail + evidence per check',
+    'Run the 8 mechanical finalization checks from Dev Spec Section 7.2 and return pass/fail + evidence per check',
   inputSchema,
   async execute(rawArgs: unknown) {
     let args: z.infer<typeof inputSchema>;
@@ -494,6 +634,7 @@ const devspecFinalizeHandler: HandlerDef = {
       checkVerbsWithoutNouns(rows),
       checkAudienceFacing(rows),
       checkDodReferences(section7),
+      await checkDependsOn(),
     ];
 
     const passed = checks.filter(c => c.pass).length;
