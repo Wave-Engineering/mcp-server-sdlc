@@ -695,6 +695,30 @@ export interface IssueClosureInfo {
 }
 
 /**
+ * Hybrid sub-call (Story 2.23, #317). `findExistingPr` is the `wave_finalize`
+ * idempotency sub-call lifted from the handler-local `findExistingGithubPr`
+ * / `findExistingGitlabMr` helpers. Returns the narrow `NormalizedPr` shape
+ * (number, url, state, head, base, title) for the first PR/MR matching
+ * `(head, base, state)` — or `null` when no match exists.
+ *
+ * Narrower than `prList` (which the caller is free to use when it needs more
+ * than one entry at a time). `wave_finalize` only needs the first match;
+ * this sub-call makes that intent explicit and keeps the handler free of
+ * direct `gh pr list` / `glab api merge_requests` calls.
+ *
+ * `state` is REQUIRED here — unlike `fetchPrForBranch` which defaults to
+ * `'open'`. Callers that probe merged/closed PRs must state that intent
+ * explicitly so the semantics of `null` (no PR in the requested state) stay
+ * sharp.
+ */
+export interface FindExistingPrArgs {
+  head: string;
+  base: string;
+  state: 'open' | 'closed' | 'merged';
+  repo?: string;
+}
+
+/**
  * Hybrid sub-call (Story 2.22, #316). `createBranch` is the KAHUNA bootstrap
  * sub-call lifted from `handlers/wave_init.ts`'s local `createKahunaBranch`
  * helper. Creates a branch pointing at an explicit SHA.
@@ -804,6 +828,9 @@ export interface PlatformAdapter {
     args: ResolveBranchShaArgs,
   ): Promise<AdapterResult<ResolveBranchShaResponse | null>>;
   createBranch(args: CreateBranchArgs): Promise<AdapterResult<void>>;
+  findExistingPr(
+    args: FindExistingPrArgs,
+  ): Promise<AdapterResult<NormalizedPr | null>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -847,6 +874,7 @@ export const PLATFORM_ADAPTER_METHODS = [
   'ciListRuns',
   'resolveBranchSha',
   'createBranch',
+  'findExistingPr',
 ] as const;
 
 export type PlatformAdapterMethod = (typeof PLATFORM_ADAPTER_METHODS)[number];
