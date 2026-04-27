@@ -14,7 +14,7 @@ import {
 
 const inputSchema = z.object({
   root: z.string().optional(),
-  epic_id: z.number().int().positive(),
+  plan_id: z.number().int().positive(),
   kahuna_branch: z.string().min(1),
   target_branch: z.string().min(1).default('main'),
   body_artifacts_dir: z.string().optional(),
@@ -49,13 +49,13 @@ const waveFinalizeHandler: HandlerDef = {
       if (!existing.ok) return envelope({ ok: false, error: existing.error });
       if (existing.data !== null) {
         // body_sha is empty when artifacts are absent — legitimate post-cleanup state.
-        const { body, issueCount } = await assembleBody(resolved.path, args.epic_id, args.kahuna_branch, args.target_branch);
+        const { body, issueCount } = await assembleBody(resolved.path, args.plan_id, args.kahuna_branch, args.target_branch);
         return envelope({ ok: true, number: existing.data.number, url: existing.data.url, state: 'open', created: false, body_sha: issueCount > 0 ? hashBody(body) : '' });
       }
       if (!branchExistsOnRemote(cwd, args.kahuna_branch)) return envelope({ ok: false, error: 'kahuna_branch_not_found' });
-      const { body, issueCount } = await assembleBody(resolved.path, args.epic_id, args.kahuna_branch, args.target_branch);
+      const { body, issueCount } = await assembleBody(resolved.path, args.plan_id, args.kahuna_branch, args.target_branch);
       if (issueCount === 0) return envelope({ ok: false, error: 'no_artifacts' });
-      const title = `epic(#${args.epic_id}): ${epicSlugFromBranch(args.kahuna_branch)} — kahuna to ${args.target_branch}`;
+      const title = `plan(#${args.plan_id}): ${epicSlugFromBranch(args.kahuna_branch)} — kahuna to ${args.target_branch}`;
       const created = await adapter.prCreate({ title, body, base: args.target_branch, head: args.kahuna_branch });
       if ('platform_unsupported' in created) return envelope({ ok: false, error: `prCreate unsupported: ${created.hint}` });
       if (!created.ok) return envelope({ ok: false, error: created.error });

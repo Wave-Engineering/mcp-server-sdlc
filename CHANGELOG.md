@@ -4,6 +4,8 @@
 
 **BREAKING CHANGE (#362, Story 2.1):** `wave_init` no longer accepts `kahuna: { epic_id, slug }`. Callers must pass `kahuna: { plan_id, slug }` instead. The generated branch name is now `kahuna/<plan_id>-<slug>` and the wave-state schema (`KahunaBranchHistoryEntrySchema` in `lib/wave_state.ts`) renames `epic_id` → `plan_id` on each history entry. No legacy-compat fallback is provided — the legacy shape fails schema validation with a clear error. Part of the Plan/Phase/Epic taxonomy lock (cc-workflow#499): "Plan" is the pipeline's tracking-issue unit; "Epic" is now an optional PM label the pipeline ignores.
 
+**BREAKING CHANGE (#363, Story 2.2):** `wave_finalize` no longer accepts `epic_id`. Callers must pass `plan_id`. The assembled kahuna→target MR title changes from `epic(#N): <slug> — kahuna to <target>` to `plan(#N): <slug> — kahuna to <target>`. No legacy-compat fallback; the old parameter name fails schema validation with a clear error. Part of the Plan/Phase/Epic taxonomy lock (cc-workflow#499).
+
 ## v1.0.2 — 2026-04-07
 
 **Critical fix:** the v1.0.0 / v1.0.1 binaries shipped with a broken handler registry — `index.ts` used `import.meta.glob('./handlers/*.ts', { eager: true })`, which is a Vite-only feature unsupported by Bun. Result: the server crashed at startup whenever a client called `tools/list`. The `work_item` and `ibm` tools existed in the bundle but were never reachable.
