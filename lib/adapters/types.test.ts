@@ -54,6 +54,7 @@ describe('PlatformAdapter contract', () => {
   // Story 2.15 (#309): labelCreate
   // Story 2.16 (#310): labelList
   // Story 2.17 (#311): workItem (+ closes #281 cross-platform PR/MR asymmetry)
+  // Story 2.18 (#312): ibm (+ fetchPrForBranch — `ibm` keystone sub-call)
   const MIGRATED_METHODS = new Set<string>([
     'prCreate',
     'prDiff',
@@ -66,6 +67,7 @@ describe('PlatformAdapter contract', () => {
     'prMergeWait',
     'fetchPrState',
     'fetchIssue',
+    'fetchPrForBranch',
     'ciFailedJobs',
     'ciRunLogs',
     'ciRunStatus',

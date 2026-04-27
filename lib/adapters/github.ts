@@ -19,6 +19,7 @@ import { ciRunLogsGithub } from './ci-run-logs-github.js';
 import { ciRunStatusGithub } from './ci-run-status-github.js';
 import { ciRunsForBranchGithub } from './ci-runs-for-branch-github.js';
 import { fetchIssueGithub } from './fetch-issue-github.js';
+import { fetchPrForBranchGithub } from './fetch-pr-for-branch-github.js';
 import { fetchPrStateGithub } from './fetch-pr-state-github.js';
 import { labelCreateGithub } from './label-create-github.js';
 import { labelListGithub } from './label-list-github.js';
@@ -64,4 +65,5 @@ export const githubAdapter: PlatformAdapter = {
   specDependencies: stubMethod,
   fetchIssue: fetchIssueGithub,
   fetchPrState: fetchPrStateGithub,
+  fetchPrForBranch: fetchPrForBranchGithub,
 };

@@ -185,7 +185,7 @@ describe('ibm handler', () => {
       description: '',
       labels: [],
     });
-    execRegistry['glab api projects/org%2Frepo/merge_requests?source_branch='] = JSON.stringify([]);
+    execRegistry['glab api projects/org%2Frepo/merge_requests'] = JSON.stringify([]);
 
     const result = await ibmHandler.execute({});
     const data = parseResult(result.content);
