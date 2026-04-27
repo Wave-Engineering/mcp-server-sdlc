@@ -695,6 +695,29 @@ export interface IssueClosureInfo {
 }
 
 /**
+ * Hybrid sub-call (Story 2.22, #316). `createBranch` is the KAHUNA bootstrap
+ * sub-call lifted from `handlers/wave_init.ts`'s local `createKahunaBranch`
+ * helper. Creates a branch pointing at an explicit SHA.
+ *
+ * Two-step dispatch diverges per platform:
+ * - GitHub: `gh api repos/:owner/:repo/git/refs -X POST -f ref=refs/heads/<name>
+ *   -f sha=<sha>`. `gh api` resolves repo context from the URL path — no
+ *   `--repo` flag (that belongs to porcelain subcommands like `gh pr …`).
+ * - GitLab: `glab api projects/:id/repository/branches -X POST -f branch=<name>
+ *   -f ref=<sha>`. The `:id` slug is `%2F`-encoded from `owner/repo`.
+ *
+ * Returns `void` on success (the response body is just an echo of the ref
+ * with no fields the handler needs). On failure returns `{ok: false, …}`;
+ * there's no "already exists" idempotent path — the handler's state/remote
+ * pre-check catches that case before we get here.
+ */
+export interface CreateBranchArgs {
+  branch: string;
+  sha: string;
+  repo?: string;
+}
+
+/**
  * Hybrid sub-call (Story 2.21, #315). `findMergedPrForBranchPrefix` collapses
  * the handler-local `queryGithubMergedPrs` / `queryGitlabMergedMrs` helpers
  * lifted from the pre-migration `wave_reconcile_mrs` handler. Returns the
@@ -780,6 +803,7 @@ export interface PlatformAdapter {
   resolveBranchSha(
     args: ResolveBranchShaArgs,
   ): Promise<AdapterResult<ResolveBranchShaResponse | null>>;
+  createBranch(args: CreateBranchArgs): Promise<AdapterResult<void>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -822,6 +846,7 @@ export const PLATFORM_ADAPTER_METHODS = [
   'findMergedPrForBranchPrefix',
   'ciListRuns',
   'resolveBranchSha',
+  'createBranch',
 ] as const;
 
 export type PlatformAdapterMethod = (typeof PLATFORM_ADAPTER_METHODS)[number];

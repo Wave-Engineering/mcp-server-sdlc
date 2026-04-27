@@ -19,6 +19,7 @@ import { ciListRunsGithub } from './ci-list-runs-github.js';
 import { ciRunLogsGithub } from './ci-run-logs-github.js';
 import { ciRunStatusGithub } from './ci-run-status-github.js';
 import { ciRunsForBranchGithub } from './ci-runs-for-branch-github.js';
+import { createBranchGithub } from './create-branch-github.js';
 import { fetchIssueGithub } from './fetch-issue-github.js';
 import { fetchIssueClosureGithub } from './fetch-issue-closure-github.js';
 import { fetchPrForBranchGithub } from './fetch-pr-for-branch-github.js';
@@ -74,4 +75,5 @@ export const githubAdapter: PlatformAdapter = {
   findMergedPrForBranchPrefix: findMergedPrForBranchPrefixGithub,
   ciListRuns: ciListRunsGithub,
   resolveBranchSha: resolveBranchShaGithub,
+  createBranch: createBranchGithub,
 };
