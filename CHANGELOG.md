@@ -6,6 +6,9 @@
 
 **BREAKING CHANGE (#363, Story 2.2):** `wave_finalize` no longer accepts `epic_id`. Callers must pass `plan_id`. The assembled kahuna→target MR title changes from `epic(#N): <slug> — kahuna to <target>` to `plan(#N): <slug> — kahuna to <target>`. No legacy-compat fallback; the old parameter name fails schema validation with a clear error. Part of the Plan/Phase/Epic taxonomy lock (cc-workflow#499).
 
+### Docs
+- **wave-finalize**: correct stale `<epic_id>` → `<plan_id>` comment at `lib/wave-finalize.ts:70`. [#365, Story 2.4]
+
 ## v1.0.2 — 2026-04-07
 
 **Critical fix:** the v1.0.0 / v1.0.1 binaries shipped with a broken handler registry — `index.ts` used `import.meta.glob('./handlers/*.ts', { eager: true })`, which is a Vite-only feature unsupported by Bun. Result: the server crashed at startup whenever a client called `tools/list`. The `work_item` and `ibm` tools existed in the bundle but were never reachable.
