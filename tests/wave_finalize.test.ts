@@ -97,18 +97,18 @@ describe('wave_finalize handler', () => {
   });
 
   // --- schema validation ---
-  test('schema rejects missing epic_id', async () => {
+  test('schema rejects missing plan_id', async () => {
     const result = await handler.execute({
       kahuna_branch: 'kahuna/42-foo',
     });
     const data = parseResult(result);
     expect(data.ok).toBe(false);
-    expect(data.error as string).toContain('epic_id');
+    expect(data.error as string).toContain('plan_id');
   });
 
-  test('schema rejects non-positive epic_id', async () => {
+  test('schema rejects non-positive plan_id', async () => {
     const result = await handler.execute({
-      epic_id: 0,
+      plan_id: 0,
       kahuna_branch: 'kahuna/42-foo',
     });
     const data = parseResult(result);
@@ -116,7 +116,7 @@ describe('wave_finalize handler', () => {
   });
 
   test('schema rejects missing kahuna_branch', async () => {
-    const result = await handler.execute({ epic_id: 42 });
+    const result = await handler.execute({ plan_id: 42 });
     const data = parseResult(result);
     expect(data.ok).toBe(false);
   });
@@ -129,7 +129,7 @@ describe('wave_finalize handler', () => {
     onExec('ls-remote', 'abc123\trefs/heads/kahuna/42-foo');
 
     const result = await handler.execute({
-      epic_id: 42,
+      plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
       body_artifacts_dir: tmpRoot,
     });
@@ -148,7 +148,7 @@ describe('wave_finalize handler', () => {
     onExec('ls-remote', ''); // branch absent
 
     const result = await handler.execute({
-      epic_id: 42,
+      plan_id: 42,
       kahuna_branch: 'kahuna/42-nonexistent',
       body_artifacts_dir: tmpRoot,
     });
@@ -169,7 +169,7 @@ describe('wave_finalize handler', () => {
     onExec('ls-remote', '');
 
     const result = await handler.execute({
-      epic_id: 42,
+      plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
       body_artifacts_dir: tmpRoot,
     });
@@ -185,7 +185,7 @@ describe('wave_finalize handler', () => {
     onExec('ls-remote', 'abc123\trefs/heads/kahuna/42-foo');
 
     const result = await handler.execute({
-      epic_id: 42,
+      plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
       body_artifacts_dir: tmpRoot, // empty directory
     });
@@ -201,7 +201,7 @@ describe('wave_finalize handler', () => {
     onExec('ls-remote', 'abc123\trefs/heads/kahuna/42-foo');
 
     const result = await handler.execute({
-      epic_id: 42,
+      plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
       body_artifacts_dir: tmpRoot,
     });
@@ -221,7 +221,7 @@ describe('wave_finalize handler', () => {
     }]));
 
     const result = await handler.execute({
-      epic_id: 42,
+      plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
       body_artifacts_dir: tmpRoot,
     });
@@ -243,7 +243,7 @@ describe('wave_finalize handler', () => {
     }]));
 
     await handler.execute({
-      epic_id: 42,
+      plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
       body_artifacts_dir: tmpRoot,
     });
@@ -261,7 +261,7 @@ describe('wave_finalize handler', () => {
     mockGithubCreate(555, 'kahuna/42-wave-status-cli');
 
     const result = await handler.execute({
-      epic_id: 42,
+      plan_id: 42,
       kahuna_branch: 'kahuna/42-wave-status-cli',
       body_artifacts_dir: tmpRoot,
     });
@@ -276,20 +276,20 @@ describe('wave_finalize handler', () => {
     expect((data.body_sha as string).length).toBe(64);
   });
 
-  test('title uses epic(#N): <slug> — kahuna to <target_branch>', async () => {
+  test('title uses plan(#N): <slug> — kahuna to <target_branch>', async () => {
     await writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md', 'done');
 
     mockGithubCreate(555, 'kahuna/42-wave-status-cli');
 
     await handler.execute({
-      epic_id: 42,
+      plan_id: 42,
       kahuna_branch: 'kahuna/42-wave-status-cli',
       body_artifacts_dir: tmpRoot,
     });
 
     const createCall = execCalls.find(c => c.includes("'pr' 'create'"));
     expect(createCall).toBeDefined();
-    expect(createCall).toContain("'--title' 'epic(#42): wave-status-cli — kahuna to main'");
+    expect(createCall).toContain("'--title' 'plan(#42): wave-status-cli — kahuna to main'");
   });
 
   test('title uses explicit target_branch when provided', async () => {
@@ -298,7 +298,7 @@ describe('wave_finalize handler', () => {
     mockGithubCreate(555, 'kahuna/42-foo', 'release/v2');
 
     await handler.execute({
-      epic_id: 42,
+      plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
       target_branch: 'release/v2',
       body_artifacts_dir: tmpRoot,
@@ -373,12 +373,12 @@ describe('wave_finalize handler', () => {
     }]));
 
     const r1 = parseResult(await handler.execute({
-      epic_id: 42,
+      plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
       body_artifacts_dir: tmpRoot,
     }));
     const r2 = parseResult(await handler.execute({
-      epic_id: 42,
+      plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
       body_artifacts_dir: tmpRoot,
     }));
@@ -393,7 +393,7 @@ describe('wave_finalize handler', () => {
     onExec('ls-remote', 'abc\trefs/heads/kahuna/42-wave-status-cli');
 
     const result = await handler.execute({
-      epic_id: 42,
+      plan_id: 42,
       kahuna_branch: 'kahuna/42-wave-status-cli',
       // body_artifacts_dir omitted — defaults to /tmp/wavemachine/42-wave-status-cli
     });
@@ -421,7 +421,7 @@ describe('wave_finalize handler', () => {
     onExec('ls-remote', 'abc123\trefs/heads/kahuna/42-foo');
 
     const result = await handler.execute({
-      epic_id: 42,
+      plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
       body_artifacts_dir: tmpRoot,
     });
@@ -449,7 +449,7 @@ describe('wave_finalize handler', () => {
     }]));
 
     const result = await handler.execute({
-      epic_id: 42,
+      plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
       body_artifacts_dir: tmpRoot,
     });
@@ -464,7 +464,7 @@ describe('wave_finalize handler', () => {
   // --- path containment ---
   test('rejects body_artifacts_dir outside /tmp and project directory', async () => {
     const result = await handler.execute({
-      epic_id: 42,
+      plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
       body_artifacts_dir: '/etc',
     });
@@ -478,7 +478,7 @@ describe('wave_finalize handler', () => {
     mockGithubCreate(555, 'kahuna/42-foo');
 
     const result = await handler.execute({
-      epic_id: 42,
+      plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
       body_artifacts_dir: tmpRoot, // /tmp/wave-finalize-test-...
     });
@@ -489,7 +489,7 @@ describe('wave_finalize handler', () => {
   test('rejects body_artifacts_dir with parent-directory escape', async () => {
     // resolve('/tmp/foo/../../etc') === '/etc', which is outside allowed roots.
     const result = await handler.execute({
-      epic_id: 42,
+      plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
       body_artifacts_dir: '/tmp/foo/../../etc',
     });
@@ -506,7 +506,7 @@ describe('wave_finalize handler', () => {
     }]));
 
     const result = await handler.execute({
-      epic_id: 42,
+      plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
       body_artifacts_dir: tmpRoot,
     });
