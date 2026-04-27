@@ -55,6 +55,11 @@ describe('PlatformAdapter contract', () => {
   // Story 2.16 (#310): labelList
   // Story 2.17 (#311): workItem (+ closes #281 cross-platform PR/MR asymmetry)
   // Story 2.18 (#312): ibm (+ fetchPrForBranch — `ibm` keystone sub-call)
+  // Story 2.19 (#313): ci_wait_run hybrid migration (+ ciListRuns +
+  //                    resolveBranchSha — `ci_wait_run` keystone sub-calls).
+  //                    `ciWaitRun` itself remains stubbed — the handler routes
+  //                    through the two sub-calls inside lib/ci-wait-run-poll.ts,
+  //                    not through the top-level method.
   const MIGRATED_METHODS = new Set<string>([
     'prCreate',
     'prDiff',
@@ -69,11 +74,13 @@ describe('PlatformAdapter contract', () => {
     'fetchIssue',
     'fetchPrForBranch',
     'ciFailedJobs',
+    'ciListRuns',
     'ciRunLogs',
     'ciRunStatus',
     'ciRunsForBranch',
     'labelCreate',
     'labelList',
+    'resolveBranchSha',
     'workItem',
   ]);
 

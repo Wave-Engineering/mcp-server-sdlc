@@ -15,12 +15,14 @@
 
 import type { PlatformAdapter } from './types.js';
 import { ciFailedJobsGithub } from './ci-failed-jobs-github.js';
+import { ciListRunsGithub } from './ci-list-runs-github.js';
 import { ciRunLogsGithub } from './ci-run-logs-github.js';
 import { ciRunStatusGithub } from './ci-run-status-github.js';
 import { ciRunsForBranchGithub } from './ci-runs-for-branch-github.js';
 import { fetchIssueGithub } from './fetch-issue-github.js';
 import { fetchPrForBranchGithub } from './fetch-pr-for-branch-github.js';
 import { fetchPrStateGithub } from './fetch-pr-state-github.js';
+import { resolveBranchShaGithub } from './resolve-branch-sha-github.js';
 import { labelCreateGithub } from './label-create-github.js';
 import { labelListGithub } from './label-list-github.js';
 import { prCommentGithub } from './pr-comment-github.js';
@@ -66,4 +68,6 @@ export const githubAdapter: PlatformAdapter = {
   fetchIssue: fetchIssueGithub,
   fetchPrState: fetchPrStateGithub,
   fetchPrForBranch: fetchPrForBranchGithub,
+  ciListRuns: ciListRunsGithub,
+  resolveBranchSha: resolveBranchShaGithub,
 };

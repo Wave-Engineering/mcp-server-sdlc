@@ -10,11 +10,21 @@ type RegistryValue = string | string[];
 let execRegistry: Record<string, RegistryValue> = {};
 let execCallLog: string[] = [];
 
+// Story 2.19 (#313): post-migration, subprocess calls go through `runArgv`
+// which single-quotes every argv element. To keep the existing registry keys
+// (`'gh run list'`, `'gh api repos/...'`, etc.) matching, strip single quotes
+// from the cmd before matching. `glab api ...` calls still pass through
+// `execGlab` (raw string), so those are unaffected by the normalization.
+function normalizeCmd(cmd: string): string {
+  return cmd.replace(/'/g, '');
+}
+
 function mockExec(cmd: string): string {
   execCallLog.push(cmd);
+  const normalized = normalizeCmd(cmd);
   const keys = Object.keys(execRegistry).sort((a, b) => b.length - a.length);
   for (const key of keys) {
-    if (cmd.includes(key)) {
+    if (cmd.includes(key) || normalized.includes(key)) {
       const value = execRegistry[key];
       if (Array.isArray(value)) {
         if (value.length === 0) {
@@ -40,6 +50,16 @@ const { __setSleep, __resetSleep } = handlerMod;
 
 function parseResult(content: Array<{ type: string; text: string }>) {
   return JSON.parse(content[0].text) as Record<string, unknown>;
+}
+
+// Post-migration, gh/glab calls run through `runArgv`'s shell-escaped argv:
+// each element is single-quoted. Use this helper to filter & inspect cmd
+// strings regardless of quoting style.
+function ghRunListCalls(): string[] {
+  return execCallLog.filter((c) => normalizeCmd(c).includes('gh run list'));
+}
+function glabApiCalls(): string[] {
+  return execCallLog.filter((c) => normalizeCmd(c).includes('glab api'));
 }
 
 // Helpers to construct fake gh/glab output.
@@ -269,7 +289,7 @@ describe('ci_wait_run handler', () => {
     const data = parseResult(result.content);
     expect(data.ok).toBe(true);
     // Verify the exec call used --commit, not --branch.
-    const ghCalls = execCallLog.filter((c) => c.startsWith('gh run list'));
+    const ghCalls = ghRunListCalls();
     expect(ghCalls.length).toBeGreaterThan(0);
     expect(ghCalls[0]).toContain('--commit');
     expect(ghCalls[0]).not.toContain('--branch');
@@ -285,7 +305,7 @@ describe('ci_wait_run handler', () => {
     const result = await ciWaitRunHandler.execute({ ref: 'feature/1-demo' });
     const data = parseResult(result.content);
     expect(data.ok).toBe(true);
-    const ghCalls = execCallLog.filter((c) => c.startsWith('gh run list'));
+    const ghCalls = ghRunListCalls();
     expect(ghCalls.length).toBeGreaterThan(0);
     expect(ghCalls[0]).toContain('--branch');
     expect(ghCalls[0]).not.toContain('--commit');
@@ -487,9 +507,9 @@ describe('ci_wait_run handler', () => {
     const data = parseResult(result.content);
     expect(data.ok).toBe(true);
     expect(data.final_status).toBe('success');
-    const ghCalls = execCallLog.filter((c) => c.startsWith('gh run list'));
+    const ghCalls = ghRunListCalls();
     expect(ghCalls.length).toBeGreaterThan(0);
-    expect(ghCalls[0]).toContain('--repo "other-org/other-repo"');
+    expect(normalizeCmd(ghCalls[0])).toContain('--repo other-org/other-repo');
   });
 
   // GitHub merge-queue fallback with explicit repo → must skip parseRepoSlug()
@@ -531,11 +551,11 @@ describe('ci_wait_run handler', () => {
     // slug — the handler must have skipped `parseRepoSlug()` (which would
     // have returned `cwd-org/cwd-repo`) and used the caller's `repo` directly.
     const apiCalls = execCallLog.filter((c) =>
-      c.includes('gh api repos/other-org/other-repo/git/refs/heads/main'),
+      normalizeCmd(c).includes('gh api repos/other-org/other-repo/git/refs/heads/main'),
     );
     expect(apiCalls.length).toBe(1);
     const wrongApiCalls = execCallLog.filter((c) =>
-      c.includes('gh api repos/cwd-org/cwd-repo/git/refs/'),
+      normalizeCmd(c).includes('gh api repos/cwd-org/cwd-repo/git/refs/'),
     );
     expect(wrongApiCalls.length).toBe(0);
   });
@@ -559,7 +579,7 @@ describe('ci_wait_run handler', () => {
     expect(data.ok).toBe(true);
     expect(data.final_status).toBe('success');
 
-    const glabCalls = execCallLog.filter((c) => c.startsWith('glab api'));
+    const glabCalls = glabApiCalls();
     expect(glabCalls.length).toBeGreaterThan(0);
     // Every glab call must target the explicit encoded slug.
     for (const c of glabCalls) {
@@ -596,7 +616,7 @@ describe('ci_wait_run handler', () => {
     expect(data.reason).toBe('merge_group_validated');
     // Must not have asked the cwd for a SHA.
     const wrongApiCalls = execCallLog.filter((c) =>
-      c.includes('gh api repos/cwd-org/cwd-repo/git/refs/'),
+      normalizeCmd(c).includes('gh api repos/cwd-org/cwd-repo/git/refs/'),
     );
     expect(wrongApiCalls.length).toBe(0);
   });
@@ -645,10 +665,10 @@ describe('ci_wait_run handler', () => {
     expect(data.sha).toBe(targetSha);
     // Every gh run list call must have included --commit "<targetSha>" so we
     // never even saw runs for `previousSha`.
-    const ghCalls = execCallLog.filter((c) => c.startsWith('gh run list'));
+    const ghCalls = ghRunListCalls();
     expect(ghCalls.length).toBeGreaterThan(0);
     for (const c of ghCalls) {
-      expect(c).toContain(`--commit "${targetSha}"`);
+      expect(normalizeCmd(c)).toContain(`--commit ${targetSha}`);
     }
     // Sanity: previousSha must never have leaked into a query.
     for (const c of ghCalls) {
@@ -701,9 +721,9 @@ describe('ci_wait_run handler', () => {
     expect(data.final_status).toBe('success');
     // The gh run list call must NOT have included --commit (ref is a branch
     // name and no expected_sha was provided).
-    const ghCalls = execCallLog.filter((c) => c.startsWith('gh run list'));
+    const ghCalls = ghRunListCalls();
     expect(ghCalls.length).toBeGreaterThan(0);
-    expect(ghCalls[0]).toContain('--branch "main"');
+    expect(normalizeCmd(ghCalls[0])).toContain('--branch main');
     expect(ghCalls[0]).not.toContain('--commit');
   });
 
@@ -778,7 +798,7 @@ describe('ci_wait_run handler', () => {
     expect(data.run_id).toBe(7777);
     expect(data.sha).toBe(targetSha);
     // Verify the glab call carried the encoded sha=<targetSha> query param.
-    const glabCalls = execCallLog.filter((c) => c.startsWith('glab api'));
+    const glabCalls = glabApiCalls();
     expect(glabCalls.length).toBeGreaterThan(0);
     for (const c of glabCalls) {
       expect(c).toContain(`sha=${targetSha}`);
