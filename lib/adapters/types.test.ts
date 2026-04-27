@@ -69,6 +69,12 @@ describe('PlatformAdapter contract', () => {
   //                    `queryGithubMergedPrs` / `queryGitlabMergedMrs` helpers;
   //                    also closes #282 by exposing a configurable `limit`
   //                    instead of the pre-migration hardcoded 50).
+  // Story 2.22 (#316): wave_init hybrid migration (+ createBranch — the
+  //                    KAHUNA branch-creation sub-call lifted from the
+  //                    handler-local `createKahunaBranch` helper; also
+  //                    promotes `resolveBranchShaGitlab` from a permanent
+  //                    `platform_unsupported` stub to a real implementation
+  //                    so GitLab can resolve the base-branch HEAD SHA).
   const MIGRATED_METHODS = new Set<string>([
     'prCreate',
     'prDiff',
@@ -93,6 +99,7 @@ describe('PlatformAdapter contract', () => {
     'labelList',
     'resolveBranchSha',
     'workItem',
+    'createBranch',
   ]);
 
   test('still-stubbed methods return platform_unsupported', async () => {

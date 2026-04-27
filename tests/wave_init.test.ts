@@ -12,7 +12,18 @@ const mockExecSync = mock((cmd: string, _opts?: unknown) => {
 const mockWriteFileSync = mock((_path: unknown, _data: unknown) => undefined);
 
 mock.module('child_process', () => ({ execSync: mockExecSync }));
-mock.module('fs', () => ({ writeFileSync: mockWriteFileSync }));
+// Story 2.22 (#316): the handler now imports `getAdapter()` which transitively
+// pulls in `logger.ts` → `node:fs`. Bun aliases `'fs'` mocks to `'node:fs'`,
+// so the mock surface must include every export `logger.ts` reaches for —
+// otherwise `node:fs` resolves to a stub-less stand-in and the import fails
+// with `Export named 'mkdirSync' not found`. Real fs calls are not expected
+// during tests; these stubs are silently-noop defaults.
+mock.module('fs', () => ({
+  writeFileSync: mockWriteFileSync,
+  appendFileSync: () => undefined,
+  mkdirSync: () => undefined,
+  existsSync: () => true,
+}));
 
 const { default: handler } = await import('../handlers/wave_init.ts');
 
@@ -263,11 +274,22 @@ describe('wave_init handler', () => {
    * Tests register a map of {substring → response or thrower}; unmatched
    * commands fall through to the default `wave plan initialized` response so
    * the existing wave-status init call keeps working.
+   *
+   * Story 2.22 (#316): matches against both the raw cmd AND a single-quote
+   * stripped version so route expressions written for the legacy non-escaped
+   * handler form also match the adapter's `runArgv`-produced per-token quoted
+   * form (`'git' 'ls-remote' ...`). The handler-owned execSync calls
+   * (`wave-status ...`, `parseRepoSlug`'s `git remote get-url`) still use the
+   * legacy format; adapter calls now go through `runArgv`.
    */
+  function unquote(cmd: string): string {
+    return cmd.replace(/'([^']*)'/g, '$1');
+  }
   function setExecRoutes(routes: Array<{ match: string; respond: string | (() => string) }>): void {
     execMockFn = (cmd: string) => {
+      const flat = unquote(cmd);
       for (const r of routes) {
-        if (cmd.includes(r.match)) {
+        if (cmd.includes(r.match) || flat.includes(r.match)) {
           return typeof r.respond === 'function' ? r.respond() : r.respond;
         }
       }
@@ -280,8 +302,9 @@ describe('wave_init handler', () => {
     setExecRoutes([
       { match: 'git remote get-url', respond: 'git@github.com:Wave-Engineering/mcp-server-sdlc.git' },
       { match: 'git ls-remote --heads origin', respond: '' }, // branch absent
-      { match: "gh api repos/Wave-Engineering/mcp-server-sdlc/branches/'main'", respond: '0000000000000000000000000000000000000abc' },
-      { match: 'gh api repos/Wave-Engineering/mcp-server-sdlc/git/refs', respond: '' },
+      // Story 2.22 (#316): adapter uses `gh api repos/<slug>/git/refs/heads/<branch> --jq .object.sha`.
+      { match: 'gh api repos/Wave-Engineering/mcp-server-sdlc/git/refs/heads/main', respond: '0000000000000000000000000000000000000abc' },
+      { match: 'gh api repos/Wave-Engineering/mcp-server-sdlc/git/refs -X POST', respond: '' },
       { match: 'wave-status set-kahuna-branch', respond: '' },
     ]);
 
@@ -295,13 +318,17 @@ describe('wave_init handler', () => {
     expect(parsed.kahuna_branch).toBe('kahuna/42-wave-status-cli');
     expect(parsed.kahuna_created).toBe(true);
 
-    // The platform API was actually called to create the branch
-    const calls = mockExecSync.mock.calls.map(c => c[0] as string);
+    // The platform API was actually called to create the branch. Adapter
+    // argv is per-token shell-escaped (`'gh' 'api' 'repos/…' …`), so match
+    // against an unquoted view of each recorded call.
+    const calls = mockExecSync.mock.calls.map(c => unquote(c[0] as string));
     expect(calls.some(c => c.includes('gh api repos/Wave-Engineering/mcp-server-sdlc/git/refs -X POST'))).toBe(true);
-    expect(calls.some(c => c.includes("ref='refs/heads/kahuna/42-wave-status-cli'"))).toBe(true);
-    expect(calls.some(c => c.includes("sha='0000000000000000000000000000000000000abc'"))).toBe(true);
-    // And state was updated via the new CLI subcommand
-    expect(calls.some(c => c.includes("wave-status set-kahuna-branch 'kahuna/42-wave-status-cli'"))).toBe(true);
+    expect(calls.some(c => c.includes('ref=refs/heads/kahuna/42-wave-status-cli'))).toBe(true);
+    expect(calls.some(c => c.includes('sha=0000000000000000000000000000000000000abc'))).toBe(true);
+    // And state was updated via the new CLI subcommand (handler's own
+    // execSync, still in legacy quoted form).
+    const rawCalls = mockExecSync.mock.calls.map(c => c[0] as string);
+    expect(rawCalls.some(c => c.includes("wave-status set-kahuna-branch 'kahuna/42-wave-status-cli'"))).toBe(true);
   });
 
   test('kahuna bootstrap — idempotent reuse: state matches and branch exists on remote → no creation', async () => {
@@ -415,7 +442,10 @@ describe('wave_init handler', () => {
     setExecRoutes([
       { match: 'git remote get-url', respond: 'git@gitlab.com:my-group/my-repo.git' },
       { match: 'git ls-remote --heads origin', respond: '' },
-      { match: "glab api projects/my-group%2Fmy-repo/repository/branches/'main'", respond: JSON.stringify({ commit: { id: '3333333333333333333333333333333333333333' } }) },
+      // Story 2.22 (#316): adapter's GitLab resolveBranchSha uses
+      // `glab api projects/<encoded>/repository/branches/<branch>` with no
+      // trailing `--jq` (parses JSON client-side).
+      { match: 'glab api projects/my-group%2Fmy-repo/repository/branches/main', respond: JSON.stringify({ commit: { id: '3333333333333333333333333333333333333333' } }) },
       { match: 'glab api projects/my-group%2Fmy-repo/repository/branches -X POST', respond: '' },
       { match: 'wave-status set-kahuna-branch', respond: '' },
     ]);
@@ -428,10 +458,10 @@ describe('wave_init handler', () => {
 
     expect(parsed.ok).toBe(true);
     expect(parsed.kahuna_branch).toBe('kahuna/7-feature-x');
-    const calls = mockExecSync.mock.calls.map(c => c[0] as string);
+    const calls = mockExecSync.mock.calls.map(c => unquote(c[0] as string));
     expect(calls.some(c => c.includes('glab api projects/my-group%2Fmy-repo/repository/branches -X POST'))).toBe(true);
-    expect(calls.some(c => c.includes("branch='kahuna/7-feature-x'"))).toBe(true);
-    expect(calls.some(c => c.includes("ref='3333333333333333333333333333333333333333'"))).toBe(true);
+    expect(calls.some(c => c.includes('branch=kahuna/7-feature-x'))).toBe(true);
+    expect(calls.some(c => c.includes('ref=3333333333333333333333333333333333333333'))).toBe(true);
   });
 
   test('kahuna bootstrap — uses plan.base_branch when provided (default main)', async () => {
@@ -439,8 +469,9 @@ describe('wave_init handler', () => {
     setExecRoutes([
       { match: 'git remote get-url', respond: 'git@github.com:org/repo.git' },
       { match: 'git ls-remote --heads origin', respond: '' },
-      { match: "gh api repos/org/repo/branches/'develop'", respond: '1111111111111111111111111111111111111111' },
-      { match: 'gh api repos/org/repo/git/refs', respond: '' },
+      // Adapter URL: `/git/refs/heads/<branch> --jq .object.sha`.
+      { match: 'gh api repos/org/repo/git/refs/heads/develop', respond: '1111111111111111111111111111111111111111' },
+      { match: 'gh api repos/org/repo/git/refs -X POST', respond: '' },
       { match: 'wave-status set-kahuna-branch', respond: '' },
     ]);
 
@@ -451,9 +482,9 @@ describe('wave_init handler', () => {
     const parsed = parseResult(result);
 
     expect(parsed.ok).toBe(true);
-    const calls = mockExecSync.mock.calls.map(c => c[0] as string);
-    expect(calls.some(c => c.includes("branches/'develop'"))).toBe(true);
-    expect(calls.some(c => c.includes("sha='1111111111111111111111111111111111111111'"))).toBe(true);
+    const calls = mockExecSync.mock.calls.map(c => unquote(c[0] as string));
+    expect(calls.some(c => c.includes('git/refs/heads/develop'))).toBe(true);
+    expect(calls.some(c => c.includes('sha=1111111111111111111111111111111111111111'))).toBe(true);
   });
 
   test('kahuna bootstrap — gh api returns non-SHA garbage: defensive validator rejects', async () => {
@@ -462,7 +493,10 @@ describe('wave_init handler', () => {
       { match: 'git remote get-url', respond: 'git@github.com:org/repo.git' },
       { match: 'git ls-remote --heads origin', respond: '' },
       // Could happen if the API shape changes or --jq returns null/empty.
-      { match: "gh api repos/org/repo/branches/'main'", respond: 'null' },
+      // Adapter's SHA-validator soft-fails to null → handler surfaces as
+      // "failed to read main HEAD SHA". Either way the creation path stays
+      // un-entered — same defense as the pre-migration validator.
+      { match: 'gh api repos/org/repo/git/refs/heads/main', respond: 'null' },
     ]);
 
     const result = await handler.execute({
@@ -471,9 +505,9 @@ describe('wave_init handler', () => {
     });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);
-    expect(parsed.error as string).toContain('unexpected SHA');
+    expect(parsed.error as string).toContain('failed to read main HEAD SHA');
     // Critically, no branch creation attempted with the bogus SHA
-    const calls = mockExecSync.mock.calls.map(c => c[0] as string);
+    const calls = mockExecSync.mock.calls.map(c => unquote(c[0] as string));
     expect(calls.some(c => c.includes('git/refs -X POST'))).toBe(false);
   });
 
@@ -482,8 +516,8 @@ describe('wave_init handler', () => {
     setExecRoutes([
       { match: 'git remote get-url', respond: 'git@github.com:org/repo.git' },
       { match: 'git ls-remote --heads origin', respond: '' },
-      { match: "gh api repos/org/repo/branches/'main'", respond: '4444444444444444444444444444444444444444' },
-      { match: 'gh api repos/org/repo/git/refs', respond: '' },
+      { match: 'gh api repos/org/repo/git/refs/heads/main', respond: '4444444444444444444444444444444444444444' },
+      { match: 'gh api repos/org/repo/git/refs -X POST', respond: '' },
       { match: 'wave-status set-kahuna-branch', respond: '' },
     ]);
 
@@ -500,28 +534,26 @@ describe('wave_init handler', () => {
     }
   });
 
-  test('kahuna bootstrap — base_branch is shell-escaped in the URL path', async () => {
+  test('kahuna bootstrap — base_branch with shell metacharacters is rejected by adapter validator', async () => {
+    // Story 2.22 (#316): pre-migration shell-escaped malicious branch names
+    // into the URL path. The adapter's validator is STRONGER — it rejects
+    // branches outside `[A-Za-z0-9._\\-/]+` up front, so no subprocess is
+    // invoked with the malicious value at all.
     await setupStatusFixture({ kahuna_branch: null });
-    let capturedBaseCmd = '';
     setExecRoutes([
       { match: 'git remote get-url', respond: 'git@github.com:org/repo.git' },
       { match: 'git ls-remote --heads origin', respond: '' },
-      // Match a benign substring; the test asserts the call shape after.
-      { match: 'gh api repos/org/repo/branches/', respond: () => {
-        capturedBaseCmd = mockExecSync.mock.calls[mockExecSync.mock.calls.length - 1][0] as string;
-        return '5555555555555555555555555555555555555555';
-      } },
-      { match: 'gh api repos/org/repo/git/refs', respond: '' },
-      { match: 'wave-status set-kahuna-branch', respond: '' },
     ]);
 
-    await handler.execute({
-      plan_json: JSON.stringify({ phases: [], base_branch: "weird; rm -rf /" }),
+    const result = await handler.execute({
+      plan_json: JSON.stringify({ phases: [], base_branch: 'weird; rm -rf /' }),
       kahuna: { epic_id: 1, slug: 'foo' },
     });
-
-    // The malicious value must be wrapped in single quotes — proves shell escaping fires
-    expect(capturedBaseCmd).toContain(`'weird; rm -rf /'`);
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(false);
+    // No gh/glab api call made with the malicious branch — validator fires first.
+    const calls = mockExecSync.mock.calls.map(c => c[0] as string);
+    expect(calls.some(c => c.includes('rm -rf'))).toBe(false);
   });
 
   test('kahuna bootstrap — wave-status set-kahuna-branch failure surfaces as ok:false', async () => {
@@ -529,8 +561,8 @@ describe('wave_init handler', () => {
     setExecRoutes([
       { match: 'git remote get-url', respond: 'git@github.com:org/repo.git' },
       { match: 'git ls-remote --heads origin', respond: '' },
-      { match: "gh api repos/org/repo/branches/'main'", respond: '2222222222222222222222222222222222222222' },
-      { match: 'gh api repos/org/repo/git/refs', respond: '' },
+      { match: 'gh api repos/org/repo/git/refs/heads/main', respond: '2222222222222222222222222222222222222222' },
+      { match: 'gh api repos/org/repo/git/refs -X POST', respond: '' },
       { match: 'wave-status set-kahuna-branch', respond: () => { throw new Error('CLI exploded'); } },
     ]);
 

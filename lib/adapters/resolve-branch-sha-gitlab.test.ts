@@ -1,29 +1,163 @@
-import { describe, test, expect } from 'bun:test';
-import { resolveBranchShaGitlab } from './resolve-branch-sha-gitlab.ts';
+import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import type {
+  AdapterResult,
+  ResolveBranchShaResponse,
+} from './types.ts';
 
-// R-03 typed-asymmetry test: GitLab doesn't need branch→SHA resolution
-// (pipelines attach to branch names directly). The adapter must return a
-// `platform_unsupported` signal — not a fake-success null, not a throw.
+// Subprocess-boundary tests for the GitLab resolveBranchSha adapter (R-15).
+// Story 2.22 (#316) upgraded this adapter from the permanent `platform_unsupported`
+// stub (Story 2.19) to a real body lifted from the pre-migration `wave_init`
+// handler so KAHUNA bootstrap can resolve the base-branch HEAD SHA on GitLab.
 
-describe('resolveBranchShaGitlab — R-03 typed asymmetry', () => {
-  test('returns platform_unsupported with a descriptive hint', async () => {
-    const result = await resolveBranchShaGitlab({ branch: 'main' });
-    if (!('platform_unsupported' in result)) {
-      throw new Error(
-        `expected platform_unsupported, got ${JSON.stringify(result)}`,
-      );
+interface ThrowableError extends Error {
+  stderr?: string;
+  stdout?: string;
+  status?: number;
+}
+
+let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
+let execCalls: string[] = [];
+
+function unquote(cmd: string): string {
+  return cmd.replace(/'([^']*)'/g, '$1');
+}
+
+const mockExecSync = mock((cmd: string, _opts?: unknown) => {
+  execCalls.push(cmd);
+  const flat = unquote(cmd);
+  for (const { match, respond } of execRegistry) {
+    if (cmd.includes(match) || flat.includes(match)) {
+      return typeof respond === 'function' ? respond() : respond;
     }
-    expect(result.platform_unsupported).toBe(true);
-    // The hint must describe WHY — callers need the signal, not a generic stub.
-    expect(result.hint.toLowerCase()).toContain('gitlab');
-    expect(result.hint.toLowerCase()).toContain('branch');
+  }
+  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
+  err.stderr = `Unexpected exec: ${cmd}`;
+  err.status = 127;
+  throw err;
+});
+
+mock.module('child_process', () => ({ execSync: mockExecSync }));
+
+const { resolveBranchShaGitlab } = await import('./resolve-branch-sha-gitlab.ts');
+
+function on(match: string, respond: string | (() => string)): void {
+  execRegistry.push({ match, respond });
+}
+
+function expectOk(
+  r: AdapterResult<ResolveBranchShaResponse | null>,
+): asserts r is { ok: true; data: ResolveBranchShaResponse | null } {
+  if (!('ok' in r) || !r.ok) {
+    throw new Error(`expected ok result, got ${JSON.stringify(r)}`);
+  }
+}
+
+function findCall(needle: string): string {
+  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
+}
+
+beforeEach(() => {
+  execRegistry = [];
+  execCalls = [];
+});
+
+describe('resolveBranchShaGitlab — subprocess boundary', () => {
+  test('argv: glab api projects/<encoded>/repository/branches/<branch>', async () => {
+    const sha = 'a'.repeat(40);
+    on(
+      'glab api projects/org%2Frepo/repository/branches/main',
+      JSON.stringify({ commit: { id: sha } }),
+    );
+
+    const result = await resolveBranchShaGitlab({ branch: 'main', repo: 'org/repo' });
+    expectOk(result);
+    expect(result.data).toEqual({ sha });
+
+    const call = findCall('glab api');
+    expect(call).toContain('projects/org%2Frepo/repository/branches/main');
   });
 
-  test('platform_unsupported regardless of args', async () => {
+  test('soft-fails to null when glab errors (mirrors GitHub contract)', async () => {
+    on('glab api', () => {
+      const err = new Error('glab: 404') as ThrowableError;
+      err.stderr = 'glab: not found';
+      err.status = 1;
+      throw err;
+    });
+
+    const result = await resolveBranchShaGitlab({ branch: 'main', repo: 'org/repo' });
+    expectOk(result);
+    expect(result.data).toBeNull();
+  });
+
+  test('returns null when commit.id is missing or invalid', async () => {
+    on('glab api', JSON.stringify({ commit: { id: 'not-a-sha' } }));
+
+    const result = await resolveBranchShaGitlab({ branch: 'main', repo: 'org/repo' });
+    expectOk(result);
+    expect(result.data).toBeNull();
+  });
+
+  test('returns null when stdout is not valid JSON', async () => {
+    on('glab api', 'not-json');
+
+    const result = await resolveBranchShaGitlab({ branch: 'main', repo: 'org/repo' });
+    expectOk(result);
+    expect(result.data).toBeNull();
+  });
+
+  test('returns null when repo is omitted (no slug to target)', async () => {
+    const result = await resolveBranchShaGitlab({ branch: 'main' });
+    expectOk(result);
+    expect(result.data).toBeNull();
+    expect(execCalls.length).toBe(0);
+  });
+
+  test('rejects invalid branch characters', async () => {
+    const result = await resolveBranchShaGitlab({
+      branch: 'bad; rm -rf /',
+      repo: 'org/repo',
+    });
+    expect('ok' in result && result.ok).toBe(false);
+    expect((result as { code: string }).code).toBe('invalid_branch');
+  });
+
+  test('rejects invalid repo slug', async () => {
+    const result = await resolveBranchShaGitlab({
+      branch: 'main',
+      repo: 'no-slash',
+    });
+    expect('ok' in result && result.ok).toBe(false);
+    expect((result as { code: string }).code).toBe('invalid_repo');
+  });
+
+  test('passes branch names with slashes (feature/1-demo) unharmed', async () => {
+    const sha = 'b'.repeat(40);
+    on(
+      'glab api projects/org%2Frepo/repository/branches/feature/1-demo',
+      JSON.stringify({ commit: { id: sha } }),
+    );
+
     const result = await resolveBranchShaGitlab({
       branch: 'feature/1-demo',
       repo: 'org/repo',
     });
-    expect('platform_unsupported' in result).toBe(true);
+    expectOk(result);
+    expect(result.data).toEqual({ sha });
+  });
+
+  test('supports nested group slugs (org/sub/repo → org%2Fsub%2Frepo)', async () => {
+    const sha = 'c'.repeat(40);
+    on(
+      'glab api projects/org%2Fsub%2Frepo/repository/branches/main',
+      JSON.stringify({ commit: { id: sha } }),
+    );
+
+    const result = await resolveBranchShaGitlab({
+      branch: 'main',
+      repo: 'org/sub/repo',
+    });
+    expectOk(result);
+    expect(result.data).toEqual({ sha });
   });
 });
