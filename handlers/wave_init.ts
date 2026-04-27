@@ -19,9 +19,9 @@ const inputSchema = z.object({
   project_root: z.string().optional(),
   repo: z.string().regex(/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/, 'repo must be owner/repo format').optional(),
   kahuna: z.object({
-    epic_id: z.number().int().positive(),
+    plan_id: z.number().int().positive(),
     slug: z.string().min(1).regex(/^[a-z0-9][a-z0-9-]*$/, 'slug must be kebab-case (lowercase, digits, hyphens)'),
-  }).optional(),
+  }).strict().optional(),
 });
 
 const envelope = (payload: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(payload) }] });
@@ -31,7 +31,7 @@ const waveInitHandler: HandlerDef = {
   name: 'wave_init',
   description:
     'Initialize a wave plan from structured JSON; supports --extend mode. ' +
-    'Optional `kahuna` argument bootstraps a `kahuna/<epic_id>-<slug>` branch ' +
+    'Optional `kahuna` argument bootstraps a `kahuna/<plan_id>-<slug>` branch ' +
     'off the plan\'s base_branch (default `main`) and records it in wave state.',
   inputSchema,
   async execute(rawArgs: unknown) {

@@ -47,7 +47,7 @@ describe('WaveStateSchema — kahuna fields', () => {
       kahuna_branches: [
         {
           branch: 'kahuna/41-prior-epic',
-          epic_id: 41,
+          plan_id: 41,
           created_at: '2026-04-23T10:00:00Z',
           resolved_at: '2026-04-24T02:15:00Z',
           disposition: 'merged' as const,
@@ -55,7 +55,7 @@ describe('WaveStateSchema — kahuna fields', () => {
         },
         {
           branch: 'kahuna/40-aborted-epic',
-          epic_id: 40,
+          plan_id: 40,
           created_at: '2026-04-22T08:00:00Z',
           resolved_at: '2026-04-22T09:30:00Z',
           disposition: 'aborted' as const,
@@ -84,7 +84,7 @@ describe('WaveStateSchema — kahuna fields', () => {
       kahuna_branches: [
         {
           branch: 'kahuna/1-foo',
-          epic_id: 1,
+          plan_id: 1,
           created_at: '2026-04-23T00:00:00Z',
           resolved_at: '2026-04-24T00:00:00Z',
           disposition: 'bogus',
@@ -96,7 +96,7 @@ describe('WaveStateSchema — kahuna fields', () => {
 
   test('rejects kahuna_branches entry missing required fields', () => {
     const bad = {
-      kahuna_branches: [{ branch: 'kahuna/1-foo', epic_id: 1 }],
+      kahuna_branches: [{ branch: 'kahuna/1-foo', plan_id: 1 }],
     };
     expect(() => WaveStateSchema.parse(bad)).toThrow();
   });
@@ -106,7 +106,7 @@ describe('KahunaBranchHistoryEntrySchema', () => {
   test('merged disposition with main_merge_sha is valid', () => {
     const entry = {
       branch: 'kahuna/1-foo',
-      epic_id: 1,
+      plan_id: 1,
       created_at: '2026-04-23T00:00:00Z',
       resolved_at: '2026-04-24T00:00:00Z',
       disposition: 'merged' as const,
@@ -118,7 +118,7 @@ describe('KahunaBranchHistoryEntrySchema', () => {
   test('aborted disposition with abort_reason is valid', () => {
     const entry = {
       branch: 'kahuna/2-bar',
-      epic_id: 2,
+      plan_id: 2,
       created_at: '2026-04-23T00:00:00Z',
       resolved_at: '2026-04-24T00:00:00Z',
       disposition: 'aborted' as const,
@@ -130,7 +130,7 @@ describe('KahunaBranchHistoryEntrySchema', () => {
   test('merged disposition without main_merge_sha is accepted (permissive by design)', () => {
     const entry = {
       branch: 'kahuna/3-permissive-merged',
-      epic_id: 3,
+      plan_id: 3,
       created_at: '2026-04-23T00:00:00Z',
       resolved_at: '2026-04-24T00:00:00Z',
       disposition: 'merged' as const,
@@ -141,7 +141,7 @@ describe('KahunaBranchHistoryEntrySchema', () => {
   test('aborted disposition without abort_reason is accepted (permissive by design)', () => {
     const entry = {
       branch: 'kahuna/4-permissive-aborted',
-      epic_id: 4,
+      plan_id: 4,
       created_at: '2026-04-23T00:00:00Z',
       resolved_at: '2026-04-24T00:00:00Z',
       disposition: 'aborted' as const,
@@ -149,10 +149,10 @@ describe('KahunaBranchHistoryEntrySchema', () => {
     expect(() => KahunaBranchHistoryEntrySchema.parse(entry)).not.toThrow();
   });
 
-  test('rejects non-positive epic_id', () => {
+  test('rejects non-positive plan_id', () => {
     const entry = {
       branch: 'kahuna/0-zero',
-      epic_id: 0,
+      plan_id: 0,
       created_at: '2026-04-23T00:00:00Z',
       resolved_at: '2026-04-24T00:00:00Z',
       disposition: 'merged' as const,

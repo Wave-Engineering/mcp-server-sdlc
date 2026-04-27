@@ -310,7 +310,7 @@ describe('wave_init handler', () => {
 
     const result = await handler.execute({
       plan_json: JSON.stringify({ phases: [] }),
-      kahuna: { epic_id: 42, slug: 'wave-status-cli' },
+      kahuna: { plan_id: 42, slug: 'wave-status-cli' },
     });
     const parsed = parseResult(result);
 
@@ -340,7 +340,7 @@ describe('wave_init handler', () => {
 
     const result = await handler.execute({
       plan_json: JSON.stringify({ phases: [] }),
-      kahuna: { epic_id: 42, slug: 'wave-status-cli' },
+      kahuna: { plan_id: 42, slug: 'wave-status-cli' },
     });
     const parsed = parseResult(result);
 
@@ -363,7 +363,7 @@ describe('wave_init handler', () => {
 
     const result = await handler.execute({
       plan_json: JSON.stringify({ phases: [] }),
-      kahuna: { epic_id: 42, slug: 'orphan' },
+      kahuna: { plan_id: 42, slug: 'orphan' },
     });
     const parsed = parseResult(result);
 
@@ -380,7 +380,7 @@ describe('wave_init handler', () => {
 
     const result = await handler.execute({
       plan_json: JSON.stringify({ phases: [] }),
-      kahuna: { epic_id: 42, slug: 'new-epic' },
+      kahuna: { plan_id: 42, slug: 'new-epic' },
     });
     const parsed = parseResult(result);
 
@@ -398,7 +398,7 @@ describe('wave_init handler', () => {
 
     const result = await handler.execute({
       plan_json: JSON.stringify({ phases: [] }),
-      kahuna: { epic_id: 42, slug: 'foo' },
+      kahuna: { plan_id: 42, slug: 'foo' },
     });
     const parsed = parseResult(result);
 
@@ -410,17 +410,17 @@ describe('wave_init handler', () => {
   test('kahuna bootstrap — schema rejects uppercase or non-kebab slug', async () => {
     const result = await handler.execute({
       plan_json: JSON.stringify({ phases: [] }),
-      kahuna: { epic_id: 42, slug: 'BadSlug' },
+      kahuna: { plan_id: 42, slug: 'BadSlug' },
     });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);
     expect(parsed.error as string).toContain('kebab-case');
   });
 
-  test('kahuna bootstrap — schema rejects non-positive epic_id', async () => {
+  test('kahuna bootstrap — schema rejects non-positive plan_id', async () => {
     const result = await handler.execute({
       plan_json: JSON.stringify({ phases: [] }),
-      kahuna: { epic_id: 0, slug: 'foo' },
+      kahuna: { plan_id: 0, slug: 'foo' },
     });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);
@@ -452,7 +452,7 @@ describe('wave_init handler', () => {
 
     const result = await handler.execute({
       plan_json: JSON.stringify({ phases: [] }),
-      kahuna: { epic_id: 7, slug: 'feature-x' },
+      kahuna: { plan_id: 7, slug: 'feature-x' },
     });
     const parsed = parseResult(result);
 
@@ -477,7 +477,7 @@ describe('wave_init handler', () => {
 
     const result = await handler.execute({
       plan_json: JSON.stringify({ phases: [], base_branch: 'develop' }),
-      kahuna: { epic_id: 99, slug: 'foo' },
+      kahuna: { plan_id: 99, slug: 'foo' },
     });
     const parsed = parseResult(result);
 
@@ -501,7 +501,7 @@ describe('wave_init handler', () => {
 
     const result = await handler.execute({
       plan_json: JSON.stringify({ phases: [] }),
-      kahuna: { epic_id: 1, slug: 'foo' },
+      kahuna: { plan_id: 1, slug: 'foo' },
     });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);
@@ -523,7 +523,7 @@ describe('wave_init handler', () => {
 
     await handler.execute({
       plan_json: JSON.stringify({ phases: [] }),
-      kahuna: { epic_id: 1, slug: 'foo' },
+      kahuna: { plan_id: 1, slug: 'foo' },
     });
 
     // Regression: --repo is a porcelain flag, not valid on `gh api`.
@@ -547,7 +547,7 @@ describe('wave_init handler', () => {
 
     const result = await handler.execute({
       plan_json: JSON.stringify({ phases: [], base_branch: 'weird; rm -rf /' }),
-      kahuna: { epic_id: 1, slug: 'foo' },
+      kahuna: { plan_id: 1, slug: 'foo' },
     });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);
@@ -568,7 +568,7 @@ describe('wave_init handler', () => {
 
     const result = await handler.execute({
       plan_json: JSON.stringify({ phases: [] }),
-      kahuna: { epic_id: 1, slug: 'foo' },
+      kahuna: { plan_id: 1, slug: 'foo' },
     });
     const parsed = parseResult(result);
 
