@@ -2590,6 +2590,8 @@ Surface the adapter architecture at the project root. A one-paragraph summary + 
 **Repository:** `Wave-Engineering/mcp-server-sdlc`
 **Dependencies:** Stories 3.2, 3.3, 3.4
 
+> **Ephemeral note (2026-04-26):** `v1.8.0` was consumed pre-Phase-2 — tagged and published at the Phase 1 close commit `127d3a3` with release notes + binaries. Retagging would be destructive to the `install-remote.sh SDLC_VERSION=v1.8.0` pinning already in the wild. Per BJ authorization (Option A), **Story 3.5 ships as `v1.8.1`** instead. Both releases reference the retrofit: `v1.8.0` closed Phase 1; `v1.8.1` closes Phase 2 + Phase 3.
+
 Create the `v1.8.0` release. CI builds the binaries via existing `release.yml`. Release notes summarize the retrofit as a single coherent shipment.
 
 **Implementation Steps:**
