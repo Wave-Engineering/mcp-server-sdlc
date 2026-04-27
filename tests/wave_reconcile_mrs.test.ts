@@ -191,6 +191,56 @@ describe('wave_reconcile_mrs handler', () => {
     expect(result.error).toContain('state files not found');
   });
 
+  test('default limit is 100 (closes #282 — was hardcoded 50)', async () => {
+    const state = {
+      current_wave: 'w1',
+      waves: { w1: { status: 'in_progress', mr_urls: {} } },
+    };
+    await setupFixture(PLAN, state);
+
+    const ghCalls: string[] = [];
+    execMockFn = (cmd: string) => {
+      if (cmd.startsWith('git remote'))
+        return 'https://github.com/org/repo.git\n';
+      if (cmd.startsWith('gh pr list')) {
+        ghCalls.push(cmd);
+        return JSON.stringify([]);
+      }
+      return '';
+    };
+
+    const deps = { execFn: (cmd: string) => execMockFn(cmd) };
+    await reconcile({}, deps);
+    expect(ghCalls.length).toBeGreaterThan(0);
+    for (const c of ghCalls) {
+      expect(c).toContain('--limit 100');
+      expect(c).not.toContain('--limit 50');
+    }
+  });
+
+  test('caller limit plumbs through to adapter', async () => {
+    const state = {
+      current_wave: 'w1',
+      waves: { w1: { status: 'in_progress', mr_urls: {} } },
+    };
+    await setupFixture(PLAN, state);
+
+    const ghCalls: string[] = [];
+    execMockFn = (cmd: string) => {
+      if (cmd.startsWith('git remote'))
+        return 'https://github.com/org/repo.git\n';
+      if (cmd.startsWith('gh pr list')) {
+        ghCalls.push(cmd);
+        return JSON.stringify([]);
+      }
+      return '';
+    };
+    const deps = { execFn: (cmd: string) => execMockFn(cmd) };
+    await reconcile({ limit: 250 }, deps);
+    expect(ghCalls.length).toBeGreaterThan(0);
+    for (const c of ghCalls) expect(c).toContain('--limit 250');
+  });
+
   test('idempotent — second call produces reconciled: []', async () => {
     const state = {
       current_wave: 'w1',

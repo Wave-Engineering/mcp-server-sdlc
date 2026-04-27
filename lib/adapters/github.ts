@@ -23,6 +23,7 @@ import { fetchIssueGithub } from './fetch-issue-github.js';
 import { fetchIssueClosureGithub } from './fetch-issue-closure-github.js';
 import { fetchPrForBranchGithub } from './fetch-pr-for-branch-github.js';
 import { fetchPrStateGithub } from './fetch-pr-state-github.js';
+import { findMergedPrForBranchPrefixGithub } from './find-merged-pr-for-branch-prefix-github.js';
 import { resolveBranchShaGithub } from './resolve-branch-sha-github.js';
 import { labelCreateGithub } from './label-create-github.js';
 import { labelListGithub } from './label-list-github.js';
@@ -70,6 +71,7 @@ export const githubAdapter: PlatformAdapter = {
   fetchPrState: fetchPrStateGithub,
   fetchPrForBranch: fetchPrForBranchGithub,
   fetchIssueClosure: fetchIssueClosureGithub,
+  findMergedPrForBranchPrefix: findMergedPrForBranchPrefixGithub,
   ciListRuns: ciListRunsGithub,
   resolveBranchSha: resolveBranchShaGithub,
 };

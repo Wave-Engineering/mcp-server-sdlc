@@ -24,6 +24,7 @@ import { fetchIssueGitlab } from './fetch-issue-gitlab.js';
 import { fetchIssueClosureGitlab } from './fetch-issue-closure-gitlab.js';
 import { fetchPrForBranchGitlab } from './fetch-pr-for-branch-gitlab.js';
 import { fetchPrStateGitlab } from './fetch-pr-state-gitlab.js';
+import { findMergedPrForBranchPrefixGitlab } from './find-merged-pr-for-branch-prefix-gitlab.js';
 import { resolveBranchShaGitlab } from './resolve-branch-sha-gitlab.js';
 import { labelCreateGitlab } from './label-create-gitlab.js';
 import { labelListGitlab } from './label-list-gitlab.js';
@@ -71,6 +72,7 @@ export const gitlabAdapter: PlatformAdapter = {
   fetchPrState: fetchPrStateGitlab,
   fetchPrForBranch: fetchPrForBranchGitlab,
   fetchIssueClosure: fetchIssueClosureGitlab,
+  findMergedPrForBranchPrefix: findMergedPrForBranchPrefixGitlab,
   ciListRuns: ciListRunsGitlab,
   resolveBranchSha: resolveBranchShaGitlab,
 };
