@@ -67,7 +67,7 @@ export function resolveArtifactsDir(
   };
 }
 
-/** Extract the free-text slug suffix from `kahuna/<epic_id>-<slug>`. */
+/** Extract the free-text slug suffix from `kahuna/<plan_id>-<slug>`. */
 export function epicSlugFromBranch(kahunaBranch: string): string {
   const m = /^kahuna\/\d+-(.+)$/.exec(kahunaBranch);
   return m !== null ? m[1] : '';
