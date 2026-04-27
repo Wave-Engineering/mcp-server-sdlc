@@ -2680,24 +2680,65 @@ Final closing: execute MV-05 and MV-06 from §6.4; populate Appendix V VRTM with
 
 ### Appendix V: Verification Requirements Traceability Matrix (VRTM)
 
-*Populated at Phase 3 closing. Skeleton:*
+*Populated at Phase 3 closing (Story 3.6, Issue #325, 2026-04-26). Every R-row below is **Verified** with evidence (PRs, file paths, test counts, MV entries). No rows are deferred at the requirement level; MV-01 and the live-session portion of MV-06 are deferred verification **items**, but the requirement they partially evidence (R-11) is independently verified via the IT-04 regression suite and the binary-install portion of MV-06.*
 
-| Req ID | Requirement (short) | Source | Verification Item | Verification Method | Status |
-|--------|---------------------|--------|-------------------|---------------------|--------|
-| R-01 | PlatformAdapter interface | Story 1.2 | Story 1.2 AC: types.ts exists | unit test (types.test.ts) + inspection | Pending |
-| R-02 | AdapterResult discriminated type | Story 1.2 | Story 1.2 AC: types.ts defines | unit test | Pending |
-| R-03 | platform_unsupported variant returned for asymmetric features | Story 1.10 (canary), Phase 2 hybrid stories | Story 1.10 AC + MV-02 | unit test + manual | Pending |
-| R-04 | Contract test enforces both impls | Story 1.2 | IT-03 | contract unit test | Pending |
-| R-05 | Flat-hyphenated file layout | Stories 1.3-1.11, Phase 2 | Per-story AC | inspection + grep | Pending |
-| R-06 | route.ts dispatches | Story 1.2 | Story 1.2 AC | unit test | Pending |
-| R-07 | Hybrid handler pattern | Phase 2 (hybrid stories) | Per-story AC, post-survey | inspection | Pending |
-| R-08 | Public index.ts | Story 1.2 | Story 1.2 AC | inspection | Pending |
-| R-09 | Zero inline platform branching | Stories 1.3-1.11, Phase 2, Phase 3 | IT-05, MV-03, MV-05 | gate-grep + manual | Pending |
-| R-10 | Zero direct subprocess in handlers | Stories 1.3-1.11, Phase 2, Phase 3 | IT-05, MV-04, MV-05 | gate-grep + manual | Pending |
-| R-11 | Backward-compatible behavior | All migration stories | IT-04, ~~MV-01~~ (deferred — see §6.4), MV-06 | regression suite + manual | Pending |
-| R-12 | Subprocess style normalized | Story 1.1 | Story 1.1 AC | inspection + test | Pending |
-| R-13 | docs/adapters/README.md exists | Phase 3 Story 3.3 | Story 3.3 AC | inspection | Pending |
-| R-14 | §2.4 rewritten with supersession | Phase 3 Story 3.2 | Story 3.2 AC | inspection | Pending |
-| R-15 | Colocated adapter test files | All migration stories | Per-story AC | inspection + suite run | Pending |
-| R-16 | lib/glab.ts deleted | Phase 3 Story 3.1 | Story 3.1 AC | inspection (file absent) | Pending |
-| R-17 | Helpers moved to lib/shared/ | Story 1.2 + Phase 3 cleanup | Story 1.2 AC + final inspection | inspection | Pending |
+| Req ID | Requirement (short) | Source | Verification Item | Verification Method | Status | Evidence |
+|--------|---------------------|--------|-------------------|---------------------|--------|----------|
+| R-01 | PlatformAdapter interface | Story 1.2 | Story 1.2 AC: types.ts exists | unit test (types.test.ts) + inspection | **Verified** | `lib/adapters/types.ts` present; interface covers 26 methods (matches `MIGRATED_METHODS`). Foundational landing in Phase 1 Story 1.2; extended across every migration. |
+| R-02 | AdapterResult discriminated type | Story 1.2 | Story 1.2 AC: types.ts defines | unit test | **Verified** | `lib/adapters/types.ts` exports `AdapterResult<T>` with three variants (`{ok:true,data}`, `{ok:false,error,code}`, `{platform_unsupported:true,hint}`); exercised by every adapter-pair test. |
+| R-03 | platform_unsupported variant returned for asymmetric features | Story 1.10 (canary), Phase 2 hybrid stories | Story 1.10 AC + MV-02 | unit test + manual | **Verified** | Exemplars: `pr-merge-gitlab.ts` (skip_train asymmetry, PR #275), `work-item-gitlab.ts` (PR #341), `resolve-branch-sha-gitlab.ts` (PR #337). Variant guarded by `lib/adapters/types.test.ts`. |
+| R-04 | Contract test enforces both impls | Story 1.2 | IT-03 | contract unit test | **Verified** | `lib/adapters/types.test.ts` iterates `MIGRATED_METHODS` (26 entries) and asserts both GitHub and GitLab impls exist; fails loudly on missing pair. Green at v1.8.1. |
+| R-05 | Flat-hyphenated file layout | Stories 1.3-1.11, Phase 2 | Per-story AC | inspection + grep | **Verified** | `ls lib/adapters/` shows flat `<method>-<platform>.ts` pattern across all 26 method-pairs; no nested directories. |
+| R-06 | route.ts dispatches | Story 1.2 | Story 1.2 AC | unit test | **Verified** | `lib/adapters/route.ts` exports `getAdapter()`; invoked from every migrated handler. Public surface re-exported via `lib/adapters/index.ts`. |
+| R-07 | Hybrid handler pattern | Phase 2 (hybrid stories) | Per-story AC, post-survey | inspection | **Verified** | Pattern used in `pr_merge_wait` (PR #278, `fetchPrState` sub-call), `pr_wait_ci` (PR #274, polling loop retained), `pr_merge` (PR #275, typed skip_train asymmetry), `ci_wait_run` (PR #273). Handlers stayed at or under their LoC targets post-extraction. |
+| R-08 | Public index.ts | Story 1.2 | Story 1.2 AC | inspection | **Verified** | `lib/adapters/index.ts` present and exports the public surface (`getAdapter`, types). Handlers import from `lib/adapters`, not individual files. |
+| R-09 | Zero inline platform branching | Stories 1.3-1.11, Phase 2, Phase 3 | IT-05, MV-03, MV-05 | gate-grep + manual | **Verified** | MV-05 (2026-04-26): `grep -rnE "platform === '(github\|gitlab)'" handlers/` returns 0 matches. CI enforcement in `scripts/ci/gate-greps.sh` (R-09 tagged). |
+| R-10 | Zero direct subprocess in handlers | Stories 1.3-1.11, Phase 2, Phase 3 | IT-05, MV-04, MV-05 | gate-grep + manual | **Verified** | MV-05 (2026-04-26): `grep -rnE "execSync\(['\"\`](gh\|glab) \|Bun\.spawnSync" handlers/` returns 0 matches. CI enforcement in `scripts/ci/gate-greps.sh` (R-10 tagged). |
+| R-11 | Backward-compatible behavior | All migration stories | IT-04, ~~MV-01~~ (deferred — see §6.4), MV-06 | regression suite + manual | **Verified** | IT-04 regression suite green at every merge (2010+ tests at v1.8.1 release). MV-06 partial (2026-04-26): v1.8.1 binary downloads cleanly and starts with 73 handlers registered (matches tool-name preservation). Live-session `/precheck` + `/scpmmr` portion deferred to BJ manual verification per the MV-01 precedent. |
+| R-12 | Subprocess style normalized | Story 1.1 | Story 1.1 AC | inspection + test | **Verified** | Phase 1 Story 1.1 landed ahead of adapter migrations; `pr_create` normalized from `Bun.spawnSync` to `execSync`. MV-05 confirms `Bun.spawnSync` fully absent from `handlers/`. |
+| R-13 | docs/adapters/README.md exists | Phase 3 Story 3.3 | Story 3.3 AC | inspection | **Verified** | `docs/adapters/README.md` present; documents contract, file layout, `platform_unsupported` discriminator, and "where to add a new method" workflow. |
+| R-14 | §2.4 rewritten with supersession | Phase 3 Story 3.2 | Story 3.2 AC | inspection | **Verified** | `docs/handlers/origin-operations-guide.md` includes a top-of-file platform-branching callout plus §2.4 "Superseded — use the platform adapter" with dated supersession note; cross-references `docs/adapters/README.md`. |
+| R-15 | Colocated adapter test files | All migration stories | Per-story AC | inspection + suite run | **Verified** | Every `lib/adapters/<method>-<platform>.ts` has a colocated `<method>-<platform>.test.ts` with argv-strict subprocess-boundary mocks (per `lesson_origin_ops_pitfalls.md`). Full adapter suite green. |
+| R-16 | lib/glab.ts deleted | Phase 3 Story 3.1 | Story 3.1 AC | inspection (file absent) | **Verified** | `ls lib/glab.ts` returns "No such file or directory". Deletion landed in Phase 3 Story 3.1 once every CLI invocation had migrated into a `<method>-gitlab.ts` file. |
+| R-17 | Helpers moved to lib/shared/ | Story 1.2 + Phase 3 cleanup | Story 1.2 AC + final inspection | inspection | **Verified** | `lib/shared/` contains `detect-platform.{ts,test.ts}`, `parse-repo-slug.{ts,test.ts}`, `error-norm.ts`, `git-remote.ts`, `shell-escape.ts`, `truncate-logs.{ts,test.ts}`. Originals removed alongside the R-16 `lib/glab.ts` deletion. |
+
+### Appendix W: Closing Verification (Story 3.6, 2026-04-26)
+
+Executed by the Phase 3 closing flight (Issue #325, branch `chore/325-phase-3-closing`).
+
+#### MV-05 — gate-grep verification
+
+```
+$ grep -rnE "platform === '(github|gitlab)'" handlers/
+(zero matches; exit 1)
+
+$ grep -rnE "execSync\(['\"\`](gh|glab) |Bun\.spawnSync" handlers/
+(zero matches; exit 1)
+```
+
+Both greps return zero matches. **MV-05 passes.** CI enforcement is in `scripts/ci/gate-greps.sh`.
+
+#### MV-06 — binary install + smoke (partial)
+
+Install (adapted — to a temp directory, to avoid clobbering the running MCP session that holds the binary open):
+
+```
+curl -fsSL "https://github.com/Wave-Engineering/mcp-server-sdlc/releases/download/v1.8.1/sdlc-server-linux-x64" -o "$TMPDIR/sdlc-server"
+chmod +x "$TMPDIR/sdlc-server"
+"$TMPDIR/sdlc-server" --version
+```
+
+Output:
+
+```
+{"ts":"2026-04-27T02:42:55.446Z","server":"sdlc","level":"info","event":"startup","version":"1.0.0","config":{"handler_count":73}}
+exit code: 0
+```
+
+Binary loads cleanly; 73 handlers registered (matches the R-11 tool-count preservation contract). The internal version constant still reports `1.0.0` (cosmetic — the release tag `v1.8.1` is authoritative).
+
+**Deferred portion** (BJ manual verification, following the MV-01 precedent): restart Claude Code with v1.8.1 mounted at `~/.local/bin/sdlc-server`, run `/precheck` on a PR candidate, run `/scpmmr` on a small PR. A Flight sub-agent cannot restart the enclosing Claude Code session.
+
+#### VRTM completion
+
+Appendix V: 17/17 rows marked **Verified** with evidence (PRs, file paths, test counts, MV entries). The platform-adapter retrofit is complete modulo the deferred live-session smoke portion of MV-06, which is tracked in the closing commit and in the issue #325 close-out.
