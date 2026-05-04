@@ -551,4 +551,65 @@ describe('gitlab-api', () => {
       expect(glabCall?.opts?.maxBuffer).toBe(1024 * 1024 * 64);
     });
   });
+
+  // execGlab is internal but its failure-mode behavior is observable through
+  // every wrapper. Test through gitlabApiIssue as the canonical entrypoint
+  // (#382 — empty-stdout produced cryptic "JSON Parse error: Unexpected EOF",
+  // and non-zero exit lost stderr context).
+  describe('execGlab (failure-mode behavior, observed via gitlabApiIssue)', () => {
+    test('non-zero exit with stderr is surfaced as named error including command and stderr', () => {
+      execMockFn = (cmd: string) => {
+        if (cmd === 'git remote get-url origin') {
+          return 'https://gitlab.com/owner/repo.git';
+        }
+        if (cmd.includes('glab api')) {
+          const err = new Error('Command failed') as Error & {
+            stderr?: string;
+            status?: number;
+          };
+          err.stderr = '401 Unauthorized';
+          err.status = 1;
+          throw err;
+        }
+        return '';
+      };
+
+      expect(() => gitlabApiIssue(7)).toThrow(/glab failed \(exit 1\):.*glab api projects/);
+      expect(() => gitlabApiIssue(7)).toThrow(/stderr: 401 Unauthorized/);
+    });
+
+    test('zero-exit empty-stdout throws a named error instead of letting JSON.parse explode', () => {
+      execMockFn = (cmd: string) => {
+        if (cmd === 'git remote get-url origin') {
+          return 'https://gitlab.com/owner/repo.git';
+        }
+        if (cmd.includes('glab api')) {
+          return ''; // the polyjuice failure mode
+        }
+        return '';
+      };
+
+      // Must NOT get "JSON Parse error: Unexpected EOF" — must get the
+      // descriptive "empty output" message that names the failing command.
+      expect(() => gitlabApiIssue(7)).toThrow(/glab returned empty output for: glab api projects/);
+      expect(() => gitlabApiIssue(7)).not.toThrow(/Unexpected EOF/);
+    });
+
+    test('plain Error (no stderr, no status) re-throws unchanged for backward compat', () => {
+      execMockFn = (cmd: string) => {
+        if (cmd === 'git remote get-url origin') {
+          return 'https://gitlab.com/owner/repo.git';
+        }
+        if (cmd.includes('glab api')) {
+          throw new Error('404: Issue not found');
+        }
+        return '';
+      };
+
+      // The existing "propagates errors from glab CLI" test case shape:
+      // a bare Error with neither stderr nor status should pass through
+      // untouched so existing callers expecting verbatim messages still work.
+      expect(() => gitlabApiIssue(999)).toThrow('404: Issue not found');
+    });
+  });
 });
