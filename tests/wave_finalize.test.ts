@@ -409,15 +409,22 @@ describe('wave_finalize handler', () => {
     await writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md',
       'Done.\nMR: https://gitlab.com/o/r/-/merge_requests/100\n');
 
+    // Post-create lookup match — registered FIRST so prCreateGitlab's
+    // `glab api projects/.../merge_requests?source_branch=...` call doesn't
+    // fall through to the broader pre-create idempotency mock below (#383).
+    onExec(
+      'source_branch=kahuna%2F42-foo&state=opened',
+      JSON.stringify([{
+        iid: 555,
+        web_url: 'https://gitlab.com/o/r/-/merge_requests/555',
+        state: 'opened',
+        source_branch: 'kahuna/42-foo',
+        target_branch: 'main',
+      }]),
+    );
+    // Pre-create idempotency check (findExistingPr) — empty array.
     onExec('glab api projects/o%2Fr/merge_requests', JSON.stringify([]));
     onExec("'mr' 'create'", '');
-    onExec("'mr' 'view'", JSON.stringify({
-      iid: 555,
-      web_url: 'https://gitlab.com/o/r/-/merge_requests/555',
-      state: 'opened',
-      source_branch: 'kahuna/42-foo',
-      target_branch: 'main',
-    }));
     onExec('ls-remote', 'abc123\trefs/heads/kahuna/42-foo');
 
     const result = await handler.execute({

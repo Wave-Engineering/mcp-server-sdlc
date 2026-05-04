@@ -16,6 +16,7 @@
 ### Fixes
 - **ibm**: `BRANCH_PATTERN` now accepts the canonical singular `doc/` and the missing `bug/` and `kahuna/` prefixes. Previous pattern required plural `docs/` and rejected `kahuna/<N>-<slug>` integration branches outright, forcing rename-then-platform-rejection loops. [#381]
 - **gitlab-api**: `execGlab` now surfaces non-zero exit codes with stderr context, and rejects zero-exit-empty-stdout with a named error instead of letting `JSON.parse('')` produce a cryptic `Unexpected EOF`. [#382]
+- **pr_create (gitlab)**: replaced the post-create lookup `glab mr view <head> -F json` with `glab api projects/.../merge_requests?source_branch=<head>&state=opened`. The `-F` flag does not exist on glab 1.36.0, so every successful create was being followed by a failed lookup, the handler reported `glab_mr_view_failed`, and callers fell back into a 409 conflict. The mock-based test suite missed it (same family as `lesson_pr_wait_ci_broken.md`). [#383]
 
 ## v1.0.2 — 2026-04-07
 

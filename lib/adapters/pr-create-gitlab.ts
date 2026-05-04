@@ -7,7 +7,10 @@
  * GitLab divergences from the GitHub flow:
  * - `glab mr create --yes` (non-interactive); `gh pr create` doesn't need it.
  * - `glab mr create` doesn't print a parseable URL on stdout — re-fetch via
- *   `glab mr view <head> -F json` to get the canonical IID + web_url.
+ *   `glab api projects/<encoded>/merge_requests?source_branch=<head>` to get the
+ *   canonical IID + web_url. (Was `glab mr view <head> -F json` until #383, but
+ *   `-F` is not a valid flag on any glab subcommand in 1.36.0; see the
+ *   `lib/gitlab-api.ts` header comment for the broader rationale.)
  * - `glab api projects/<encoded>` for default branch (no `--jq` flag — parse
  *   the JSON in-process).
  */
@@ -52,35 +55,51 @@ function getDefaultBranch(repo: string | undefined, cwd: string): string {
   return parsed.default_branch;
 }
 
-function lookupGitlabMr(
+function projectSlugEncoded(repo: string | undefined): string {
+  return repo !== undefined ? repo.replace(/\//g, '%2F') : ':id';
+}
+
+function fetchOpenedMrBySourceBranch(
   head: string,
   cwd: string,
   repo: string | undefined,
 ): PrCreateResponse | null {
-  const cmd = ['glab', 'mr', 'view', head, '-F', 'json'];
-  if (repo !== undefined) cmd.push('-R', repo);
-  const view = runArgv(cmd, cwd);
-  if (view.exitCode !== 0) return null;
+  // `glab api projects/.../merge_requests?source_branch=<head>&state=opened`
+  // — the only reliable way to get JSON for an MR by source branch in
+  // glab 1.36.0. Replaces the broken `glab mr view <head> -F json` (#383).
+  const project = projectSlugEncoded(repo);
+  const query = `source_branch=${encodeURIComponent(head)}&state=opened`;
+  const result = runArgv(['glab', 'api', `projects/${project}/merge_requests?${query}`], cwd);
+  if (result.exitCode !== 0 || result.stdout.trim().length === 0) return null;
   try {
-    const parsed = JSON.parse(view.stdout) as {
+    const arr = JSON.parse(result.stdout) as Array<{
       iid: number;
       web_url: string;
       state: string;
       source_branch: string;
       target_branch: string;
-    };
-    if (parsed.state !== 'opened') return null;
+    }>;
+    const mr = arr.find((m) => m.state === 'opened');
+    if (!mr) return null;
     return {
-      number: parsed.iid,
-      url: parsed.web_url,
+      number: mr.iid,
+      url: mr.web_url,
       state: 'open',
-      head: parsed.source_branch,
-      base: parsed.target_branch,
+      head: mr.source_branch,
+      base: mr.target_branch,
       created: false,
     };
   } catch {
     return null;
   }
+}
+
+function lookupGitlabMr(
+  head: string,
+  cwd: string,
+  repo: string | undefined,
+): PrCreateResponse | null {
+  return fetchOpenedMrBySourceBranch(head, cwd, repo);
 }
 
 export async function prCreateGitlab(
@@ -125,34 +144,22 @@ export async function prCreateGitlab(
       };
     }
 
-    // `glab mr create` doesn't print a URL on stdout. Re-fetch by source-branch.
-    const viewCmd = ['glab', 'mr', 'view', head, '-F', 'json'];
-    if (args.repo !== undefined) viewCmd.push('-R', args.repo);
-    const view = runArgv(viewCmd, cwd);
-    if (view.exitCode !== 0) {
+    // `glab mr create` doesn't print a URL on stdout. Re-fetch by
+    // source-branch via `glab api` (#383: the previous `glab mr view -F json`
+    // form rejected with "unknown shorthand flag" on every call, causing
+    // pr_create to report failure even when the MR was created — callers then
+    // fell back to a second `glab mr create` and hit a 409 conflict).
+    const found = fetchOpenedMrBySourceBranch(head, cwd, args.repo);
+    if (found === null) {
       return {
         ok: false,
         code: 'glab_mr_view_failed',
-        error: `glab mr view failed: ${view.stderr.trim() || view.stdout.trim()}`,
+        error: `glab api lookup of MR for source_branch=${head} returned no opened MR after create; the create may have succeeded — verify in the GitLab UI`,
       };
     }
-    const parsed = JSON.parse(view.stdout) as {
-      iid: number;
-      web_url: string;
-      state: string;
-      source_branch: string;
-      target_branch: string;
-    };
     return {
       ok: true,
-      data: {
-        number: parsed.iid,
-        url: parsed.web_url,
-        state: 'open',
-        head: parsed.source_branch,
-        base: parsed.target_branch,
-        created: true,
-      },
+      data: { ...found, created: true },
     };
   } catch (err) {
     return {
