@@ -11,7 +11,7 @@ import type { HandlerDef } from '../types.js';
 import { getAdapter } from '../lib/adapters/index.js';
 
 const inputSchema = z.object({ branch: z.string().optional() });
-const BRANCH_PATTERN = /^(feature|fix|chore|docs)\/(\d+)-/;
+const BRANCH_PATTERN = /^(feature|fix|chore|doc|bug|kahuna)\/(\d+)-/;
 const PROTECTED_PATTERN = /^(main|release\/.+)$/;
 
 function envelope(payload: unknown) {
