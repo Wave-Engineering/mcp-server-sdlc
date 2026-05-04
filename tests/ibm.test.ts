@@ -148,9 +148,9 @@ describe('ibm handler', () => {
     expect(data.pr_url).toBe('https://github.com/org/repo/pull/7');
   });
 
-  // --- all 4 type prefixes ---
-  test('branch_types — feature, fix, chore, docs prefixes all parse correctly', async () => {
-    const types = ['feature', 'fix', 'chore', 'docs'];
+  // --- all 6 type prefixes ---
+  test('branch_types — feature, fix, chore, doc, bug, kahuna prefixes all parse correctly', async () => {
+    const types = ['feature', 'fix', 'chore', 'doc', 'bug', 'kahuna'];
 
     for (const type of types) {
       const branch = `${type}/10-something`;
@@ -169,6 +169,17 @@ describe('ibm handler', () => {
       expect(data.ok).toBe(true);
       expect(data.issue_number).toBe(10);
     }
+  });
+
+  // --- plural docs/ rejected (regression guard for #381) ---
+  test('plural_docs_rejected — docs/ (plural) returns no-issue error', async () => {
+    execRegistry['git branch --show-current'] = 'docs/42-some-doc';
+
+    const result = await ibmHandler.execute({});
+    const data = parseResult(result.content);
+
+    expect(data.ok).toBe(false);
+    expect(data.error).toBe('Branch has no linked issue. Name format: type/NNN-description');
   });
 
   // --- gitlab platform ---
