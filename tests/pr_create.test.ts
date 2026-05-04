@@ -121,15 +121,16 @@ describe('pr_create handler', () => {
     onExec('git remote get-url origin', 'git@gitlab.com:org/repo.git\n');
     onExec('git branch --show-current', 'feature/76-pr-create\n');
     onExec('glab mr create', 'https://gitlab.com/org/repo/-/merge_requests/7\n');
+    // Post-create lookup uses `glab api projects/.../merge_requests?source_branch=...` (#383)
     onExec(
-      'glab mr view',
-      JSON.stringify({
+      'merge_requests?source_branch',
+      JSON.stringify([{
         iid: 7,
         web_url: 'https://gitlab.com/org/repo/-/merge_requests/7',
         state: 'opened',
         source_branch: 'feature/76-pr-create',
         target_branch: 'main',
-      }),
+      }]),
     );
 
     const result = await handler.execute({
@@ -181,14 +182,14 @@ describe('pr_create handler', () => {
     onExec('git branch --show-current', 'feature/76-pr-create\n');
     onExec('glab mr create', 'https://gitlab.com/org/repo/-/merge_requests/8\n');
     onExec(
-      'glab mr view',
-      JSON.stringify({
+      'merge_requests?source_branch',
+      JSON.stringify([{
         iid: 8,
         web_url: 'https://gitlab.com/org/repo/-/merge_requests/8',
         state: 'opened',
         source_branch: 'feature/76-pr-create',
         target_branch: 'main',
-      }),
+      }]),
     );
 
     const result = await handler.execute({
@@ -255,6 +256,18 @@ describe('pr_create handler', () => {
   test('default_branch_resolution_gitlab — base omitted resolves via glab api', async () => {
     onExec('git remote get-url origin', 'git@gitlab.com:org/repo.git\n');
     onExec('git branch --show-current', 'feature/159-default-branch\n');
+    // Post-create lookup match — registered FIRST so the merge_requests
+    // listing call doesn't fall through to the broader `glab api` mock below.
+    onExec(
+      'merge_requests?source_branch',
+      JSON.stringify([{
+        iid: 7,
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/7',
+        state: 'opened',
+        source_branch: 'feature/159-default-branch',
+        target_branch: 'develop',
+      }]),
+    );
     // glab api projects/:id — no --jq flag (handler parses JSON in-process).
     onExec('glab api', () => {
       // Faithful to the real glab binary — fail loudly if the handler ever
@@ -274,16 +287,6 @@ describe('pr_create handler', () => {
       });
     });
     onExec('glab mr create', 'https://gitlab.com/org/repo/-/merge_requests/7\n');
-    onExec(
-      'glab mr view',
-      JSON.stringify({
-        iid: 7,
-        web_url: 'https://gitlab.com/org/repo/-/merge_requests/7',
-        state: 'opened',
-        source_branch: 'feature/159-default-branch',
-        target_branch: 'develop',
-      }),
-    );
 
     const result = await handler.execute({
       title: 'feat: default branch',
@@ -431,14 +434,14 @@ describe('pr_create handler', () => {
       'Another open merge request already exists for this source branch',
     );
     onExec(
-      'glab mr view',
-      JSON.stringify({
+      'merge_requests?source_branch',
+      JSON.stringify([{
         iid: 7,
         web_url: 'https://gitlab.com/org/repo/-/merge_requests/7',
         state: 'opened',
         source_branch: 'feature/76-pr-create',
         target_branch: 'main',
-      }),
+      }]),
     );
 
     const result = await handler.execute({
@@ -491,7 +494,7 @@ describe('pr_create handler', () => {
     expect(viewCall).toContain('Wave-Engineering/mcp-server-sdlc');
   });
 
-  test('route_with_repo_gitlab — appends -R to glab mr create/view when repo provided', async () => {
+  test('route_with_repo_gitlab — appends -R to glab mr create when repo provided; lookup uses URL-encoded slug', async () => {
     onExec('git remote get-url origin', 'git@gitlab.com:cwd-org/cwd-repo.git\n');
     onExec('git branch --show-current', 'feature/196-cross-repo\n');
     onExec(
@@ -499,14 +502,14 @@ describe('pr_create handler', () => {
       'https://gitlab.com/target-org/target-repo/-/merge_requests/8\n',
     );
     onExec(
-      'glab mr view',
-      JSON.stringify({
+      'merge_requests?source_branch',
+      JSON.stringify([{
         iid: 8,
         web_url: 'https://gitlab.com/target-org/target-repo/-/merge_requests/8',
         state: 'opened',
         source_branch: 'feature/196-cross-repo',
         target_branch: 'main',
-      }),
+      }]),
     );
 
     const result = await handler.execute({
@@ -522,9 +525,11 @@ describe('pr_create handler', () => {
     const createCall = findCall('glab mr create');
     expect(createCall).toContain('-R');
     expect(createCall).toContain('target-org/target-repo');
-    const viewCall = findCall('glab mr view');
-    expect(viewCall).toContain('-R');
-    expect(viewCall).toContain('target-org/target-repo');
+    // Post-create lookup uses `glab api projects/<encoded>/merge_requests?...`
+    // — URL-encoded slug in the path, no `-R` flag (#383).
+    const apiCall = findCall('merge_requests?source_branch');
+    expect(apiCall).toContain('target-org%2Ftarget-repo');
+    expect(apiCall).toContain('source_branch=feature%2F196-cross-repo');
   });
 
   test('regression_without_repo — gh pr create argv has no --repo flag', async () => {
@@ -576,14 +581,14 @@ describe('pr_create handler', () => {
     onExec('git branch --show-current', 'feature/76-pr-create\n');
     onExec('glab mr create', 'https://gitlab.com/org/repo/-/merge_requests/11\n');
     onExec(
-      'glab mr view',
-      JSON.stringify({
+      'merge_requests?source_branch',
+      JSON.stringify([{
         iid: 11,
         web_url: 'https://gitlab.com/org/repo/-/merge_requests/11',
         state: 'opened',
         source_branch: 'feature/76-pr-create',
         target_branch: 'main',
-      }),
+      }]),
     );
 
     const result = await handler.execute({
