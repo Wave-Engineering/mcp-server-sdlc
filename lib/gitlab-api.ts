@@ -125,7 +125,31 @@ export interface GitlabRepo {
 // ---------------------------------------------------------------------------
 
 function execGlab(cmd: string): string {
-  return execSync(cmd, { encoding: 'utf8', maxBuffer: 1024 * 1024 * 64 });
+  let raw: string;
+  try {
+    raw = execSync(cmd, {
+      encoding: 'utf8',
+      maxBuffer: 1024 * 1024 * 64,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+  } catch (err) {
+    if (err instanceof Error && ('stderr' in err || 'status' in err)) {
+      const stderr = String((err as { stderr?: unknown }).stderr ?? '').trim();
+      const status = (err as { status?: number }).status;
+      const exit = typeof status === 'number' ? status : '?';
+      throw new Error(
+        `glab failed (exit ${exit}): ${cmd}${stderr ? `\nstderr: ${stderr}` : ''}`,
+      );
+    }
+    throw err;
+  }
+  // Zero-exit-empty-stdout: caller would do JSON.parse('') → SyntaxError
+  // ("Unexpected EOF") that loses the underlying cause. Surface a named
+  // error instead so the failure is diagnosable. (#382)
+  if (raw.trim() === '') {
+    throw new Error(`glab returned empty output for: ${cmd}`);
+  }
+  return raw;
 }
 
 /**

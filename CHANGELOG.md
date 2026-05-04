@@ -15,6 +15,7 @@
 
 ### Fixes
 - **ibm**: `BRANCH_PATTERN` now accepts the canonical singular `doc/` and the missing `bug/` and `kahuna/` prefixes. Previous pattern required plural `docs/` and rejected `kahuna/<N>-<slug>` integration branches outright, forcing rename-then-platform-rejection loops. [#381]
+- **gitlab-api**: `execGlab` now surfaces non-zero exit codes with stderr context, and rejects zero-exit-empty-stdout with a named error instead of letting `JSON.parse('')` produce a cryptic `Unexpected EOF`. [#382]
 
 ## v1.0.2 — 2026-04-07
 
