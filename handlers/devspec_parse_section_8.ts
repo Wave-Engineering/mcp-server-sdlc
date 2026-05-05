@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
+import { parseWaveNumber, parseDependencies } from '../lib/devspec-parser.js';
 
 const inputSchema = z.object({
   path: z.string().min(1, 'path must be a non-empty string'),
@@ -277,24 +278,22 @@ function parseStory(title: string, body: string, warnings: string[]): Story | nu
   let dependencies: string[] = [];
 
   for (const line of lines) {
-    const w = parseMetadata(line, 'Wave');
+    // Use parseWaveNumber which strips dependency annotations (fixes Bug 3).
+    const w = parseWaveNumber(line);
     if (w !== null && !/\[\[.*\]\]/.test(w)) {
       wave = w;
+      continue;
+    }
+    // Use parseDependencies for the dedicated **Dependencies:** field.
+    const d = parseDependencies(line);
+    if (d !== null) {
+      dependencies = d;
       continue;
     }
     const r = parseMetadata(line, 'Repository');
     if (r !== null && r.length > 0 && !/\[\[.*\]\]/.test(r)) {
       repo = r;
       continue;
-    }
-    const d = parseMetadata(line, 'Dependencies');
-    if (d !== null && !/\[\[.*\]\]/.test(d)) {
-      // "None" → empty list. Otherwise split on comma.
-      if (/^none$/i.test(d.trim())) {
-        dependencies = [];
-      } else {
-        dependencies = d.split(',').map(s => s.trim()).filter(Boolean);
-      }
     }
   }
 
