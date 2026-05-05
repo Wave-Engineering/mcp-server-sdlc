@@ -3,10 +3,14 @@
  * (Story 2.7, #301) so the handler can stay platform-agnostic and under the
  * ≤80-line R-05 budget. Shape parsing is pure string work; no I/O lives here.
  *
- * A PRD body contains a `## Deliverables Manifest` H2 section whose content is
- * a GitHub-flavored markdown table with flexible column ordering (id,
+ * A PRD body contains a Deliverables Manifest section (H2 or H3 heading) whose
+ * content is a GitHub-flavored markdown table with flexible column ordering (id,
  * description, evidence path, status, category). This module extracts that
  * section and parses the table into typed rows.
+ *
+ * Supports both:
+ * - `## Deliverables Manifest` (H2, legacy form)
+ * - `### 5.A Deliverables Manifest` (H3 with section prefix, canonical devspec form)
  */
 
 export interface Deliverable {
@@ -20,8 +24,9 @@ export interface Deliverable {
 /**
  * Extract the "Deliverables Manifest" section from a PRD markdown body.
  *
- * Looks for a heading matching `/^##+\s*deliverables manifest/i`, then
- * captures everything until the next same-or-lower level heading.
+ * Looks for a heading (any level) containing "deliverables manifest"
+ * (case-insensitive), then captures everything until the next same-or-lower
+ * level heading.
  */
 export function extractManifestSection(markdown: string): string | null {
   const lines = markdown.split('\n');
@@ -37,7 +42,7 @@ export function extractManifestSection(markdown: string): string | null {
       if (inSection) {
         if (level <= sectionLevel) break;
       }
-      if (/^deliverables manifest/i.test(title)) {
+      if (/deliverables manifest/i.test(title)) {
         inSection = true;
         sectionLevel = level;
         continue;

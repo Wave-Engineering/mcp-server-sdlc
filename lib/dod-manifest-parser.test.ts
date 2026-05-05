@@ -106,4 +106,42 @@ more body
       category: 'code',
     });
   });
+
+  test('extractManifestSection — H3 with section number prefix (### 5.A Deliverables Manifest)', () => {
+    const md = `# Dev Spec
+
+## 5. Deliverables & Definition of Done
+
+### 5.A Deliverables Manifest
+
+| ID | Description | Evidence Path | Status | Category |
+|----|-------------|---------------|--------|----------|
+| D-01 | Test deliverable | src/test.ts | pending | code |
+
+### 5.B Test Plan
+
+More content.
+`;
+    const section = extractManifestSection(md);
+    expect(section).not.toBeNull();
+    expect(section).toContain('| D-01 | Test deliverable |');
+    expect(section).not.toContain('5.B Test Plan');
+  });
+
+  test('extractManifestSection — H2 without prefix (backward compatibility)', () => {
+    const md = `# PRD
+
+## Deliverables Manifest
+
+| ID | Description | Evidence Path | Status | Category |
+|----|-------------|---------------|--------|----------|
+| D-01 | handler | handlers/x.ts | done | code |
+
+## Other Section
+`;
+    const section = extractManifestSection(md);
+    expect(section).not.toBeNull();
+    expect(section).toContain('| D-01 | handler |');
+    expect(section).not.toContain('Other Section');
+  });
 });
