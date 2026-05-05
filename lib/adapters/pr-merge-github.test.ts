@@ -125,6 +125,7 @@ describe('prMergeGithub — subprocess boundary', () => {
       merge_commit_sha: 'abc123def456',
       warnings: [],
       queue_fallback: false,
+      graphql_fallback: false,
     });
   });
 
@@ -405,5 +406,113 @@ describe('prMergeGithub — subprocess boundary', () => {
       (c) => c.includes('gh pr merge 282') && c.includes('--auto'),
     );
     expect(autoCall).toBeUndefined();
+  });
+
+  // =========================================================================
+  // Bug #284 — GraphQL enqueuePullRequest fallback
+  // =========================================================================
+
+  test('pr-merge-github — merge queue fallback uses GraphQL enqueuePullRequest', async () => {
+    // Regression bug #284: on merge-queue-on / auto-merge-off repos, both
+    // direct merge AND gh pr merge --auto fail. The adapter should fall back
+    // to GraphQL enqueuePullRequest mutation.
+    // Register more specific matcher for enqueuePullRequest BEFORE stubNoQueue
+    on(
+      'enqueuePullRequest',
+      JSON.stringify({
+        data: {
+          enqueuePullRequest: {
+            mergeQueueEntry: { position: 3 },
+          },
+        },
+      }),
+    );
+    stubNoQueue(); // detection returns false-negative
+    on('gh pr merge 284 --squash --delete-branch', () => {
+      throw mergeQueueError();
+    });
+    // --auto ALSO fails with a queue-related error (merge-queue-on but auto-merge-off)
+    on('gh pr merge 284 --squash --delete-branch --auto', () => {
+      const err = new Error('Auto merge is not allowed for this repository') as ThrowableError;
+      err.stderr = 'Auto merge is not allowed for this repository\n';
+      throw err;
+    });
+    // GraphQL node_id fetch
+    on(
+      'gh api repos/org/repo/pulls/284',
+      JSON.stringify({ node_id: 'PR_kwDOAbc123' }),
+    );
+    on(
+      'gh pr view 284 --json state,url,mergeCommit',
+      JSON.stringify({
+        state: 'OPEN',
+        url: 'https://github.com/org/repo/pull/284',
+        mergeCommit: null,
+      }),
+    );
+
+    const result = await prMergeGithub({ number: 284 });
+    expectOk(result);
+    expect(result.data.merge_method).toBe('merge_queue');
+    expect(result.data.enrolled).toBe(true);
+    expect(result.data.merged).toBe(false);
+    expect(result.data.queue_fallback).toBe(true);
+    expect(result.data.graphql_fallback).toBe(true);
+    expect(result.data.queue_position).toBe(3);
+    // Verify both --auto and GraphQL calls were made
+    const autoCall = execCalls.find(
+      (c) => c.includes('gh pr merge 284') && c.includes('--auto'),
+    );
+    expect(autoCall).toBeDefined();
+    const nodeIdCall = execCalls.find((c) => c.includes('gh api repos/org/repo/pulls/284'));
+    expect(nodeIdCall).toBeDefined();
+    const graphqlCall = execCalls.find(
+      (c) => c.includes('gh api graphql') && c.includes('enqueuePullRequest'),
+    );
+    expect(graphqlCall).toBeDefined();
+  });
+
+  test('pr-merge-github — direct merge success has graphql_fallback:false', async () => {
+    // Happy path: direct merge succeeds, no GraphQL fallback needed.
+    stubNoQueue();
+    on('gh pr merge 285 --squash --delete-branch', '');
+    on(
+      'gh pr view 285 --json state,url,mergeCommit',
+      JSON.stringify({
+        state: 'MERGED',
+        url: 'https://github.com/org/repo/pull/285',
+        mergeCommit: { oid: 'abc285' },
+      }),
+    );
+
+    const result = await prMergeGithub({ number: 285 });
+    expectOk(result);
+    expect(result.data.merge_method).toBe('direct_squash');
+    expect(result.data.merged).toBe(true);
+    expect(result.data.queue_fallback).toBe(false);
+    expect(result.data.graphql_fallback).toBe(false);
+    expect(result.data.queue_position).toBeUndefined();
+  });
+
+  test('pr-merge-github — unrelated failure surfaces error, no GraphQL fallback', async () => {
+    // gh fails for a non-queue reason (e.g., CI red, conflicts). The adapter
+    // should NOT invoke GraphQL enqueuePullRequest fallback, just surface the error.
+    stubNoQueue();
+    on('gh pr merge 286 --squash --delete-branch', () => {
+      const err = new Error('Pull request is not mergeable: conflicts') as ThrowableError;
+      err.stderr = 'Pull request is not mergeable: conflicts\n';
+      throw err;
+    });
+
+    const result = await prMergeGithub({ number: 286 });
+    expectErr(result);
+    expect(result.code).toBe('gh_pr_merge_failed');
+    expect(result.error).toContain('conflicts');
+    // Queue detection GraphQL call is expected, but enqueuePullRequest should NOT be called
+    const graphqlEnqueueCall = execCalls.find((c) => c.includes('enqueuePullRequest'));
+    expect(graphqlEnqueueCall).toBeUndefined();
+    // Also should not fetch node_id
+    const nodeIdCall = execCalls.find((c) => c.includes('gh api repos/org/repo/pulls/286'));
+    expect(nodeIdCall).toBeUndefined();
   });
 });

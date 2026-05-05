@@ -112,6 +112,7 @@ describe('prMergeGitlab — subprocess boundary', () => {
       merge_commit_sha: 'deadbeef1234',
       warnings: [],
       queue_fallback: false,
+      graphql_fallback: false,
     });
     // No `gh api graphql` call should ever fire on the GitLab path.
     expect(execCalls.find((c) => c.includes('gh api graphql'))).toBeUndefined();

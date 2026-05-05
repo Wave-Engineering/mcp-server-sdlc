@@ -74,6 +74,48 @@ function exec(cmd: string): string {
   return execSync(cmd, { encoding: 'utf8' });
 }
 
+// GraphQL enqueuePullRequest mutation for repos with merge-queue enabled but
+// enablePullRequestAutoMerge disabled. Returns the queue position or null if
+// the position field is unavailable.
+function enqueuePullRequestViaGraphQL(
+  number: number,
+  repo: string | undefined,
+): number | null {
+  // Step 1: fetch the PR's node_id. When repo is undefined, gh uses the
+  // current directory's remote. When repo is provided, we must include it in
+  // both the API path and --repo flag.
+  let nodeIdCmd: string;
+  if (repo !== undefined) {
+    nodeIdCmd = `gh api repos/${repo}/pulls/${number} --repo ${repo} --jq '.node_id'`;
+  } else {
+    // When repo is undefined, resolve via the slug parser (same logic as
+    // detectMergeQueue). If that fails, let gh api infer from cwd.
+    const slug = parseRepoSlug();
+    if (slug !== null) {
+      nodeIdCmd = `gh api repos/${slug}/pulls/${number} --jq '.node_id'`;
+    } else {
+      // Last resort: gh api without explicit repo path — will fail if cwd isn't
+      // a repo, but that's a caller error (same as other gh invocations).
+      nodeIdCmd = `gh pr view ${number} --json id --jq '.id'`;
+    }
+  }
+  const prId = exec(nodeIdCmd).trim();
+
+  // Step 2: invoke the enqueuePullRequest mutation
+  const mutation = `mutation($prId:ID!){enqueuePullRequest(input:{pullRequestId:$prId}){mergeQueueEntry{position}}}`;
+  const repoFlag = repo !== undefined ? `--repo ${repo}` : '';
+  const graphqlCmd = `gh api graphql -f query='${mutation}' -f prId="${prId}" ${repoFlag}`.trim();
+  const response = exec(graphqlCmd);
+
+  // Parse the response to extract the queue position
+  try {
+    const data = JSON.parse(response);
+    return data?.data?.enqueuePullRequest?.mergeQueueEntry?.position ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function shellEscape(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
@@ -143,6 +185,8 @@ function aggregateOk(args: {
   mergeCommitSha?: string;
   warnings: string[];
   queueFallback?: boolean;
+  graphqlFallback?: boolean;
+  queuePosition?: number | null;
 }): PrMergeResponse {
   return {
     number: args.number,
@@ -155,6 +199,8 @@ function aggregateOk(args: {
     merge_commit_sha: args.mergeCommitSha,
     warnings: args.warnings,
     queue_fallback: args.queueFallback === true,
+    graphql_fallback: args.graphqlFallback === true,
+    queue_position: args.queuePosition,
   };
 }
 
@@ -306,35 +352,74 @@ async function mergeGithubDirect(
   }
 
   // Stderr-fallback path: detection thought no queue, but the API rejected
-  // the direct merge with a queue-related error. Promote the queue state so
-  // the response reflects what we just learned. Mark `queue_fallback: true`
-  // so callers can log the silent retry (bug #280 / #294).
+  // the direct merge with a queue-related error. Try --auto first (the original
+  // fallback path from bug #280). If --auto ALSO fails with a queue-related
+  // error, fall back to GraphQL enqueuePullRequest (bug #284 — repos with
+  // merge-queue-on but enablePullRequestAutoMerge off).
   const fallbackQueue: PrMergeQueueState = { enabled: true, position: null, enforced: true };
   const autoCmd = buildGithubMergeCommand(args.number, true, args.squash_message, args.repo);
   try {
     exec(autoCmd);
-  } catch (err) {
+    // --auto succeeded — enrolled via the queue. No GraphQL fallback needed.
+    const info = await fetchPrStateRouted(args.number, args.repo);
     return {
-      ok: false,
-      code: 'gh_pr_merge_auto_fallback_failed',
-      error: `gh pr merge --auto failed after merge-queue fallback: ${extractFailure(err).message}`,
+      ok: true,
+      data: aggregateOk({
+        number: args.number,
+        enrolled: true,
+        merged: info.state === 'merged',
+        method: 'merge_queue',
+        queue: fallbackQueue,
+        url: info.url,
+        mergeCommitSha: info.mergeCommitSha,
+        warnings,
+        queueFallback: true,
+      }),
+    };
+  } catch (autoErr) {
+    const autoFail = extractFailure(autoErr);
+    const autoIndicatesQueue =
+      stderrIndicatesMergeQueue(autoFail.stderr) ||
+      stderrIndicatesMergeQueue(autoFail.message) ||
+      autoFail.message.includes('Auto merge is not allowed');
+    // If --auto failed for a non-queue reason, surface that error.
+    if (!autoIndicatesQueue) {
+      return {
+        ok: false,
+        code: 'gh_pr_merge_auto_fallback_failed',
+        error: `gh pr merge --auto failed after merge-queue fallback: ${autoFail.message}`,
+      };
+    }
+    // --auto failed with a queue-related error (bug #284 — merge-queue-on but
+    // auto-merge-off). Fall back to GraphQL enqueuePullRequest mutation.
+    let queuePosition: number | null = null;
+    try {
+      queuePosition = enqueuePullRequestViaGraphQL(args.number, args.repo);
+    } catch (graphqlErr) {
+      return {
+        ok: false,
+        code: 'gh_pr_enqueue_graphql_failed',
+        error: `GraphQL enqueuePullRequest failed after --auto fallback: ${extractFailure(graphqlErr).message}`,
+      };
+    }
+    const info = await fetchPrStateRouted(args.number, args.repo);
+    return {
+      ok: true,
+      data: aggregateOk({
+        number: args.number,
+        enrolled: true,
+        merged: info.state === 'merged',
+        method: 'merge_queue',
+        queue: fallbackQueue,
+        url: info.url,
+        mergeCommitSha: info.mergeCommitSha,
+        warnings,
+        queueFallback: true,
+        graphqlFallback: true,
+        queuePosition,
+      }),
     };
   }
-  const info = await fetchPrStateRouted(args.number, args.repo);
-  return {
-    ok: true,
-    data: aggregateOk({
-      number: args.number,
-      enrolled: true,
-      merged: info.state === 'merged',
-      method: 'merge_queue',
-      queue: fallbackQueue,
-      url: info.url,
-      mergeCommitSha: info.mergeCommitSha,
-      warnings,
-      queueFallback: true,
-    }),
-  };
 }
 
 export async function prMergeGithub(

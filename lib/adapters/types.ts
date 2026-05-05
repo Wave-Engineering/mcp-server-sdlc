@@ -94,6 +94,17 @@ export interface PrMergeResponse {
    * enforced-queue path where `--auto` was chosen upfront. Bug #280 / #294.
    */
   queue_fallback: boolean;
+  /**
+   * True when the adapter fell back to GraphQL enqueuePullRequest mutation
+   * because gh pr merge --auto failed on a merge-queue-on / auto-merge-off repo.
+   * Defaults to `false` on every other path. Bug #284.
+   */
+  graphql_fallback: boolean;
+  /**
+   * Queue position returned from GraphQL enqueuePullRequest mutation, or null
+   * if unavailable. Only populated when graphql_fallback is true. Bug #284.
+   */
+  queue_position?: number | null;
 }
 export interface PrMergeWaitArgs {
   number: number;
