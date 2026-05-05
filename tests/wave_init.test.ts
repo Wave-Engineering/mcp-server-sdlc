@@ -354,22 +354,36 @@ describe('wave_init handler', () => {
     expect(calls.some(c => c.includes('set-kahuna-branch'))).toBe(false);
   });
 
-  test('kahuna bootstrap — orphan refused: branch on remote but state empty', async () => {
+  test('kahuna bootstrap — orphan-with-matching-name claimed (#378): retry-after-failed-init converges', async () => {
+    // #378 behavior change: when state has no kahuna_branch but the remote
+    // already has the EXACT desired branch (`kahuna/<plan_id>-<slug>`),
+    // claim it as idempotent reuse rather than refusing as an orphan. This
+    // makes wave_init retry-safe after a `wave-status init` failure that
+    // left the kahuna branch on remote but never persisted state.json's
+    // kahuna_branch field.
     await setupStatusFixture({ kahuna_branch: null });
     setExecRoutes([
       { match: 'git remote get-url', respond: 'git@github.com:Wave-Engineering/mcp-server-sdlc.git' },
-      { match: 'git ls-remote --heads origin', respond: 'abc123\trefs/heads/kahuna/42-orphan' },
+      { match: 'git ls-remote --heads origin', respond: 'abc123\trefs/heads/kahuna/42-foo' },
+      { match: 'wave-status set-kahuna-branch', respond: '' },
     ]);
 
     const result = await handler.execute({
       plan_json: JSON.stringify({ phases: [] }),
-      kahuna: { plan_id: 42, slug: 'orphan' },
+      kahuna: { plan_id: 42, slug: 'foo' },
     });
     const parsed = parseResult(result);
 
-    expect(parsed.ok).toBe(false);
-    expect(parsed.error as string).toContain('orphan');
-    expect(parsed.error as string).toContain('kahuna/42-orphan');
+    expect(parsed.ok).toBe(true);
+    expect(parsed.kahuna_branch).toBe('kahuna/42-foo');
+    expect(parsed.kahuna_created).toBe(false);
+
+    // No new branch creation API call (we claimed the existing one)
+    const calls = mockExecSync.mock.calls.map(c => unquote(c[0] as string));
+    expect(calls.some(c => c.includes('git/refs -X POST'))).toBe(false);
+    // But the branch IS recorded in state because state had it as null
+    const rawCalls = mockExecSync.mock.calls.map(c => c[0] as string);
+    expect(rawCalls.some(c => c.includes("wave-status set-kahuna-branch 'kahuna/42-foo'"))).toBe(true);
   });
 
   test('kahuna bootstrap — state-mismatch refused: state has different branch', async () => {
@@ -574,6 +588,210 @@ describe('wave_init handler', () => {
 
     expect(parsed.ok).toBe(false);
     expect(parsed.error as string).toContain('set-kahuna-branch');
+  });
+
+  // ---- atomicity (#378) — kahuna bootstrap before plan persist ------------
+  //
+  // The handler resequenced its steps so the kahuna branch is created on the
+  // remote BEFORE `wave-status init` persists the plan to disk. This block
+  // pins the ordering and the failure semantics that make wave_init atomic.
+
+  test('atomicity (#378) — ordering: kahuna branch create runs BEFORE wave-status init', async () => {
+    await setupStatusFixture({ kahuna_branch: null });
+    setExecRoutes([
+      { match: 'git remote get-url', respond: 'git@github.com:org/repo.git' },
+      { match: 'git ls-remote --heads origin', respond: '' },
+      { match: 'gh api repos/org/repo/git/refs/heads/main', respond: '5555555555555555555555555555555555555555' },
+      { match: 'gh api repos/org/repo/git/refs -X POST', respond: '' },
+      { match: 'wave-status set-kahuna-branch', respond: '' },
+    ]);
+
+    const result = await handler.execute({
+      plan_json: JSON.stringify({ phases: [] }),
+      kahuna: { plan_id: 7, slug: 'order-test' },
+    });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+
+    const calls = mockExecSync.mock.calls.map(c => unquote(c[0] as string));
+    const createBranchIdx = calls.findIndex(c => c.includes('gh api repos/org/repo/git/refs -X POST'));
+    const initIdx = calls.findIndex(c => c.includes('wave-status init'));
+    const setKahunaIdx = calls.findIndex(c => c.includes('wave-status set-kahuna-branch'));
+    expect(createBranchIdx).toBeGreaterThanOrEqual(0);
+    expect(initIdx).toBeGreaterThan(createBranchIdx);
+    expect(setKahunaIdx).toBeGreaterThan(initIdx);
+  });
+
+  test('atomicity (#378) — kahuna failure: branch creation fails → wave-status init NEVER runs', async () => {
+    // Inject a failure in the branch-create platform call. The handler must
+    // bail before `wave-status init` is invoked so the plan is not persisted
+    // and the half-state ("plan on disk + kahuna missing") is impossible.
+    await setupStatusFixture({ kahuna_branch: null });
+    setExecRoutes([
+      { match: 'git remote get-url', respond: 'git@github.com:org/repo.git' },
+      { match: 'git ls-remote --heads origin', respond: '' },
+      { match: 'gh api repos/org/repo/git/refs/heads/main', respond: '6666666666666666666666666666666666666666' },
+      { match: 'gh api repos/org/repo/git/refs -X POST', respond: () => { throw new Error('GraphQL: branch creation refused'); } },
+    ]);
+
+    const result = await handler.execute({
+      plan_json: JSON.stringify({ phases: [], project: 'foo' }),
+      kahuna: { plan_id: 8, slug: 'fail-create' },
+    });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(false);
+
+    // Critical: `wave-status init` was NEVER called — plan not persisted.
+    const calls = mockExecSync.mock.calls.map(c => c[0] as string);
+    expect(calls.some(c => c.includes('wave-status init'))).toBe(false);
+    expect(calls.some(c => c.includes('wave-status set-kahuna-branch'))).toBe(false);
+  });
+
+  test('atomicity (#378) — kahuna failure: SHA resolve fails → wave-status init NEVER runs', async () => {
+    // Same guarantee, different injection point: base_branch SHA lookup fails
+    // (e.g. branch doesn't exist or auth error). Plan must not be persisted.
+    await setupStatusFixture({ kahuna_branch: null });
+    setExecRoutes([
+      { match: 'git remote get-url', respond: 'git@github.com:org/repo.git' },
+      { match: 'git ls-remote --heads origin', respond: '' },
+      { match: 'gh api repos/org/repo/git/refs/heads/main', respond: () => { throw new Error('HTTP 404: Not Found'); } },
+    ]);
+
+    const result = await handler.execute({
+      plan_json: JSON.stringify({ phases: [] }),
+      kahuna: { plan_id: 9, slug: 'fail-sha' },
+    });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(false);
+    expect(parsed.error as string).toContain('failed to read main HEAD SHA');
+
+    const calls = mockExecSync.mock.calls.map(c => c[0] as string);
+    expect(calls.some(c => c.includes('wave-status init'))).toBe(false);
+    expect(calls.some(c => c.includes('git/refs -X POST'))).toBe(false);
+  });
+
+  test('atomicity (#378) — state-mismatch refusal: extend mode with stale recorded branch → init NEVER runs', async () => {
+    // Pre-existing kahuna_branch in state.json that doesn't match the new
+    // request's plan_id+slug. This is the "stale kahuna from prior epic" case
+    // from issue #378's session 1 repro. wave-status init must NOT run.
+    await setupStatusFixture({ waves: {}, kahuna_branch: 'kahuna/41-prior-epic' }, { phases: [] });
+    setExecRoutes([
+      { match: 'git remote get-url', respond: 'git@github.com:org/repo.git' },
+    ]);
+
+    const result = await handler.execute({
+      plan_json: JSON.stringify({ phases: [{ name: 'p', waves: [{ id: 'W-99', issues: [] }] }] }),
+      extend: true,
+      kahuna: { plan_id: 42, slug: 'new-epic' },
+    });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(false);
+
+    // wave-status init must not have run — the prescan is the only state-
+    // touching CLI invocation that's allowed before the kahuna pre-check, and
+    // the prescan is read-only.
+    const calls = mockExecSync.mock.calls.map(c => c[0] as string);
+    expect(calls.some(c => c.includes('wave-status init'))).toBe(false);
+    expect(calls.some(c => c.includes('wave-status set-kahuna-branch'))).toBe(false);
+  });
+
+  test('atomicity (#378) — retry semantics: orphan branch on remote + empty state → idempotent claim, init runs', async () => {
+    // Models the post-failure retry: prior wave_init's `wave-status init` step
+    // failed AFTER the kahuna branch was created on remote, so the remote has
+    // the branch but state.json's kahuna_branch is empty. On retry, the new
+    // call must claim the orphan as idempotent reuse and then proceed to
+    // re-attempt the plan persist.
+    await setupStatusFixture({ kahuna_branch: null });
+    setExecRoutes([
+      { match: 'git remote get-url', respond: 'git@github.com:org/repo.git' },
+      { match: 'git ls-remote --heads origin', respond: 'abc123\trefs/heads/kahuna/10-retry' },
+      { match: 'wave-status set-kahuna-branch', respond: '' },
+    ]);
+
+    const result = await handler.execute({
+      plan_json: JSON.stringify({ phases: [] }),
+      kahuna: { plan_id: 10, slug: 'retry' },
+    });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.kahuna_branch).toBe('kahuna/10-retry');
+    expect(parsed.kahuna_created).toBe(false);
+
+    // Plan persist DID run (retry converged), and the orphan was recorded.
+    const rawCalls = mockExecSync.mock.calls.map(c => c[0] as string);
+    expect(rawCalls.some(c => c.includes('wave-status init'))).toBe(true);
+    expect(rawCalls.some(c => c.includes("wave-status set-kahuna-branch 'kahuna/10-retry'"))).toBe(true);
+    // No NEW branch creation — claimed the existing one
+    expect(rawCalls.some(c => c.includes('git/refs -X POST'))).toBe(false);
+  });
+
+  test('atomicity (#378) — extend retry after kahuna fail: no wave-ID collision because plan never persisted', async () => {
+    // The original repro: extend-mode wave_init fails on kahuna step. The
+    // wave IDs in the new plan must NOT have been added to state.json — so a
+    // retry with the same plan does not trip the wave-ID-collision prescan.
+    await setupStatusFixture(
+      { waves: { 'W-1': { status: 'completed' } }, kahuna_branch: null },
+      { phases: [] }
+    );
+    setExecRoutes([
+      { match: 'git remote get-url', respond: 'git@github.com:org/repo.git' },
+      { match: 'git ls-remote --heads origin', respond: '' },
+      // First call: SHA resolve fails (simulates network blip)
+      { match: 'gh api repos/org/repo/git/refs/heads/main', respond: () => { throw new Error('HTTP 503'); } },
+    ]);
+
+    const planJson = JSON.stringify({
+      phases: [{ name: 'p2', waves: [{ id: 'W-2', issues: [{ number: 20 }] }] }],
+    });
+    const firstResult = await handler.execute({
+      plan_json: planJson,
+      extend: true,
+      kahuna: { plan_id: 11, slug: 'collision-test' },
+    });
+    const firstParsed = parseResult(firstResult);
+    expect(firstParsed.ok).toBe(false);
+
+    // First call did NOT call `wave-status init`, so the W-2 wave ID is NOT
+    // in state.json. The second call's extend-mode prescan must not flag
+    // W-2 as colliding.
+    const firstCalls = mockExecSync.mock.calls.map(c => c[0] as string);
+    expect(firstCalls.some(c => c.includes('wave-status init'))).toBe(false);
+
+    // Second call: same input, this time the SHA resolves and create succeeds.
+    mockExecSync.mockClear();
+    setExecRoutes([
+      { match: 'git remote get-url', respond: 'git@github.com:org/repo.git' },
+      { match: 'git ls-remote --heads origin', respond: '' },
+      { match: 'gh api repos/org/repo/git/refs/heads/main', respond: '7777777777777777777777777777777777777777' },
+      { match: 'gh api repos/org/repo/git/refs -X POST', respond: '' },
+      { match: 'wave-status set-kahuna-branch', respond: '' },
+    ]);
+
+    const secondResult = await handler.execute({
+      plan_json: planJson,
+      extend: true,
+      kahuna: { plan_id: 11, slug: 'collision-test' },
+    });
+    const secondParsed = parseResult(secondResult);
+    expect(secondParsed.ok).toBe(true);
+    expect(secondParsed.kahuna_branch).toBe('kahuna/11-collision-test');
+    expect(secondParsed.kahuna_created).toBe(true);
+
+    // Critically, the prescan did NOT flag a collision — W-2 was never on disk.
+    expect(secondParsed.colliding_ids).toBeUndefined();
+  });
+
+  test('atomicity (#378) — fresh init: no kahuna arg → only ONE execSync (back-compat)', async () => {
+    // When `kahuna` is omitted, the handler does NOT call parseRepoSlug or
+    // any platform API — only the `wave-status init` call. This pins the
+    // back-compat happy path (no kahuna, no slug detection overhead).
+    await setupStatusFixture(null);
+    const planJson = JSON.stringify({ project: 'foo', phases: [] });
+    const result = await handler.execute({ plan_json: planJson });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    expect(mockExecSync.mock.calls.length).toBe(1);
+    expect((mockExecSync.mock.calls[0][0] as string)).toContain('wave-status init');
   });
 
   // ---- extend_missing_state -----------------------------------------------
