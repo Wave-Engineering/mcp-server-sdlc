@@ -1,6 +1,15 @@
 import { join } from 'path';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
+import {
+  extractSection,
+  parseManifestTables,
+  parseMvIds,
+  type ManifestRow,
+  stripMdDecoration,
+  hasPath,
+  hasNAOptOut,
+} from '../lib/devspec-parser.js';
 
 const inputSchema = z.object({
   path: z.string().min(1, 'path must be a non-empty string'),
@@ -29,18 +38,7 @@ async function resolvePhasesWavesPath(root: string): Promise<string> {
   return join(root, '.claude', 'status', 'phases-waves.json');
 }
 
-interface ManifestRow {
-  id: string;
-  deliverable: string;
-  category: string;
-  tier: string;
-  file_path: string;
-  produced_in: string;
-  status: string;
-  notes: string;
-  // Raw cells + header-aware accessor for graceful degradation on column order.
-  raw: Record<string, string>;
-}
+// ManifestRow interface now imported from devspec-parser.js
 
 interface CheckResult {
   check: string;
@@ -48,158 +46,17 @@ interface CheckResult {
   evidence: string;
 }
 
-// -----------------------------------------------------------------------------
-// Section extraction
-// -----------------------------------------------------------------------------
+// extractSection now imported from devspec-parser.js
 
-/**
- * Extract a markdown section body given a heading regex. Captures everything
- * from the matching heading up to (but not including) the next heading at the
- * same or lower level.
- */
-function extractSection(markdown: string, headingRegex: RegExp): string | null {
-  const lines = markdown.split('\n');
-  let inSection = false;
-  let sectionLevel = 0;
-  const collected: string[] = [];
+// parseManifestTable replaced by parseManifestTables (imported from devspec-parser.js)
 
-  for (const line of lines) {
-    const headingMatch = /^(#+)\s+(.*)$/.exec(line);
-    if (headingMatch) {
-      const level = headingMatch[1].length;
-      const title = headingMatch[2].trim();
-      if (inSection) {
-        if (level <= sectionLevel) break;
-      }
-      if (!inSection && headingRegex.test(title)) {
-        inSection = true;
-        sectionLevel = level;
-        continue;
-      }
-    }
-    if (inSection) collected.push(line);
-  }
-
-  return inSection ? collected.join('\n') : null;
-}
-
-// -----------------------------------------------------------------------------
-// Manifest table parsing
-// -----------------------------------------------------------------------------
-
-function parseManifestTable(sectionMd: string): ManifestRow[] {
-  const rows: ManifestRow[] = [];
-  const lines = sectionMd.split('\n').map(l => l.trim());
-
-  let headerIdx = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].startsWith('|') && lines[i].includes('|', 1)) {
-      headerIdx = i;
-      break;
-    }
-  }
-  if (headerIdx === -1) return rows;
-
-  const headerCells = lines[headerIdx]
-    .split('|')
-    .slice(1, -1)
-    .map(c => c.trim().toLowerCase());
-
-  const findCol = (needles: string[]): number => {
-    for (const needle of needles) {
-      const idx = headerCells.findIndex(c => c.includes(needle));
-      if (idx !== -1) return idx;
-    }
-    return -1;
-  };
-
-  const idCol = findCol(['id']);
-  const deliverableCol = findCol(['deliverable', 'description']);
-  const categoryCol = findCol(['category']);
-  const tierCol = findCol(['tier']);
-  const pathCol = findCol(['file path', 'path', 'evidence']);
-  const producedCol = findCol(['produced in', 'produced', 'wave']);
-  const statusCol = findCol(['status']);
-  const notesCol = findCol(['notes']);
-
-  let startRow = headerIdx + 1;
-  if (startRow < lines.length && /^\|[\s\-:|]+\|?$/.test(lines[startRow])) {
-    startRow += 1;
-  }
-
-  for (let i = startRow; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line.startsWith('|')) break;
-    const cells = line.split('|').slice(1, -1).map(c => c.trim());
-    if (cells.length === 0) continue;
-
-    const get = (idx: number) => (idx >= 0 && idx < cells.length ? cells[idx] : '');
-    const raw: Record<string, string> = {};
-    for (let j = 0; j < headerCells.length; j++) {
-      raw[headerCells[j]] = cells[j] ?? '';
-    }
-
-    rows.push({
-      id: get(idCol),
-      deliverable: get(deliverableCol),
-      category: get(categoryCol),
-      tier: get(tierCol),
-      file_path: get(pathCol),
-      produced_in: get(producedCol),
-      status: get(statusCol),
-      notes: get(notesCol),
-      raw,
-    });
-  }
-
-  return rows;
-}
-
-/**
- * Parse MV-XX IDs out of Section 6.4. Looks at markdown table rows with an
- * ID cell matching /^MV-\d+/i and returns the IDs in document order.
- */
-function parseMvIds(section64Md: string): string[] {
-  const ids: string[] = [];
-  const lines = section64Md.split('\n').map(l => l.trim());
-  for (const line of lines) {
-    if (!line.startsWith('|')) continue;
-    const cells = line.split('|').slice(1, -1).map(c => c.trim());
-    for (const cell of cells) {
-      const m = /^(MV-\d+)/i.exec(cell);
-      if (m) {
-        ids.push(m[1].toUpperCase());
-        break;
-      }
-    }
-  }
-  return ids;
-}
+// parseMvIds now imported from devspec-parser.js
 
 // -----------------------------------------------------------------------------
 // Helpers for individual checks
 // -----------------------------------------------------------------------------
 
-/**
- * True if a manifest row's File Path field is empty (i.e., no file assigned
- * and no "N/A — because" opt-out).
- */
-function hasPath(row: ManifestRow): boolean {
-  const p = stripMdDecoration(row.file_path);
-  return p.length > 0 && !/^n\/a\b/i.test(p);
-}
-
-function hasNAOptOut(row: ManifestRow): boolean {
-  const p = stripMdDecoration(row.file_path);
-  return /^n\/a\s*[—\-:]/i.test(p) && /because/i.test(p);
-}
-
-/**
- * Remove backticks, italics, and placeholder decorations from a markdown cell.
- */
-function stripMdDecoration(s: string): string {
-  return s.replace(/`/g, '').replace(/^_+|_+$/g, '').trim();
-}
+// hasPath, hasNAOptOut, and stripMdDecoration now imported from devspec-parser.js
 
 /**
  * Detect whether a Deliverable cell reads as a bare verb/action phrase with no
@@ -623,7 +480,7 @@ const devspecFinalizeHandler: HandlerDef = {
     const section64 = extractSection(body, /manual verification procedures/i);
     const section7 = extractSection(body, /^(?:7\.?\s+)?definition of done\b/i);
 
-    const rows = section5A ? parseManifestTable(section5A) : [];
+    const rows = section5A ? parseManifestTables(section5A) : [];
     const mvIds = section64 ? parseMvIds(section64) : [];
 
     const checks: CheckResult[] = [
