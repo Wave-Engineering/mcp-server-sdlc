@@ -17,7 +17,7 @@ function quoteArg(s: string): string {
 
 const devspecLocateHandler: HandlerDef = {
   name: 'devspec_locate',
-  description: 'Find docs/*-devspec.md files in a project root',
+  description: 'Find *-devspec.md files in conventional project locations: docs/, Docs/, docs/devspecs/, Docs/devspecs/',
   inputSchema,
   async execute(rawArgs: unknown) {
     let args: z.infer<typeof inputSchema>;
@@ -51,33 +51,51 @@ const devspecLocateHandler: HandlerDef = {
         };
       }
 
-      // docs/ missing is not an error — return an empty list.
-      try {
-        execSync(`test -d ${quoteArg(`${root}/docs`)}`, { encoding: 'utf8' });
-      } catch {
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: JSON.stringify({ ok: true, files: [], count: 0 }),
-            },
-          ],
-        };
+      // Search multiple conventional locations. Missing directories are not
+      // an error — skip them and continue. Collect union of all matches.
+      const searchPaths = [
+        'docs',
+        'Docs',
+        'docs/devspecs',
+        'Docs/devspecs',
+      ];
+
+      const allFiles = new Set<string>();
+
+      for (const searchPath of searchPaths) {
+        // Check if this path exists
+        try {
+          execSync(`test -d ${quoteArg(`${root}/${searchPath}`)}`, { encoding: 'utf8' });
+        } catch {
+          // Path doesn't exist, skip it
+          continue;
+        }
+
+        // For flat directories (docs/, Docs/), search at maxdepth 1.
+        // For subdirectories (docs/devspecs/, Docs/devspecs/), also maxdepth 1
+        // within that subdirectory to avoid recursion.
+        const cmd = `find ${quoteArg(searchPath)} -maxdepth 1 -type f -name '*-devspec.md'`;
+        try {
+          const output = execSync(cmd, {
+            cwd: root,
+            encoding: 'utf8',
+          });
+
+          const files = output
+            .split('\n')
+            .map(s => s.trim())
+            .filter(s => s.length > 0);
+
+          for (const file of files) {
+            allFiles.add(file);
+          }
+        } catch {
+          // find command failed (directory might be empty or inaccessible), skip
+          continue;
+        }
       }
 
-      // Glob via `find`. `-maxdepth 1` keeps it to direct children of docs/,
-      // matching the `docs/*-devspec.md` shell-glob semantics.
-      const cmd = `find docs -maxdepth 1 -type f -name '*-devspec.md'`;
-      const output = execSync(cmd, {
-        cwd: root,
-        encoding: 'utf8',
-      });
-
-      const files = output
-        .split('\n')
-        .map(s => s.trim())
-        .filter(s => s.length > 0)
-        .sort();
+      const files = Array.from(allFiles).sort();
 
       return {
         content: [
