@@ -86,6 +86,10 @@ describe('PlatformAdapter contract', () => {
   //                    after this lands the `handlers/` tree has zero
   //                    `gitlabApi*` importers, unblocking Phase 3 Story 3.1
   //                    (delete the pre-retrofit GitLab helper module).
+  // #287:              workItemUpdate — sister to workItem (Story 2.17) but
+  //                    for updating an existing issue (title, body,
+  //                    body_section, labels, assignees, milestone) instead of
+  //                    creating one. New tool, not a migration.
   const MIGRATED_METHODS = new Set<string>([
     'prCreate',
     'prDiff',
@@ -110,6 +114,7 @@ describe('PlatformAdapter contract', () => {
     'labelList',
     'resolveBranchSha',
     'workItem',
+    'workItemUpdate',
     'createBranch',
     'findExistingPr',
     'fetchCiTrustSignal',
