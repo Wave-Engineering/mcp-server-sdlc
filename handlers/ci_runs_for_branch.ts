@@ -7,15 +7,14 @@
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { getAdapter } from '../lib/adapters/index.js';
+import { repoOptionalSchema } from '../lib/schemas/repo.js';
 
 const inputSchema = z.object({
   branch: z.string().min(1, 'branch must be a non-empty string'),
   limit: z.number().int().positive().optional().default(10),
   status: z.enum(['success', 'failure', 'in_progress', 'all']).optional().default('all'),
-  repo: z
-    .string()
-    .regex(/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/, 'repo must be in owner/repo form')
-    .optional(),
+  // GitLab nested groups need arbitrary `/` depth — see lib/schemas/repo.ts (#290).
+  repo: repoOptionalSchema,
 });
 
 function envelope(payload: unknown) {

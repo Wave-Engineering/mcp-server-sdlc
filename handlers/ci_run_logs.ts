@@ -10,16 +10,15 @@ import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { getAdapter } from '../lib/adapters/index.js';
 import { truncateLogs, DEFAULT_MAX_LINES } from '../lib/shared/truncate-logs.js';
+import { repoOptionalSchema } from '../lib/schemas/repo.js';
 
 const inputSchema = z.object({
   run_id: z.number().int().nonnegative(),
   job_id: z.number().int().nonnegative().optional(),
   failed_only: z.boolean().optional().default(true),
   max_lines: z.number().int().positive().optional().default(DEFAULT_MAX_LINES),
-  repo: z
-    .string()
-    .regex(/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/, 'repo must be in owner/repo form')
-    .optional(),
+  // GitLab nested groups need arbitrary `/` depth — see lib/schemas/repo.ts (#290).
+  repo: repoOptionalSchema,
 });
 
 function envelope(payload: unknown) {

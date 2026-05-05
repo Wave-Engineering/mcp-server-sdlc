@@ -12,12 +12,14 @@ import {
   extendModePrescan, readPhasesWavesTotals, bootstrapKahunaBranch,
   branchExistsOnRemote, type PlanData, type StateData,
 } from '../lib/wave_init_plan.js';
+import { repoOptionalSchema } from '../lib/schemas/repo.js';
 
 const inputSchema = z.object({
   plan_json: z.string().min(1, 'plan_json must be a non-empty JSON string'),
   extend: z.boolean().optional().default(false),
   project_root: z.string().optional(),
-  repo: z.string().regex(/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/, 'repo must be owner/repo format').optional(),
+  // GitLab nested groups need arbitrary `/` depth — see lib/schemas/repo.ts (#290).
+  repo: repoOptionalSchema,
   kahuna: z.object({
     plan_id: z.number().int().positive(),
     slug: z.string().min(1).regex(/^[a-z0-9][a-z0-9-]*$/, 'slug must be kebab-case (lowercase, digits, hyphens)'),

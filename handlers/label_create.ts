@@ -11,6 +11,7 @@
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { getAdapter } from '../lib/adapters/index.js';
+import { repoOptionalSchema } from '../lib/schemas/repo.js';
 
 // 6-char hex (no leading #). Both gh and glab accept color in this form at
 // the adapter boundary; glab's `#` prefix is applied inside the adapter.
@@ -23,10 +24,8 @@ const inputSchema = z.object({
     .string()
     .regex(HEX_COLOR_RE, 'color must be a 6-char hex (no leading #)')
     .optional(),
-  repo: z
-    .string()
-    .regex(/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/, 'repo must be owner/repo format')
-    .optional(),
+  // GitLab nested groups need arbitrary `/` depth — see lib/schemas/repo.ts (#290).
+  repo: repoOptionalSchema,
 });
 
 function envelope(payload: unknown) {

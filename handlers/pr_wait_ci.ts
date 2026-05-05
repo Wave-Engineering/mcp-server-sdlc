@@ -15,16 +15,15 @@ import {
   type Deps,
 } from '../lib/pr-wait-ci-poll.js';
 import { snapshotGithub, classifyRollupItem } from '../lib/adapters/pr-wait-ci-github.js';
+import { repoOptionalSchema } from '../lib/schemas/repo.js';
 
 const inputSchema = z
   .object({
     number: z.number().int().positive(),
     poll_interval_sec: z.number().int().optional().default(30),
     timeout_sec: z.number().int().positive().optional().default(1800),
-    repo: z
-      .string()
-      .regex(/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/, 'repo must be owner/repo format')
-      .optional(),
+    // GitLab nested groups need arbitrary `/` depth — see lib/schemas/repo.ts (#290).
+    repo: repoOptionalSchema,
   })
   .strict();
 

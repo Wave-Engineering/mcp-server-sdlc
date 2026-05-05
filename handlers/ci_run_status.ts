@@ -7,15 +7,14 @@
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { getAdapter } from '../lib/adapters/index.js';
+import { repoOptionalSchema } from '../lib/schemas/repo.js';
 
 const inputSchema = z
   .object({
     ref: z.string().min(1, 'ref must be a non-empty string'),
     workflow_name: z.string().optional(),
-    repo: z
-      .string()
-      .regex(/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/, 'repo must be in owner/repo form')
-      .optional(),
+    // GitLab nested groups need arbitrary `/` depth — see lib/schemas/repo.ts (#290).
+    repo: repoOptionalSchema,
   })
   .strict();
 
