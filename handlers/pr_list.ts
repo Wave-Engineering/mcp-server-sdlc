@@ -6,6 +6,7 @@
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { getAdapter } from '../lib/adapters/index.js';
+import { repoOptionalSchema } from '../lib/schemas/repo.js';
 
 const inputSchema = z.object({
   head: z.string().optional(),
@@ -13,10 +14,8 @@ const inputSchema = z.object({
   state: z.enum(['open', 'closed', 'merged', 'all']).optional().default('open'),
   author: z.string().optional(),
   limit: z.number().int().positive().optional().default(20),
-  repo: z
-    .string()
-    .regex(/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/, 'repo must be owner/repo format')
-    .optional(),
+  // GitLab nested groups need arbitrary `/` depth — see lib/schemas/repo.ts (#290).
+  repo: repoOptionalSchema,
 });
 
 function envelope(payload: unknown) {

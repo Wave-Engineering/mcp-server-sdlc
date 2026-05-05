@@ -26,16 +26,15 @@ import {
   issueNumberFromBranch, computeDriftSets, hasDrift, renderDriftHaltComment,
   type PlanData, type StateData,
 } from '../lib/wave-reconcile.js';
+import { repoOptionalSchema } from '../lib/schemas/repo.js';
 
 const inputSchema = z.object({
   wave_id: z.string().optional(),
   plan_issue_number: z.number().int().positive().optional(),
   kahuna_branch: z.string().optional(),
   timestamp: z.string().optional(),
-  repo: z
-    .string()
-    .regex(/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/, 'repo must be owner/repo format')
-    .optional(),
+  // GitLab nested groups need arbitrary `/` depth — see lib/schemas/repo.ts (#290).
+  repo: repoOptionalSchema,
   /**
    * Dry-run: compute drift but skip the `pr_comment` side-effect. Test
    * convenience + future support for a `/wave-reconcile --dry-run` CLI.

@@ -230,6 +230,44 @@ describe('prCreateGitlab — subprocess boundary', () => {
     expect(findCall('glab mr create')).toContain('main');
   });
 
+  test('nested GitLab group path is forwarded verbatim and URL-encoded for api lookup (#290)', async () => {
+    // Regression guard: the deep group path
+    // `analogicdev/internal/tools/blueshift/blueshift-docmancer-ui`
+    // (4 `/` levels) was the exact case that motivated #290's regex fix.
+    // The adapter must forward the slug verbatim to `-R` and URL-encode
+    // every `/` (→ `%2F`) for the api lookup path segment.
+    const repo = 'analogicdev/internal/tools/blueshift/blueshift-docmancer-ui';
+    on('git branch --show-current', 'feature/nested\n');
+    on('glab mr create', 'created\n');
+    on(
+      'merge_requests?source_branch',
+      JSON.stringify([{
+        iid: 42,
+        web_url: `https://gitlab.com/${repo}/-/merge_requests/42`,
+        state: 'opened',
+        source_branch: 'feature/nested',
+        target_branch: 'main',
+      }]),
+    );
+
+    const result = await prCreateGitlab({ title: 't', body: 'b', base: 'main', repo });
+    expectOk(result);
+    expect(result.data.number).toBe(42);
+
+    // `-R` carries the slug verbatim (glab handles URL-encoding for it).
+    const create = findCall('glab mr create');
+    expect(create).toContain('-R');
+    expect(create).toContain(repo);
+    // The api lookup path replaces every `/` with `%2F` — 4 `/` →
+    // 4 `%2F` in the encoded slug.
+    const apiLookup = findCall('merge_requests?source_branch');
+    const encoded = repo.replace(/\//g, '%2F');
+    expect(apiLookup).toContain(encoded);
+    // Belt-and-suspenders: count the encoded separators to make sure no
+    // `/` leaked into the api path (which would split the URL segments).
+    expect((encoded.match(/%2F/g) ?? []).length).toBe(4);
+  });
+
   test('post-create lookup failure surfaces glab_mr_view_failed (regression guard for soft-fallback)', async () => {
     on('git branch --show-current', 'feature/orphan\n');
     on('glab mr create', 'created\n');

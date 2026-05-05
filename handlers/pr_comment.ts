@@ -6,14 +6,13 @@
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { getAdapter } from '../lib/adapters/index.js';
+import { repoOptionalSchema } from '../lib/schemas/repo.js';
 
 const inputSchema = z.object({
   number: z.number().int().positive('number must be a positive integer'),
   body: z.string().min(1, 'body must be a non-empty string'),
-  repo: z
-    .string()
-    .regex(/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/, 'repo must be owner/repo format')
-    .optional(),
+  // GitLab nested groups need arbitrary `/` depth — see lib/schemas/repo.ts (#290).
+  repo: repoOptionalSchema,
 });
 
 function envelope(payload: unknown) {
