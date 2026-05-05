@@ -18,6 +18,7 @@
 // "valid spec" test that /prepwaves uses upstream.
 
 import {
+  findBoldLabelDependencies,
   findSubIssueSection,
   parseIssueRef,
   parseSections,
@@ -265,7 +266,16 @@ export async function computeWavesForEpic(
         subRefParsed.owner && subRefParsed.repo
           ? `${subRefParsed.owner}/${subRefParsed.repo}`
           : slug;
-      const deps = parseDependencies(subSections.dependencies ?? '', subSlug);
+      // Mirror spec_dependencies: try ## Dependencies H2 first, then fall back
+      // to **Dependencies:** bold-label across all sections if the H2 is absent
+      // or empty. This keeps wave_compute and spec_dependencies in lockstep so
+      // both tools accept the same dep sources (#288).
+      let depsSection = subSections.dependencies ?? '';
+      if (!depsSection.trim()) {
+        const fallback = findBoldLabelDependencies(subSections);
+        if (fallback) depsSection = fallback;
+      }
+      const deps = parseDependencies(depsSection, subSlug);
       nodes.push({
         ref: sub.ref,
         title: sub.title ?? subData.title,

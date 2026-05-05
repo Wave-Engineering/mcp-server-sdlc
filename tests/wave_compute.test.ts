@@ -453,4 +453,138 @@ describe('wave_compute handler', () => {
     expect(parsed.ok).toBe(false);
     expect(typeof parsed.error).toBe('string');
   });
+
+  // ---- #288: bold-label dependency fallback parity with spec_dependencies ---
+  // wave_compute previously only parsed ## Dependencies H2 sections, silently
+  // ignoring **Dependencies:** bold-labels inside ## Metadata. This caused flat-
+  // parallel wave plans when issues used the bold-label convention (the default
+  // from /issue and /devspec upshift). Now wave_compute mirrors spec_dependencies
+  // by falling back to the bold-label when the H2 is absent or empty.
+
+  test('bold_label_fallback — dependency in **Dependencies:** inside ## Metadata, no H2', async () => {
+    const epicBody = `## Sub-Issues
+
+- #5 first
+- #6 second
+- #7 third
+`;
+    const subs: Record<string, { body: string; title?: string }> = {
+      'org/repo#5': { body: '## Metadata\n\n- **Dependencies:** None\n', title: 'first' },
+      'org/repo#6': {
+        body: '## Metadata\n\n- **Dependencies:** #5\n\n- **Wave:** 1\n',
+        title: 'second',
+      },
+      'org/repo#7': {
+        body: '## Metadata\n\n- **Dependencies:** #6\n\n- **Wave:** 1\n',
+        title: 'third',
+      },
+    };
+    mockGraph(epicBody, subs);
+    const result = await handler.execute({ epic_ref: '#100' });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.topology).toBe('serial');
+    expect(parsed.waves.length).toBe(3);
+    // #5 has no deps → wave 0
+    expect(parsed.waves[0].issues[0].ref).toBe('org/repo#5');
+    // #6 depends on #5 → wave 1
+    expect(parsed.waves[1].issues[0].ref).toBe('org/repo#6');
+    expect(parsed.waves[1].issues[0].depends_on).toEqual(['org/repo#5']);
+    // #7 depends on #6 → wave 2
+    expect(parsed.waves[2].issues[0].ref).toBe('org/repo#7');
+    expect(parsed.waves[2].issues[0].depends_on).toEqual(['org/repo#6']);
+  });
+
+  test('bold_label_fallback — parallel issues with bold-label deps collapse correctly', async () => {
+    // Reproducer from #288: 25 stories with only bold-label deps should NOT
+    // collapse into one flat wave. Here's a smaller diamond shape to verify
+    // the same behavior.
+    const epicBody = `## Sub-Issues
+
+- #5 A
+- #6 B
+- #7 C
+`;
+    const subs: Record<string, { body: string; title?: string }> = {
+      'org/repo#5': { body: '## Metadata\n\n- **Dependencies:** None\n', title: 'A' },
+      'org/repo#6': { body: '## Metadata\n\n- **Dependencies:** None\n', title: 'B' },
+      'org/repo#7': {
+        body: '## Metadata\n\n- **Dependencies:** #5, #6\n',
+        title: 'C',
+      },
+    };
+    mockGraph(epicBody, subs);
+    const result = await handler.execute({ epic_ref: '#100' });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.topology).toBe('mixed');
+    expect(parsed.waves.length).toBe(2);
+    // Wave 0: A and B in parallel
+    expect(parsed.waves[0].issues.length).toBe(2);
+    expect(parsed.waves[0].issues.map((i: { ref: string }) => i.ref).sort()).toEqual([
+      'org/repo#5',
+      'org/repo#6',
+    ]);
+    // Wave 1: C depends on both A and B
+    expect(parsed.waves[1].issues.length).toBe(1);
+    expect(parsed.waves[1].issues[0].ref).toBe('org/repo#7');
+    expect(parsed.waves[1].issues[0].depends_on.sort()).toEqual(['org/repo#5', 'org/repo#6']);
+  });
+
+  test('bold_label_fallback — H2 takes precedence over bold-label when both present', async () => {
+    // If an issue has BOTH ## Dependencies H2 and **Dependencies:** bold-label,
+    // the H2 wins (same behavior as spec_dependencies).
+    const epicBody = `## Sub-Issues
+
+- #5 first
+- #6 second
+`;
+    const subs: Record<string, { body: string; title?: string }> = {
+      'org/repo#5': { body: '## Dependencies\nNone\n', title: 'first' },
+      'org/repo#6': {
+        // H2 says #5, bold-label says None — H2 wins.
+        body: `## Dependencies
+
+- #5
+
+## Metadata
+
+- **Dependencies:** None
+`,
+        title: 'second',
+      },
+    };
+    mockGraph(epicBody, subs);
+    const result = await handler.execute({ epic_ref: '#100' });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.waves.length).toBe(2);
+    // #5 has no deps → wave 0
+    expect(parsed.waves[0].issues[0].ref).toBe('org/repo#5');
+    // #6 depends on #5 (from H2, not bold-label) → wave 1
+    expect(parsed.waves[1].issues[0].ref).toBe('org/repo#6');
+    expect(parsed.waves[1].issues[0].depends_on).toEqual(['org/repo#5']);
+  });
+
+  test('bold_label_fallback — no deps found when neither H2 nor bold-label present', async () => {
+    const epicBody = `## Sub-Issues
+
+- #5 first
+- #6 second
+`;
+    const subs: Record<string, { body: string; title?: string }> = {
+      'org/repo#5': { body: '## Summary\n\nSome content.\n', title: 'first' },
+      'org/repo#6': { body: '## Summary\n\nMore content.\n', title: 'second' },
+    };
+    mockGraph(epicBody, subs);
+    const result = await handler.execute({ epic_ref: '#100' });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.topology).toBe('parallel');
+    expect(parsed.waves.length).toBe(1);
+    expect(parsed.waves[0].issues.length).toBe(2);
+    // Both issues have empty depends_on
+    expect(parsed.waves[0].issues[0].depends_on).toEqual([]);
+    expect(parsed.waves[0].issues[1].depends_on).toEqual([]);
+  });
 });
