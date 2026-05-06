@@ -125,6 +125,7 @@ describe('prMergeGithub — subprocess boundary', () => {
       merge_commit_sha: 'abc123def456',
       warnings: [],
       queue_fallback: false,
+      graphql_fallback: false,
     });
   });
 
@@ -304,12 +305,51 @@ describe('prMergeGithub — subprocess boundary', () => {
     });
     expectOk(result);
     const mergeCall = findCall('gh pr merge 42');
-    expect(mergeCall).toContain('--repo Wave-Engineering/mcp-server-sdlc');
+    expect(unquote(mergeCall!)).toContain('--repo Wave-Engineering/mcp-server-sdlc');
     const viewCall = findCall('gh pr view 42');
-    expect(viewCall).toContain('--repo Wave-Engineering/mcp-server-sdlc');
+    expect(unquote(viewCall!)).toContain('--repo Wave-Engineering/mcp-server-sdlc');
     const graphqlCall = findCall('gh api graphql');
     expect(graphqlCall).toContain('-F owner=Wave-Engineering');
     expect(graphqlCall).toContain('-F name=mcp-server-sdlc');
+  });
+
+  test('pr-merge-github — buildGithubMergeCommand shell-escapes repo (security)', async () => {
+    // Defence-in-depth: even though the schema layer rejects shell metachars
+    // in `repo`, the adapter must shell-escape before joining argv into a
+    // shell command. The test passes a value that bypasses schema validation
+    // (we call prMergeGithub directly, not the handler) and verifies the
+    // resulting command contains the dangerous chars only inside a single
+    // shell-quoted token.
+    on('git remote get-url origin', 'https://github.com/cwd-org/cwd-repo.git\n');
+    stubNoQueue();
+    on('gh pr merge 99', '');
+    on(
+      'gh pr view 99',
+      JSON.stringify({
+        state: 'MERGED',
+        url: 'https://github.com/sec/repo/pull/99',
+        mergeCommit: { oid: 'abc' },
+      }),
+    );
+
+    // Hostile repo value with shell-injection characters
+    const hostileRepo = `sec/repo'; echo PWNED; #`;
+    await prMergeGithub({ number: 99, repo: hostileRepo });
+
+    const mergeCall = execCalls.find((c) => c.includes('gh pr merge 99'));
+    expect(mergeCall).toBeDefined();
+    // shellEscape wraps each argv element in `'...'` and rewrites embedded
+    // single quotes as `'\''` (close + escape + reopen). The hostile value
+    // becomes `'sec/repo'\''; echo PWNED; #'` — three safe shell tokens
+    // joined by an escaped quote, treated as ONE argv element by the shell.
+    // Strip both `'\''` sequences and `'...'` regions; no shell-active chars
+    // should remain in the residual.
+    const stripped = mergeCall!
+      .replace(/'\\''/g, '') // remove escaped-quote sequences
+      .replace(/'[^']*'/g, ''); // remove single-quoted regions
+    expect(stripped).not.toContain(';');
+    expect(stripped).not.toContain('echo');
+    expect(stripped).not.toContain('PWNED');
   });
 
   // =========================================================================
@@ -405,5 +445,175 @@ describe('prMergeGithub — subprocess boundary', () => {
       (c) => c.includes('gh pr merge 282') && c.includes('--auto'),
     );
     expect(autoCall).toBeUndefined();
+  });
+
+  // =========================================================================
+  // Bug #284 — GraphQL enqueuePullRequest fallback
+  // =========================================================================
+
+  test('pr-merge-github — merge queue fallback uses GraphQL enqueuePullRequest', async () => {
+    // Regression bug #284: on merge-queue-on / auto-merge-off repos, both
+    // direct merge AND gh pr merge --auto fail. The adapter should fall back
+    // to GraphQL enqueuePullRequest mutation.
+    // Register more specific matcher for enqueuePullRequest BEFORE stubNoQueue
+    on(
+      'enqueuePullRequest',
+      JSON.stringify({
+        data: {
+          enqueuePullRequest: {
+            mergeQueueEntry: { position: 3 },
+          },
+        },
+      }),
+    );
+    stubNoQueue(); // detection returns false-negative
+    on('gh pr merge 284 --squash --delete-branch', () => {
+      throw mergeQueueError();
+    });
+    // --auto ALSO fails with a queue-related error (merge-queue-on but auto-merge-off)
+    on('gh pr merge 284 --squash --delete-branch --auto', () => {
+      const err = new Error('Auto merge is not allowed for this repository') as ThrowableError;
+      err.stderr = 'Auto merge is not allowed for this repository\n';
+      throw err;
+    });
+    // GraphQL node_id fetch
+    on(
+      'gh api repos/org/repo/pulls/284',
+      JSON.stringify({ node_id: 'PR_kwDOAbc123' }),
+    );
+    on(
+      'gh pr view 284 --json state,url,mergeCommit',
+      JSON.stringify({
+        state: 'OPEN',
+        url: 'https://github.com/org/repo/pull/284',
+        mergeCommit: null,
+      }),
+    );
+
+    const result = await prMergeGithub({ number: 284 });
+    expectOk(result);
+    expect(result.data.merge_method).toBe('merge_queue');
+    expect(result.data.enrolled).toBe(true);
+    expect(result.data.merged).toBe(false);
+    expect(result.data.queue_fallback).toBe(true);
+    expect(result.data.graphql_fallback).toBe(true);
+    expect(result.data.queue_position).toBe(3);
+    // Verify both --auto and GraphQL calls were made
+    const autoCall = execCalls.find(
+      (c) => unquote(c).includes('gh pr merge 284') && unquote(c).includes('--auto'),
+    );
+    expect(autoCall).toBeDefined();
+    const nodeIdCall = execCalls.find((c) =>
+      unquote(c).includes('gh api repos/org/repo/pulls/284'),
+    );
+    expect(nodeIdCall).toBeDefined();
+    const graphqlCall = execCalls.find(
+      (c) =>
+        unquote(c).includes('gh api graphql') && unquote(c).includes('enqueuePullRequest'),
+    );
+    expect(graphqlCall).toBeDefined();
+  });
+
+  test('pr-merge-github — GraphQL fallback shell-escapes repo and prId (security)', async () => {
+    // Regression: enqueuePullRequestViaGraphQL must use argv-array form
+    // (runArgv) so that special characters in `repo` or `prId` cannot break
+    // out of the shell command. We verify by stubbing a node_id with chars
+    // that would terminate a string-template'd command.
+    on(
+      'enqueuePullRequest',
+      JSON.stringify({
+        data: { enqueuePullRequest: { mergeQueueEntry: { position: 7 } } },
+      }),
+    );
+    stubNoQueue();
+    on('gh pr merge 286 --squash --delete-branch', () => {
+      throw mergeQueueError();
+    });
+    on('gh pr merge 286 --squash --delete-branch --auto', () => {
+      const err = new Error('Auto merge is not allowed for this repository') as ThrowableError;
+      err.stderr = 'Auto merge is not allowed for this repository\n';
+      throw err;
+    });
+    // node_id contains characters that WOULD break out of a quoted shell value
+    on(
+      'gh api repos/org/repo/pulls/286',
+      JSON.stringify({ node_id: `PR_kw"; echo PWNED; #` }),
+    );
+    on(
+      'gh pr view 286 --json state,url,mergeCommit',
+      JSON.stringify({
+        state: 'OPEN',
+        url: 'https://github.com/org/repo/pull/286',
+        mergeCommit: null,
+      }),
+    );
+
+    const result = await prMergeGithub({ number: 286, repo: 'org/repo' });
+    expectOk(result);
+    // The dangerous prId value should appear inside single-quoted argv
+    // elements, never as bare shell text. With shell-escape, every `'` in
+    // the value is replaced by `'\''` and the value is wrapped in `'...'`.
+    const graphqlCall = execCalls.find(
+      (c) => c.includes('gh') && c.includes('graphql') && c.includes('PWNED'),
+    );
+    expect(graphqlCall).toBeDefined();
+    // Shell-escape contract: every argv element is wrapped in `'...'` and
+    // any embedded single quote is rewritten as `'\''`. The dangerous value
+    // (including spaces and `; echo PWNED; #`) must be contained inside one
+    // single-quoted region. We verify via a regex that captures the entire
+    // single-quoted prId argv element.
+    const prIdMatch = graphqlCall!.match(/'(prId=[^']*)'/);
+    expect(prIdMatch).not.toBeNull();
+    expect(prIdMatch![1]).toContain('PWNED');
+    // Confirm there are no UNQUOTED `;` chars (which would let the shell run
+    // the rest as a separate command). Strip all single-quoted regions and
+    // the residual must not contain `;`.
+    const residual = graphqlCall!.replace(/'[^']*'/g, '');
+    expect(residual).not.toContain(';');
+    expect(residual).not.toContain('echo');
+  });
+
+  test('pr-merge-github — direct merge success has graphql_fallback:false', async () => {
+    // Happy path: direct merge succeeds, no GraphQL fallback needed.
+    stubNoQueue();
+    on('gh pr merge 285 --squash --delete-branch', '');
+    on(
+      'gh pr view 285 --json state,url,mergeCommit',
+      JSON.stringify({
+        state: 'MERGED',
+        url: 'https://github.com/org/repo/pull/285',
+        mergeCommit: { oid: 'abc285' },
+      }),
+    );
+
+    const result = await prMergeGithub({ number: 285 });
+    expectOk(result);
+    expect(result.data.merge_method).toBe('direct_squash');
+    expect(result.data.merged).toBe(true);
+    expect(result.data.queue_fallback).toBe(false);
+    expect(result.data.graphql_fallback).toBe(false);
+    expect(result.data.queue_position).toBeUndefined();
+  });
+
+  test('pr-merge-github — unrelated failure surfaces error, no GraphQL fallback', async () => {
+    // gh fails for a non-queue reason (e.g., CI red, conflicts). The adapter
+    // should NOT invoke GraphQL enqueuePullRequest fallback, just surface the error.
+    stubNoQueue();
+    on('gh pr merge 286 --squash --delete-branch', () => {
+      const err = new Error('Pull request is not mergeable: conflicts') as ThrowableError;
+      err.stderr = 'Pull request is not mergeable: conflicts\n';
+      throw err;
+    });
+
+    const result = await prMergeGithub({ number: 286 });
+    expectErr(result);
+    expect(result.code).toBe('gh_pr_merge_failed');
+    expect(result.error).toContain('conflicts');
+    // Queue detection GraphQL call is expected, but enqueuePullRequest should NOT be called
+    const graphqlEnqueueCall = execCalls.find((c) => c.includes('enqueuePullRequest'));
+    expect(graphqlEnqueueCall).toBeUndefined();
+    // Also should not fetch node_id
+    const nodeIdCall = execCalls.find((c) => c.includes('gh api repos/org/repo/pulls/286'));
+    expect(nodeIdCall).toBeUndefined();
   });
 });

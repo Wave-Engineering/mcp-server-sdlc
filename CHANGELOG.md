@@ -7,6 +7,7 @@
 **BREAKING CHANGE (#363, Story 2.2):** `wave_finalize` no longer accepts `epic_id`. Callers must pass `plan_id`. The assembled kahuna→target MR title changes from `epic(#N): <slug> — kahuna to <target>` to `plan(#N): <slug> — kahuna to <target>`. No legacy-compat fallback; the old parameter name fails schema validation with a clear error. Part of the Plan/Phase/Epic taxonomy lock (cc-workflow#499).
 
 ### Features
+- **plan_load_dod**: New MCP tool to fetch Plan tracking-issue and extract Definition of Done structure — both Plan-level DoD checkboxes and per-Phase DoD checklists with [R-XX] refs. Returns parsed view including Dev Spec path from References section. Part of the Plan DoD workflow family. [#388]
 - **wave_reconcile**: New Prime(post-wave) reconciliation handler emitting canonical `[drift-halt]` comments on Category B drift per Dev Spec §5.4.1. [#366, Story 2.5]
 - **devspec_finalize**: Require `depends_on` field on every Story in `phases-waves.json` (may be empty array); finalization fails with a named list of offenders otherwise. [#367, Story 2.6]
 

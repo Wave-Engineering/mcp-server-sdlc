@@ -180,4 +180,27 @@ describe('dod_load_manifest handler', () => {
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);
   });
+
+  test('parses_h3_manifest_heading — devspec canonical form (### 5.A Deliverables Manifest)', async () => {
+    const prd = `# Development Specification
+
+## 5. Deliverables & Definition of Done
+
+### 5.A Deliverables Manifest
+
+| ID | Description | Evidence Path | Status | Category |
+|----|-------------|---------------|--------|----------|
+| D-01 | Test handler | handlers/test.ts | pending | code |
+| D-02 | Test suite | tests/test.test.ts | pending | test |
+
+### 5.B Test Plan
+`;
+    const path = await writeTempFile(prd);
+    const result = await handler.execute({ path });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.deliverables.length).toBe(2);
+    expect(parsed.deliverables[0].id).toBe('D-01');
+    expect(parsed.deliverables[1].id).toBe('D-02');
+  });
 });

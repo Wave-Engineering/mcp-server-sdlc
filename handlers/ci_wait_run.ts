@@ -15,6 +15,7 @@ import {
   defaultSleep,
   type WaitResult,
 } from '../lib/ci-wait-run-poll.js';
+import { repoOptionalSchema } from '../lib/schemas/repo.js';
 
 const inputSchema = z
   .object({
@@ -22,10 +23,8 @@ const inputSchema = z
     workflow_name: z.string().optional(),
     poll_interval_sec: z.number().int().positive().optional(),
     timeout_sec: z.number().int().positive().optional(),
-    repo: z
-      .string()
-      .regex(/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/, 'repo must be in owner/repo form')
-      .optional(),
+    // GitLab nested groups need arbitrary `/` depth — see lib/schemas/repo.ts (#290).
+    repo: repoOptionalSchema,
     expected_sha: z
       .string()
       .regex(/^[0-9a-f]{40}$/i, 'expected_sha must be a 40-char hex commit SHA')

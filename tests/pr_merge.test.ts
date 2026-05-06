@@ -632,9 +632,11 @@ describe('pr_merge handler — aggregate response (#225)', () => {
     expect(data.ok).toBe(true);
 
     const mergeCall = execCalls.find((c) => c.startsWith('gh pr merge 42')) ?? '';
-    expect(mergeCall).toContain('--repo Wave-Engineering/mcp-server-sdlc');
+    // shellEscape wraps the repo arg in single quotes; strip them for the
+    // contains check.
+    expect(mergeCall.replace(/'/g, '')).toContain('--repo Wave-Engineering/mcp-server-sdlc');
     const viewCall = execCalls.find((c) => c.startsWith('gh pr view 42')) ?? '';
-    expect(viewCall).toContain('--repo Wave-Engineering/mcp-server-sdlc');
+    expect(viewCall.replace(/'/g, '')).toContain('--repo Wave-Engineering/mcp-server-sdlc');
     // Queue detection should also use the explicit repo, not the cwd remote.
     const graphqlCall = execCalls.find((c) => c.includes('gh api graphql')) ?? '';
     expect(graphqlCall).toContain('-F owner=Wave-Engineering');

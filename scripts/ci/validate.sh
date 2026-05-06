@@ -27,8 +27,18 @@ else
     echo "shellcheck: ${#scripts[@]} file(s) OK"
 fi
 
-echo "--- tests ---"
+echo "--- unit tests ---"
 bun test
+
+echo "--- integration tests ---"
+# Real-CLI integration tests — verify flag shapes our handlers depend on.
+# Skips cleanly when gh/glab aren't installed (local dev + CI runners without both).
+if command -v gh >/dev/null 2>&1 || command -v glab >/dev/null 2>&1; then
+    bun test tests/integration/
+    echo "integration tests: OK"
+else
+    echo "integration tests: SKIPPED (gh/glab not installed)"
+fi
 
 echo "--- runtime smoke test ---"
 ./scripts/ci/smoke.sh

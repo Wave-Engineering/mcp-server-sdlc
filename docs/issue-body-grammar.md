@@ -114,6 +114,25 @@ The response's `source` field reports which path was taken:
 - Full `github.com` / `gitlab.com` issue URLs
 - Literal `None` (case-insensitive, word-anchored) — returns an empty list
 
+## wave_compute
+
+Computes dependency-ordered waves for an epic's sub-issues.
+
+### Dependency parsing
+
+For each sub-issue, `wave_compute` resolves dependencies through the same
+code path as `spec_dependencies` to ensure consistency:
+
+1. **Primary source:** The `## Dependencies` H2 section in the sub-issue body.
+2. **Fallback source:** When the H2 is absent or empty, scans all sections
+   for a `**Dependencies:**` bold-label (commonly found in `## Metadata`).
+
+Both tools accept the same ref forms (`#N`, `org/repo#N`, full URLs, or
+`None`). This parity ensures that `spec_dependencies` and `wave_compute`
+agree on dependency sources, preventing silent flat-parallel wave plans when
+issues use the bold-label convention (the default from `/issue` and
+`/devspec upshift`).
+
 ## Regression fixtures
 
 `tests/fixtures/parser-grammar/` holds verbatim issue bodies produced by

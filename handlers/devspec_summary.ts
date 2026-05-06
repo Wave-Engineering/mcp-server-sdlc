@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
+import { parseManifestTables, hasPath, hasNAOptOut } from '../lib/devspec-parser.js';
 
 const inputSchema = z.object({
   path: z.string().min(1, 'path must be a non-empty string'),
@@ -105,86 +106,34 @@ function findDeliverablesManifest(lines: string[]): SectionRange | null {
 }
 
 /**
- * Count rows in the Section 5.A deliverables table, splitting them into
+ * Count rows in Section 5.A deliverables table(s), splitting them into
  * "active" (a real file path) and "N/A — because" rationale rows.
  *
- * The deliverables table header looks like:
- *   `| ID | Deliverable | Category | Tier | File Path | Produced In | Status | Notes |`
- *
- * Active rule: File Path cell is non-empty and does NOT start with `N/A`.
- * N/A rule: any cell in the row contains the literal phrase `N/A — because`
- * (em dash) — this catches both File Path-column rationales and Notes-column
- * rationales.
+ * Now uses the shared parseManifestTables() function which parses ALL tables
+ * in the section, fixing Bug 1 (Tier 2 blindness).
  */
 function countDeliverables(lines: string[]): { active: number; na: number } {
   const range = findDeliverablesManifest(lines);
   if (!range) return { active: 0, na: 0 };
 
   const sectionLines = lines.slice(range.start, range.end);
+  const sectionMd = sectionLines.join('\n');
 
-  // Find the first markdown table header (a row starting with `|`).
-  let headerIdx = -1;
-  for (let i = 0; i < sectionLines.length; i++) {
-    const trimmed = sectionLines[i].trim();
-    if (trimmed.startsWith('|') && trimmed.endsWith('|')) {
-      headerIdx = i;
-      break;
-    }
-  }
-  if (headerIdx === -1) return { active: 0, na: 0 };
-
-  const headerCells = sectionLines[headerIdx]
-    .trim()
-    .split('|')
-    .slice(1, -1)
-    .map(c => c.trim().toLowerCase());
-
-  const filePathCol = headerCells.findIndex(c => c.includes('file path') || c === 'path');
-
-  // Skip the separator row `|---|---|`.
-  let startRow = headerIdx + 1;
-  if (
-    startRow < sectionLines.length &&
-    /^\|[\s\-:|]+\|$/.test(sectionLines[startRow].trim())
-  ) {
-    startRow += 1;
-  }
+  // Use shared parser which captures ALL tables, not just the first one.
+  const rows = parseManifestTables(sectionMd);
 
   let active = 0;
   let na = 0;
 
-  for (let i = startRow; i < sectionLines.length; i++) {
-    const line = sectionLines[i];
-    const trimmed = line.trim();
-    if (!trimmed.startsWith('|')) {
-      // Table ended.
-      break;
-    }
-    const cells = trimmed.split('|').slice(1, -1).map(c => c.trim());
-    if (cells.length === 0) continue;
-
-    // Skip rows that look like template placeholders (all cells are empty
-    // or wrapped in [[ ]]). A real row has SOME non-placeholder content.
+  for (const row of rows) {
+    // Skip template placeholder rows.
+    const cells = [row.id, row.deliverable, row.category, row.tier, row.file_path, row.produced_in];
     const meaningful = cells.some(c => c.length > 0 && !/^\[\[.*\]\]$/.test(c));
     if (!meaningful) continue;
 
-    // N/A — because: matches anywhere in the row (em dash, ASCII dash, or
-    // hyphen). Per the Dev Spec template, the canonical form is em dash.
-    const rowText = cells.join(' | ');
-    const isNA = /N\/A\s+[—–-]\s+because/i.test(rowText);
-
-    if (isNA) {
+    if (hasNAOptOut(row)) {
       na += 1;
-      continue;
-    }
-
-    // Active: File Path cell is present, non-empty, and not starting with N/A.
-    let filePath = '';
-    if (filePathCol >= 0 && filePathCol < cells.length) {
-      // Strip surrounding backticks/whitespace from the cell.
-      filePath = cells[filePathCol].replace(/`/g, '').trim();
-    }
-    if (filePath.length > 0 && !/^N\/A\b/i.test(filePath)) {
+    } else if (hasPath(row)) {
       active += 1;
     }
   }

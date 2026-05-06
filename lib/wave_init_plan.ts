@@ -159,33 +159,82 @@ export async function readPhasesWavesTotals(
 // ---------------------------------------------------------------------------
 // KAHUNA bootstrap — platform-facing calls go through the `PlatformAdapter`
 // so the handler remains free of platform branching (R-09).
+//
+// Atomicity (#378): the bootstrap is split into two phases so the handler
+// can interleave them around the `wave-status init` plan-persist step:
+//
+//   1. `bootstrapKahunaBranchRemote` — pre-check + create branch on remote.
+//      Reads state.json if present (extend mode), tolerates absence (fresh
+//      init). Returns `{ok, kahuna_branch, created}` or error. NO state.json
+//      writes — safe to run BEFORE `wave-status init` exists.
+//   2. Handler runs `wave-status init` to persist the plan to disk.
+//   3. `recordKahunaBranchInState` — writes the branch name into state.json
+//      via `wave-status set-kahuna-branch`. Must run AFTER step 2 because
+//      `set-kahuna-branch` requires state.json to exist.
+//
+// Failure modes after resequencing:
+// - Phase 1 fails → no plan persisted, no remote branch (createBranch is
+//   atomic at the platform API level). Retry converges trivially.
+// - Phase 2 fails → remote branch exists but state empty. Retry's phase 1
+//   sees `recorded === null` AND remote has desired → claims as idempotent
+//   reuse (NOT orphan-refused). This is the key behavior change vs the
+//   pre-#378 single-phase function: "orphan with matching name" is now a
+//   successful claim, not an error, because the branch name is fully
+//   determined by `kahuna/<plan_id>-<slug>` and a name collision across
+//   different plans is impossible (plan_id is the unique tracking-issue
+//   number for the master plan).
+// - Phase 3 fails → `wave-status set-kahuna-branch` is a local file write
+//   and rarely fails; if it does, the state has no kahuna_branch field but
+//   the remote branch exists. Retry would hit `wave-status init`'s "already
+//   initialized" guard. Out of scope for #378; tracked separately if it
+//   ever arises in practice.
 // ---------------------------------------------------------------------------
 
 export interface KahunaBootstrapResult {
   ok: true;
   kahuna_branch: string;
+  /** `true` if the adapter created the remote branch in this call; `false` if a
+   * matching branch already existed (claim/reuse). */
   created: boolean;
+  /** `true` if state.json's `kahuna_branch` already matched `desired` before
+   * this call (idempotent-reuse path). Handler uses this to skip the redundant
+   * `wave-status set-kahuna-branch` write. `false` when state was empty or the
+   * call created a new branch — in both cases the handler must record. */
+  previously_recorded: boolean;
 }
 export interface KahunaBootstrapError {
   ok: false;
   error: string;
 }
 
-export interface KahunaBootstrapDeps {
+export interface KahunaBootstrapRemoteDeps {
   adapter: Pick<PlatformAdapter, 'resolveBranchSha' | 'createBranch'>;
-  /** CLI shell-out — `wave-status set-kahuna-branch <name>`. Injectable for testing. */
-  recordKahunaBranch: (branch: string) => void;
   /** `git ls-remote` probe — local git, not a platform API. Injectable for testing. */
   branchPresentOnRemote: (branch: string) => boolean;
   slug: string | undefined;
 }
 
-export async function bootstrapKahunaBranch(
+/** Back-compat alias — pre-#378 callers passed a `recordKahunaBranch` callback. */
+export interface KahunaBootstrapDeps extends KahunaBootstrapRemoteDeps {
+  /** CLI shell-out — `wave-status set-kahuna-branch <name>`. Injectable for testing. */
+  recordKahunaBranch: (branch: string) => void;
+}
+
+/**
+ * Phase 1 of #378's atomic kahuna bootstrap: pre-check state + create the
+ * branch on remote, but do NOT write to state.json. Safe to call BEFORE
+ * `wave-status init` (state.json may not yet exist).
+ *
+ * `readState` should return `{kahuna_branch: null}` when state.json is
+ * absent (fresh init). Callers in the handler use a wrapper that swallows
+ * ENOENT and yields the empty default.
+ */
+export async function bootstrapKahunaBranchRemote(
   cwd: string,
   kahuna: { plan_id: number; slug: string },
   baseBranch: string,
   readState: () => Promise<{ kahuna_branch?: string | null }>,
-  deps: KahunaBootstrapDeps,
+  deps: KahunaBootstrapRemoteDeps,
 ): Promise<KahunaBootstrapResult | KahunaBootstrapError> {
   void cwd;
   const desired = `kahuna/${kahuna.plan_id}-${kahuna.slug}`;
@@ -194,7 +243,7 @@ export async function bootstrapKahunaBranch(
 
   if (recorded === desired) {
     if (deps.branchPresentOnRemote(desired)) {
-      return { ok: true, kahuna_branch: desired, created: false };
+      return { ok: true, kahuna_branch: desired, created: false, previously_recorded: true };
     }
     return {
       ok: false,
@@ -208,12 +257,18 @@ export async function bootstrapKahunaBranch(
     };
   }
 
-  // recorded === null: state unset. Check the remote for an orphan.
+  // recorded === null: state unset. Check the remote for an existing branch
+  // matching `desired`.
+  //
+  // #378: if the remote has the EXACT desired branch (`kahuna/<plan_id>-<slug>`),
+  // claim it as idempotent reuse rather than refusing as an orphan. The branch
+  // name is fully determined by request inputs; a true "orphan from a different
+  // plan" is impossible because plan_id is the unique tracking-issue number for
+  // the master plan, and (plan_id, slug) is a deterministic mapping. This makes
+  // wave_init retry-safe after a phase-2 (`wave-status init`) failure that left
+  // the branch on remote but no state.json.
   if (deps.branchPresentOnRemote(desired)) {
-    return {
-      ok: false,
-      error: `orphan kahuna branch ${desired} exists on remote but is not recorded in state — manual triage required`,
-    };
+    return { ok: true, kahuna_branch: desired, created: false, previously_recorded: false };
   }
 
   // Fresh creation path — adapter reads main HEAD SHA + creates the branch.
@@ -233,15 +288,52 @@ export async function bootstrapKahunaBranch(
     return { ok: false, error: createResult.error };
   }
 
+  return { ok: true, kahuna_branch: desired, created: true, previously_recorded: false };
+}
+
+/**
+ * Phase 3 of #378's atomic kahuna bootstrap: record the branch name in
+ * state.json via `wave-status set-kahuna-branch`. Must run AFTER
+ * `wave-status init` (which creates state.json). Idempotent — safe to call
+ * even when the branch was discovered as already-existing in phase 1.
+ */
+export function recordKahunaBranchInState(
+  branch: string,
+  recordKahunaBranch: (branch: string) => void,
+): { ok: true } | KahunaBootstrapError {
   try {
-    deps.recordKahunaBranch(desired);
+    recordKahunaBranch(branch);
+    return { ok: true };
   } catch (err) {
     return {
       ok: false,
       error: `wave-status set-kahuna-branch failed: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
-  return { ok: true, kahuna_branch: desired, created: true };
+}
+
+/**
+ * Pre-#378 single-phase entry point — kept for back-compat with any caller
+ * outside the wave_init handler. New callers should use the resequenced
+ * pair (`bootstrapKahunaBranchRemote` + `recordKahunaBranchInState`) so
+ * plan-persist failures don't strand a branch on remote with no state.
+ *
+ * @deprecated Use the two-phase API for atomic bootstrap. See #378.
+ */
+export async function bootstrapKahunaBranch(
+  cwd: string,
+  kahuna: { plan_id: number; slug: string },
+  baseBranch: string,
+  readState: () => Promise<{ kahuna_branch?: string | null }>,
+  deps: KahunaBootstrapDeps,
+): Promise<KahunaBootstrapResult | KahunaBootstrapError> {
+  const remote = await bootstrapKahunaBranchRemote(cwd, kahuna, baseBranch, readState, deps);
+  if (!remote.ok) return remote;
+  if (!remote.previously_recorded) {
+    const recorded = recordKahunaBranchInState(remote.kahuna_branch, deps.recordKahunaBranch);
+    if (!recorded.ok) return recorded;
+  }
+  return remote;
 }
 
 function extractSha(

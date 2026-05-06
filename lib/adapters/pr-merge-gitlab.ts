@@ -144,6 +144,9 @@ export async function prMergeGitlab(
         // GitLab has no queue concept — queue_fallback always false. Required
         // by PrMergeResponse since bug #280 / #294 added the field.
         queue_fallback: false,
+        // GitLab has no GraphQL enqueuePullRequest — graphql_fallback always
+        // false. Required by PrMergeResponse since bug #284 added the field.
+        graphql_fallback: false,
       },
     };
   } catch (err) {

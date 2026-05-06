@@ -94,6 +94,17 @@ export interface PrMergeResponse {
    * enforced-queue path where `--auto` was chosen upfront. Bug #280 / #294.
    */
   queue_fallback: boolean;
+  /**
+   * True when the adapter fell back to GraphQL enqueuePullRequest mutation
+   * because gh pr merge --auto failed on a merge-queue-on / auto-merge-off repo.
+   * Defaults to `false` on every other path. Bug #284.
+   */
+  graphql_fallback: boolean;
+  /**
+   * Queue position returned from GraphQL enqueuePullRequest mutation, or null
+   * if unavailable. Only populated when graphql_fallback is true. Bug #284.
+   */
+  queue_position?: number | null;
 }
 export interface PrMergeWaitArgs {
   number: number;
@@ -597,6 +608,63 @@ export interface WorkItemResponse {
   url: string;
   number: number;
 }
+
+/**
+ * `work_item_update` args/response (#287). Update an existing GitHub issue or
+ * GitLab issue via the appropriate platform CLI.
+ *
+ * `issue_ref` is parsed by `parseIssueRef` (`#N` or `owner/repo#N`). Adapters
+ * use the parsed `(owner, repo, number)` triple plus an optional `repo` arg
+ * to compose the cross-repo `--repo` / `-R` flag.
+ *
+ * `patch` is a partial mutation:
+ *   - `title` — replace the title
+ *   - `body` — replace the FULL body
+ *   - `body_section` — replace ONE H2 section (the H2 heading is matched after
+ *      `normalizeHeading`); preserves all other sections verbatim. Mutually
+ *      exclusive with `body` (handler validates and rejects with both).
+ *   - `labels` — replace the FULL label set on the issue
+ *   - `assignees` — replace the FULL assignee set
+ *   - `milestone` — set the milestone (GitHub only; on GitLab the adapter
+ *      returns `platform_unsupported`).
+ *
+ * `dry_run` returns the proposed patch without invoking the platform CLI.
+ *
+ * Cross-platform asymmetry (R-03):
+ *   - `milestone` is a GitHub concept (`gh issue edit --milestone`). GitLab's
+ *     equivalent is "milestone" too, BUT the work-item-update adapter on
+ *     GitLab returns `platform_unsupported` for `milestone` because GitLab's
+ *     `glab issue update --milestone` requires the milestone *id* and group/
+ *     project resolution that this thin tool does not own. Callers needing
+ *     GitLab milestone updates should call `glab` directly today.
+ */
+export interface WorkItemUpdatePatch {
+  title?: string;
+  body?: string;
+  body_section?: { heading: string; content: string };
+  labels?: string[];
+  assignees?: string[];
+  milestone?: string;
+}
+
+export interface WorkItemUpdateArgs {
+  issue_ref: string;
+  patch: WorkItemUpdatePatch;
+  dry_run?: boolean;
+  repo?: string;
+}
+
+export interface WorkItemUpdateResponse {
+  url: string;
+  number: number;
+  /** True when this call was a dry-run; no platform CLI was invoked. */
+  dry_run: boolean;
+  /** The fields that were (or would be) updated. */
+  updated_fields: string[];
+  /** When `body_section` was used, the resulting full body (recomputed). */
+  resolved_body?: string;
+}
+
 export type IbmArgs = unknown;
 export type IbmResponse = unknown;
 export type EpicSubIssuesArgs = unknown;
@@ -835,6 +903,9 @@ export interface PlatformAdapter {
   labelCreate(args: LabelCreateArgs): Promise<AdapterResult<NormalizedLabel>>;
   labelList(args: LabelListArgs): Promise<AdapterResult<LabelListResponse>>;
   workItem(args: WorkItemArgs): Promise<AdapterResult<WorkItemResponse>>;
+  workItemUpdate(
+    args: WorkItemUpdateArgs,
+  ): Promise<AdapterResult<WorkItemUpdateResponse>>;
   ibm(args: IbmArgs): Promise<AdapterResult<IbmResponse>>;
   epicSubIssues(args: EpicSubIssuesArgs): Promise<AdapterResult<EpicSubIssuesResponse>>;
 
@@ -906,6 +977,7 @@ export const PLATFORM_ADAPTER_METHODS = [
   'labelCreate',
   'labelList',
   'workItem',
+  'workItemUpdate',
   'ibm',
   'epicSubIssues',
   'specGet',
