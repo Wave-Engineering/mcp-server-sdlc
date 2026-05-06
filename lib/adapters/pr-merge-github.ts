@@ -21,6 +21,7 @@ import { execSync } from 'child_process';
 import { writeFileSync } from 'fs';
 import { detectMergeQueue, type MergeQueueInfo } from '../merge_queue_detect.js';
 import { parseRepoSlug } from '../shared/parse-repo-slug.js';
+import { runArgv } from '../shared/error-norm.js';
 import { getAdapter } from './index.js';
 import type {
   AdapterResult,
@@ -81,35 +82,47 @@ function enqueuePullRequestViaGraphQL(
   number: number,
   repo: string | undefined,
 ): number | null {
-  // Step 1: fetch the PR's node_id. When repo is undefined, gh uses the
-  // current directory's remote. When repo is provided, we must include it in
-  // both the API path and --repo flag.
-  let nodeIdCmd: string;
+  // Use runArgv (argv-array form, each element shell-escaped) instead of
+  // string-template interpolation to eliminate shell-injection surface on
+  // `repo` and `prId` values. Both flow from external sources (caller-supplied
+  // repo arg, GitHub API response) and must not be trusted as shell-safe.
+  const cwd = process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
+
+  // Step 1: fetch the PR's node_id.
+  let nodeIdArgv: string[];
   if (repo !== undefined) {
-    nodeIdCmd = `gh api repos/${repo}/pulls/${number} --repo ${repo} --jq '.node_id'`;
+    nodeIdArgv = ['gh', 'api', `repos/${repo}/pulls/${number}`, '--repo', repo, '--jq', '.node_id'];
   } else {
     // When repo is undefined, resolve via the slug parser (same logic as
-    // detectMergeQueue). If that fails, let gh api infer from cwd.
+    // detectMergeQueue). If that fails, fall back to `gh pr view` which infers
+    // the repo from cwd's remote.
     const slug = parseRepoSlug();
     if (slug !== null) {
-      nodeIdCmd = `gh api repos/${slug}/pulls/${number} --jq '.node_id'`;
+      nodeIdArgv = ['gh', 'api', `repos/${slug}/pulls/${number}`, '--jq', '.node_id'];
     } else {
-      // Last resort: gh api without explicit repo path — will fail if cwd isn't
-      // a repo, but that's a caller error (same as other gh invocations).
-      nodeIdCmd = `gh pr view ${number} --json id --jq '.id'`;
+      nodeIdArgv = ['gh', 'pr', 'view', String(number), '--json', 'id', '--jq', '.id'];
     }
   }
-  const prId = exec(nodeIdCmd).trim();
+  const nodeIdResult = runArgv(nodeIdArgv, cwd);
+  if (nodeIdResult.exitCode !== 0) {
+    throw new Error(`gh node_id lookup failed: ${nodeIdResult.stderr || nodeIdResult.stdout}`);
+  }
+  const prId = nodeIdResult.stdout.trim();
 
   // Step 2: invoke the enqueuePullRequest mutation
   const mutation = `mutation($prId:ID!){enqueuePullRequest(input:{pullRequestId:$prId}){mergeQueueEntry{position}}}`;
-  const repoFlag = repo !== undefined ? `--repo ${repo}` : '';
-  const graphqlCmd = `gh api graphql -f query='${mutation}' -f prId="${prId}" ${repoFlag}`.trim();
-  const response = exec(graphqlCmd);
+  const graphqlArgv = ['gh', 'api', 'graphql', '-f', `query=${mutation}`, '-f', `prId=${prId}`];
+  if (repo !== undefined) {
+    graphqlArgv.push('--repo', repo);
+  }
+  const graphqlResult = runArgv(graphqlArgv, cwd);
+  if (graphqlResult.exitCode !== 0) {
+    throw new Error(`gh graphql enqueue failed: ${graphqlResult.stderr || graphqlResult.stdout}`);
+  }
 
   // Parse the response to extract the queue position
   try {
-    const data = JSON.parse(response);
+    const data = JSON.parse(graphqlResult.stdout);
     return data?.data?.enqueuePullRequest?.mergeQueueEntry?.position ?? null;
   } catch {
     return null;

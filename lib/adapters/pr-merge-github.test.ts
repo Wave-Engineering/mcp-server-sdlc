@@ -461,15 +461,77 @@ describe('prMergeGithub — subprocess boundary', () => {
     expect(result.data.queue_position).toBe(3);
     // Verify both --auto and GraphQL calls were made
     const autoCall = execCalls.find(
-      (c) => c.includes('gh pr merge 284') && c.includes('--auto'),
+      (c) => unquote(c).includes('gh pr merge 284') && unquote(c).includes('--auto'),
     );
     expect(autoCall).toBeDefined();
-    const nodeIdCall = execCalls.find((c) => c.includes('gh api repos/org/repo/pulls/284'));
+    const nodeIdCall = execCalls.find((c) =>
+      unquote(c).includes('gh api repos/org/repo/pulls/284'),
+    );
     expect(nodeIdCall).toBeDefined();
     const graphqlCall = execCalls.find(
-      (c) => c.includes('gh api graphql') && c.includes('enqueuePullRequest'),
+      (c) =>
+        unquote(c).includes('gh api graphql') && unquote(c).includes('enqueuePullRequest'),
     );
     expect(graphqlCall).toBeDefined();
+  });
+
+  test('pr-merge-github — GraphQL fallback shell-escapes repo and prId (security)', async () => {
+    // Regression: enqueuePullRequestViaGraphQL must use argv-array form
+    // (runArgv) so that special characters in `repo` or `prId` cannot break
+    // out of the shell command. We verify by stubbing a node_id with chars
+    // that would terminate a string-template'd command.
+    on(
+      'enqueuePullRequest',
+      JSON.stringify({
+        data: { enqueuePullRequest: { mergeQueueEntry: { position: 7 } } },
+      }),
+    );
+    stubNoQueue();
+    on('gh pr merge 286 --squash --delete-branch', () => {
+      throw mergeQueueError();
+    });
+    on('gh pr merge 286 --squash --delete-branch --auto', () => {
+      const err = new Error('Auto merge is not allowed for this repository') as ThrowableError;
+      err.stderr = 'Auto merge is not allowed for this repository\n';
+      throw err;
+    });
+    // node_id contains characters that WOULD break out of a quoted shell value
+    on(
+      'gh api repos/org/repo/pulls/286',
+      JSON.stringify({ node_id: `PR_kw"; echo PWNED; #` }),
+    );
+    on(
+      'gh pr view 286 --json state,url,mergeCommit',
+      JSON.stringify({
+        state: 'OPEN',
+        url: 'https://github.com/org/repo/pull/286',
+        mergeCommit: null,
+      }),
+    );
+
+    const result = await prMergeGithub({ number: 286, repo: 'org/repo' });
+    expectOk(result);
+    // The dangerous prId value should appear inside single-quoted argv
+    // elements, never as bare shell text. With shell-escape, every `'` in
+    // the value is replaced by `'\''` and the value is wrapped in `'...'`.
+    const graphqlCall = execCalls.find(
+      (c) => c.includes('gh') && c.includes('graphql') && c.includes('PWNED'),
+    );
+    expect(graphqlCall).toBeDefined();
+    // Shell-escape contract: every argv element is wrapped in `'...'` and
+    // any embedded single quote is rewritten as `'\''`. The dangerous value
+    // (including spaces and `; echo PWNED; #`) must be contained inside one
+    // single-quoted region. We verify via a regex that captures the entire
+    // single-quoted prId argv element.
+    const prIdMatch = graphqlCall!.match(/'(prId=[^']*)'/);
+    expect(prIdMatch).not.toBeNull();
+    expect(prIdMatch![1]).toContain('PWNED');
+    // Confirm there are no UNQUOTED `;` chars (which would let the shell run
+    // the rest as a separate command). Strip all single-quoted regions and
+    // the residual must not contain `;`.
+    const residual = graphqlCall!.replace(/'[^']*'/g, '');
+    expect(residual).not.toContain(';');
+    expect(residual).not.toContain('echo');
   });
 
   test('pr-merge-github — direct merge success has graphql_fallback:false', async () => {
