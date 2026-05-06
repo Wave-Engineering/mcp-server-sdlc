@@ -10,7 +10,11 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { execSync, spawnSync } from 'child_process';
+// Use the `node:` prefix to bypass bun module mocks. Other test files
+// (e.g. pr-merge-github.test.ts) mock 'child_process' to override execSync,
+// and that mock leaks across the shared test-runner module space — without
+// the prefix, `spawnSync` resolves to the partial mock and is undefined.
+import { execSync, spawnSync } from 'node:child_process';
 
 // --- Helper ----------------------------------------------------------------
 // `gh` and `glab` may write `--help` output to either stdout or stderr
