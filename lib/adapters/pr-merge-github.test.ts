@@ -305,12 +305,51 @@ describe('prMergeGithub — subprocess boundary', () => {
     });
     expectOk(result);
     const mergeCall = findCall('gh pr merge 42');
-    expect(mergeCall).toContain('--repo Wave-Engineering/mcp-server-sdlc');
+    expect(unquote(mergeCall!)).toContain('--repo Wave-Engineering/mcp-server-sdlc');
     const viewCall = findCall('gh pr view 42');
-    expect(viewCall).toContain('--repo Wave-Engineering/mcp-server-sdlc');
+    expect(unquote(viewCall!)).toContain('--repo Wave-Engineering/mcp-server-sdlc');
     const graphqlCall = findCall('gh api graphql');
     expect(graphqlCall).toContain('-F owner=Wave-Engineering');
     expect(graphqlCall).toContain('-F name=mcp-server-sdlc');
+  });
+
+  test('pr-merge-github — buildGithubMergeCommand shell-escapes repo (security)', async () => {
+    // Defence-in-depth: even though the schema layer rejects shell metachars
+    // in `repo`, the adapter must shell-escape before joining argv into a
+    // shell command. The test passes a value that bypasses schema validation
+    // (we call prMergeGithub directly, not the handler) and verifies the
+    // resulting command contains the dangerous chars only inside a single
+    // shell-quoted token.
+    on('git remote get-url origin', 'https://github.com/cwd-org/cwd-repo.git\n');
+    stubNoQueue();
+    on('gh pr merge 99', '');
+    on(
+      'gh pr view 99',
+      JSON.stringify({
+        state: 'MERGED',
+        url: 'https://github.com/sec/repo/pull/99',
+        mergeCommit: { oid: 'abc' },
+      }),
+    );
+
+    // Hostile repo value with shell-injection characters
+    const hostileRepo = `sec/repo'; echo PWNED; #`;
+    await prMergeGithub({ number: 99, repo: hostileRepo });
+
+    const mergeCall = execCalls.find((c) => c.includes('gh pr merge 99'));
+    expect(mergeCall).toBeDefined();
+    // shellEscape wraps each argv element in `'...'` and rewrites embedded
+    // single quotes as `'\''` (close + escape + reopen). The hostile value
+    // becomes `'sec/repo'\''; echo PWNED; #'` — three safe shell tokens
+    // joined by an escaped quote, treated as ONE argv element by the shell.
+    // Strip both `'\''` sequences and `'...'` regions; no shell-active chars
+    // should remain in the residual.
+    const stripped = mergeCall!
+      .replace(/'\\''/g, '') // remove escaped-quote sequences
+      .replace(/'[^']*'/g, ''); // remove single-quoted regions
+    expect(stripped).not.toContain(';');
+    expect(stripped).not.toContain('echo');
+    expect(stripped).not.toContain('PWNED');
   });
 
   // =========================================================================

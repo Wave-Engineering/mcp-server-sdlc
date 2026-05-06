@@ -158,7 +158,7 @@ function buildGithubMergeCommand(
     }
   }
   if (repo !== undefined) {
-    parts.push('--repo', repo);
+    parts.push('--repo', shellEscape(repo));
   }
   return parts.join(' ');
 }
