@@ -522,4 +522,116 @@ describe('wave_finalize handler', () => {
     expect(data.created).toBe(false);
     expect(data.body_sha).toBe('');
   });
+
+  // --- #415: durable-state fallback after wave_complete cleanup -------------
+  // Regression coverage for `test_wave_finalize_after_wave_complete_cleanup`:
+  // simulate the post-cleanup state where the wavebus dir is empty (every
+  // results.md/merge-report.md has been wiped by `wave_complete`) but
+  // `<project>/.claude/status/{phases-waves.json,state.json}` are intact.
+  // The handler must re-derive the body from durable state instead of
+  // returning `no_artifacts`.
+  test('falls back to durable state when bus is empty (post-wave-complete cleanup)', async () => {
+    // Project root with .claude/status/ wave-status fixtures, NO bus artifacts.
+    const projectRoot = `/tmp/wave-finalize-state-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    await Bun.write(`${projectRoot}/.claude/status/phases-waves.json`, JSON.stringify({
+      phases: [{
+        waves: [
+          { id: 'w1', issues: [{ number: 10 }, { number: 11 }] },
+          { id: 'w2', issues: [{ number: 12 }] },
+        ],
+      }],
+    }));
+    await Bun.write(`${projectRoot}/.claude/status/state.json`, JSON.stringify({
+      current_wave: 'w2',
+      waves: {
+        w1: { status: 'complete', mr_urls: {
+          '10': 'https://github.com/o/r/pull/100',
+          '11': 'https://github.com/o/r/pull/101',
+        } },
+        w2: { status: 'complete', mr_urls: {
+          '12': 'https://github.com/o/r/pull/102',
+        } },
+      },
+    }));
+
+    mockGithubCreate(555, 'kahuna/42-foo');
+
+    const result = await handler.execute({
+      plan_id: 42,
+      kahuna_branch: 'kahuna/42-foo',
+      // bus tmpRoot is intentionally empty (cleanup happened).
+      body_artifacts_dir: tmpRoot,
+      // route the durable-state read at projectRoot.
+      root: projectRoot,
+    });
+    const data = parseResult(result);
+
+    // The fallback re-derived the body — finalize succeeded, no `no_artifacts`.
+    expect(data.ok).toBe(true);
+    expect(data.created).toBe(true);
+    expect(data.number).toBe(555);
+    expect(typeof data.body_sha).toBe('string');
+    expect((data.body_sha as string).length).toBe(64);
+
+    // The submitted body must contain one bullet per issue with the recorded
+    // PR URL — verify by inspecting the `gh pr create` argv.
+    const createCall = execCalls.find(c => c.includes("'pr' 'create'"));
+    expect(createCall).toBeDefined();
+    expect(createCall as string).toContain('Issue #10');
+    expect(createCall as string).toContain('Issue #11');
+    expect(createCall as string).toContain('Issue #12');
+    expect(createCall as string).toContain('https://github.com/o/r/pull/100');
+    expect(createCall as string).toContain('https://github.com/o/r/pull/101');
+    expect(createCall as string).toContain('https://github.com/o/r/pull/102');
+  });
+
+  test('still returns no_artifacts when both bus AND durable state are empty', async () => {
+    // Empty project root — no .claude/status/ at all.
+    const emptyRoot = `/tmp/wave-finalize-empty-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    await Bun.write(`${emptyRoot}/.gitkeep`, '');
+
+    onExec('gh pr list', '[]');
+    onExec('ls-remote', 'abc123\trefs/heads/kahuna/42-foo');
+
+    const result = await handler.execute({
+      plan_id: 42,
+      kahuna_branch: 'kahuna/42-foo',
+      body_artifacts_dir: tmpRoot,
+      root: emptyRoot,
+    });
+    const data = parseResult(result);
+    expect(data.ok).toBe(false);
+    expect(data.error).toBe('no_artifacts');
+  });
+
+  test('bus artifacts take precedence over durable state when both are present', async () => {
+    // Bus has results from issue 99; durable state has issues 10/11/12.
+    // The handler should use the bus body (issue 99 bullet), not the state.
+    await writeArtifact(tmpRoot, 'wave-1/flight-1/issue-99/results.md',
+      'Bus-sourced summary.\nPR: https://github.com/o/r/pull/999\n');
+
+    const projectRoot = `/tmp/wave-finalize-prec-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    await Bun.write(`${projectRoot}/.claude/status/phases-waves.json`, JSON.stringify({
+      phases: [{ waves: [{ id: 'w1', issues: [{ number: 10 }] }] }],
+    }));
+    await Bun.write(`${projectRoot}/.claude/status/state.json`, JSON.stringify({
+      waves: { w1: { mr_urls: { '10': 'https://github.com/o/r/pull/100' } } },
+    }));
+
+    mockGithubCreate(555, 'kahuna/42-foo');
+
+    await handler.execute({
+      plan_id: 42,
+      kahuna_branch: 'kahuna/42-foo',
+      body_artifacts_dir: tmpRoot,
+      root: projectRoot,
+    });
+
+    const createCall = execCalls.find(c => c.includes("'pr' 'create'"));
+    expect(createCall).toBeDefined();
+    expect(createCall as string).toContain('Issue #99');
+    expect(createCall as string).toContain('https://github.com/o/r/pull/999');
+    // Durable-state issue must NOT leak into the body.
+    expect(createCall as string).not.toContain('Issue #10');
+  });
 });

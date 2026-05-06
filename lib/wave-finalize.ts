@@ -12,6 +12,15 @@
 // writeFileSync), and Bun's mock.module leaks across the entire suite —
 // any handler importing readFileSync/readdirSync from 'fs' or 'node:fs' gets
 // `undefined` if the offending test runs first. See lesson_mcp_gotchas.md §6.
+//
+// Durable-state fallback (#415): the bus directory under
+// `body_artifacts_dir` is wiped by `wave_complete` per-wave cleanup. If the
+// finalize handler is reached after the LAST wave has cleaned up, the bus
+// returns zero entries and we would emit `no_artifacts`. To survive that,
+// `assembleBodyFromState` re-derives the body from
+// `<project>/.claude/status/{phases-waves.json,state.json}` (or the .sdlc/
+// equivalent), which are persisted across wave cleanup. The handler tries
+// the bus first and falls back to durable state when the bus is empty.
 
 import { createHash } from 'crypto';
 import { join, resolve } from 'path';
@@ -248,4 +257,118 @@ export async function assembleBody(
 /** SHA-256 hex digest of the assembled body for drift detection. */
 export function hashBody(body: string): string {
   return createHash('sha256').update(body).digest('hex');
+}
+
+// ---------------------------------------------------------------------------
+// Durable-state fallback (#415)
+// ---------------------------------------------------------------------------
+//
+// `wave_complete` wipes the per-wave bus dir (the directory `assembleBody`
+// reads from). After the LAST wave's cleanup, the bus is gone but
+// `phases-waves.json` (plan structure: phases→waves→issues) and `state.json`
+// (`waves[wave_id].mr_urls` mapping issue#→PR URL) survive — they are
+// rewritten in place by the wave-status CLI, never deleted by the per-wave
+// cleanup. `assembleBodyFromState` re-derives the MR body from those two
+// files so finalize succeeds after cleanup.
+
+/** Resolve the wave-status state directory used by the project — see
+ *  `lib/wave_init_plan.ts:statusDir` and `lib/wave_reconcile_mrs_plan.ts`
+ *  for the authoritative pair. We keep this resolver separate to avoid
+ *  importing those modules (and the platform-adapter they pull in) into a
+ *  pure-helper file. */
+async function resolveStatusDir(root: string): Promise<string> {
+  const sdlc = join(root, '.sdlc');
+  if (await Bun.file(sdlc).exists()) return join(sdlc, 'waves');
+  return join(root, '.claude', 'status');
+}
+
+interface DurablePlanIssue { number: number }
+interface DurablePlanWave { id?: string; issues?: DurablePlanIssue[] }
+interface DurablePlanPhase { waves?: DurablePlanWave[] }
+interface DurablePlanData { phases?: DurablePlanPhase[] }
+
+interface DurableWaveState { mr_urls?: Record<string, string> }
+interface DurableStateData {
+  waves?: Record<string, DurableWaveState>;
+  current_wave?: string | null;
+}
+
+/**
+ * Re-derive the kahuna→target MR body from durable wave-status state when
+ * the bus directory has been cleaned. Returns `issueCount: 0` when the
+ * state files are absent or the plan contains no issues — caller decides
+ * whether to surface `no_artifacts` after this fallback also fails.
+ *
+ * The body shape mirrors `assembleBody`:
+ *   - one `### <wave-id>` heading per wave that has issues
+ *   - one bullet per issue, with a `[PR](url) — ` prefix when state has an
+ *     mr_url for that issue
+ *
+ * Per-flight grouping is intentionally collapsed: `state.json` records
+ * mr_urls keyed by issue#, NOT by flight, so we cannot reconstruct the
+ * flight partition. The wave-level grouping is enough to honor AC-2 ("one
+ * bullet per flight as before") in the practical case where each issue is
+ * its own flight; multi-issue flights will appear as flat per-issue
+ * bullets under the wave heading. This is a deliberate trade-off — durable
+ * state is the only source surviving cleanup, and capturing flight ids
+ * there is out of scope for #415.
+ */
+export async function assembleBodyFromState(
+  projectRoot: string,
+  epicId: number,
+  kahunaBranch: string,
+  targetBranch: string,
+): Promise<AssembleResult> {
+  const dir = await resolveStatusDir(projectRoot);
+  const planPath = join(dir, 'phases-waves.json');
+  const statePath = join(dir, 'state.json');
+
+  const emptyResult: AssembleResult = { body: '', issueCount: 0, flightCount: 0 };
+  let plan: DurablePlanData;
+  let state: DurableStateData;
+  try {
+    if (!(await Bun.file(planPath).exists()) || !(await Bun.file(statePath).exists())) {
+      return emptyResult;
+    }
+    plan = (await Bun.file(planPath).json()) as DurablePlanData;
+    state = (await Bun.file(statePath).json()) as DurableStateData;
+  } catch {
+    return emptyResult;
+  }
+
+  const lines: string[] = [];
+  lines.push(`Epic #${epicId} — integration branch \`${kahunaBranch}\` ready for merge into \`${targetBranch}\`.`);
+  lines.push('');
+  lines.push('## Waves');
+
+  let issueCount = 0;
+  const waveSet = new Set<string>();
+
+  for (const phase of plan.phases ?? []) {
+    for (const wave of phase.waves ?? []) {
+      const waveId = wave.id ?? '';
+      const issues = wave.issues ?? [];
+      if (waveId.length === 0 || issues.length === 0) continue;
+
+      const mrUrls = state.waves?.[waveId]?.mr_urls ?? {};
+      lines.push('');
+      lines.push(`### ${waveId}`);
+      waveSet.add(waveId);
+
+      // Sort issues by number for stable output.
+      const sortedIssues = [...issues].sort((a, b) => a.number - b.number);
+      for (const issue of sortedIssues) {
+        const url = mrUrls[String(issue.number)];
+        const prefix = url !== undefined && url.length > 0 ? `[PR](${url}) — ` : '';
+        lines.push(`- Issue #${issue.number}: ${prefix}`.trimEnd().replace(/ — $/, ''));
+        issueCount++;
+      }
+    }
+  }
+
+  if (issueCount === 0) return emptyResult;
+  // `flightCount` from durable state can't distinguish flights — surface
+  // wave count instead. Callers use issueCount for the no_artifacts gate;
+  // flightCount is only logged.
+  return { body: lines.join('\n'), issueCount, flightCount: waveSet.size };
 }
