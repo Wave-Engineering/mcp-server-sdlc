@@ -12,6 +12,15 @@
 import { describe, test, expect } from 'bun:test';
 import { execSync } from 'child_process';
 
+// --- Helper ----------------------------------------------------------------
+// `gh` and `glab` write `--help` output to stderr in some environments
+// (notably GitHub Actions runners); locally they write to stdout. We need
+// both. `2>&1` merges stderr into stdout so `execSync`'s captured output
+// contains the help text regardless of where the CLI sent it.
+function captureHelp(cmd: string): string {
+  return execSync(`${cmd} 2>&1`, { encoding: 'utf8' });
+}
+
 // --- CLI Availability Guards -----------------------------------------------
 
 function hasGh(): boolean {
@@ -41,13 +50,13 @@ describe('GitHub CLI flag shapes', () => {
   }
 
   test('gh issue view accepts --json flag', () => {
-    const help = execSync('gh issue view --help', { encoding: 'utf8' });
+    const help = captureHelp('gh issue view --help');
     expect(help).toMatch(/--json/);
   });
 
   test('gh issue view --json accepts state, title, url fields', () => {
     // Used by ibm handler (via fetch-issue-github adapter)
-    const help = execSync('gh issue view --help', { encoding: 'utf8' });
+    const help = captureHelp('gh issue view --help');
     // The --json flag is documented, but we can't test specific field names
     // without hitting the API. This test verifies the flag exists.
     expect(help).toMatch(/--json/);
@@ -56,14 +65,14 @@ describe('GitHub CLI flag shapes', () => {
   test('gh pr list accepts --head, --json flags', () => {
     // Used by ibm handler (via fetch-pr-for-branch-github adapter)
     // and pr_create handler (via pr-create-github adapter)
-    const help = execSync('gh pr list --help', { encoding: 'utf8' });
+    const help = captureHelp('gh pr list --help');
     expect(help).toMatch(/--head/);
     expect(help).toMatch(/--json/);
   });
 
   test('gh pr create accepts required flags', () => {
     // Used by pr_create handler
-    const help = execSync('gh pr create --help', { encoding: 'utf8' });
+    const help = captureHelp('gh pr create --help');
     expect(help).toMatch(/--title/);
     expect(help).toMatch(/--body/);
     expect(help).toMatch(/--base/);
@@ -74,14 +83,14 @@ describe('GitHub CLI flag shapes', () => {
 
   test('gh pr view accepts --json flag', () => {
     // Used by pr_create handler for post-create lookup
-    const help = execSync('gh pr view --help', { encoding: 'utf8' });
+    const help = captureHelp('gh pr view --help');
     expect(help).toMatch(/--json/);
   });
 
   test('gh pr view --json statusCheckRollup is documented', () => {
     // Used by pr_wait_ci handler (via pr-wait-ci-github adapter)
     // Regression guard for #220: do NOT use `gh pr checks --json`
-    const help = execSync('gh pr view --help', { encoding: 'utf8' });
+    const help = captureHelp('gh pr view --help');
     expect(help).toMatch(/--json/);
     // statusCheckRollup is a valid field for --json but not always listed in --help
     // The key assertion is that `gh pr view --json` exists (not `gh pr checks --json`)
@@ -92,7 +101,7 @@ describe('GitHub CLI flag shapes', () => {
     // `gh pr checks` was added in gh ~2.50; Ubuntu 24.04 ships gh 2.45.
     // Our adapter uses `gh pr view --json statusCheckRollup` instead.
     try {
-      const help = execSync('gh pr checks --help', { encoding: 'utf8' });
+      const help = captureHelp('gh pr checks --help');
       // If the command exists, verify it does NOT accept --json
       expect(help).not.toMatch(/--json/);
     } catch (err) {
@@ -104,7 +113,7 @@ describe('GitHub CLI flag shapes', () => {
 
   test('gh pr merge accepts --squash, --auto, --delete-branch flags', () => {
     // Used by pr_merge handler
-    const help = execSync('gh pr merge --help', { encoding: 'utf8' });
+    const help = captureHelp('gh pr merge --help');
     expect(help).toMatch(/--squash/);
     expect(help).toMatch(/--auto/);
     expect(help).toMatch(/--delete-branch/);
@@ -112,14 +121,14 @@ describe('GitHub CLI flag shapes', () => {
 
   test('gh run list accepts --commit, --json flags', () => {
     // Used by ci_wait_run handler (via ci-runs-for-branch-github adapter)
-    const help = execSync('gh run list --help', { encoding: 'utf8' });
+    const help = captureHelp('gh run list --help');
     expect(help).toMatch(/--commit/);
     expect(help).toMatch(/--json/);
   });
 
   test('gh repo view accepts --json flag', () => {
     // Used by pr_create handler to resolve default branch
-    const help = execSync('gh repo view --help', { encoding: 'utf8' });
+    const help = captureHelp('gh repo view --help');
     expect(help).toMatch(/--json/);
   });
 });
@@ -137,7 +146,7 @@ describe('GitLab CLI flag shapes', () => {
     // This test verifies that `glab api projects/<encoded>` is a valid form.
     // We can't hit a real API without credentials, so we just verify the
     // subcommand exists and accepts a path argument.
-    const help = execSync('glab api --help', { encoding: 'utf8' });
+    const help = captureHelp('glab api --help');
     expect(help).toMatch(/glab api/);
     // The help output shows USAGE section in all caps
     expect(help).toMatch(/USAGE/);
@@ -146,14 +155,14 @@ describe('GitLab CLI flag shapes', () => {
   test('glab mr view does NOT accept -F flag (regression guard for #383)', () => {
     // This is the broken flag from #383.
     // Our adapter now uses `glab api projects/.../merge_requests` instead.
-    const help = execSync('glab mr view --help', { encoding: 'utf8' });
+    const help = captureHelp('glab mr view --help');
     expect(help).not.toMatch(/-F[, ]/);
     expect(help).not.toMatch(/--format/);
   });
 
   test('glab mr create accepts required flags', () => {
     // Used by pr_create handler (via pr-create-gitlab adapter)
-    const help = execSync('glab mr create --help', { encoding: 'utf8' });
+    const help = captureHelp('glab mr create --help');
     expect(help).toMatch(/--title/);
     expect(help).toMatch(/--description/);
     expect(help).toMatch(/--source-branch/);
@@ -164,13 +173,13 @@ describe('GitLab CLI flag shapes', () => {
 
   test('glab mr create accepts -R flag for repo specification', () => {
     // Used by pr_create handler
-    const help = execSync('glab mr create --help', { encoding: 'utf8' });
+    const help = captureHelp('glab mr create --help');
     expect(help).toMatch(/-R/);
   });
 
   test('glab mr merge accepts --yes, --remove-source-branch flags', () => {
     // Used by pr_merge handler
-    const help = execSync('glab mr merge --help', { encoding: 'utf8' });
+    const help = captureHelp('glab mr merge --help');
     expect(help).toMatch(/--yes/);
     expect(help).toMatch(/--remove-source-branch/);
   });
@@ -179,7 +188,7 @@ describe('GitLab CLI flag shapes', () => {
     // Used by ci_wait_run and ci_runs_for_branch handlers via gitlab-api.ts
     // Our handlers use `glab api projects/<encoded>/pipelines?ref=<branch>&limit=N`
     // instead of `glab ci list`, so verify the api subcommand exists.
-    const help = execSync('glab api --help', { encoding: 'utf8' });
+    const help = captureHelp('glab api --help');
     expect(help).toMatch(/glab api/);
     expect(help).toMatch(/USAGE/);
     // The actual query params (ref, limit) are handled by GitLab REST API,
@@ -190,7 +199,7 @@ describe('GitLab CLI flag shapes', () => {
     // Used by ibm handler (via fetch-issue-gitlab adapter)
     // Note: we migrated to `glab api projects/.../issues/N` in #382 fix,
     // but verify the old form still works for reference.
-    const help = execSync('glab issue view --help', { encoding: 'utf8' });
+    const help = captureHelp('glab issue view --help');
     expect(help).toMatch(/glab issue view/);
   });
 });
