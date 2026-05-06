@@ -10,15 +10,24 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { execSync } from 'child_process';
+import { execSync, spawnSync } from 'child_process';
 
 // --- Helper ----------------------------------------------------------------
-// `gh` and `glab` write `--help` output to stderr in some environments
-// (notably GitHub Actions runners); locally they write to stdout. We need
-// both. `2>&1` merges stderr into stdout so `execSync`'s captured output
-// contains the help text regardless of where the CLI sent it.
+// `gh` and `glab` may write `--help` output to either stdout or stderr
+// depending on environment, version, and whether a TTY is attached. On
+// GitHub Actions runners, gh writes --help to a stream that bash's `2>&1`
+// redirection through execSync doesn't capture reliably (likely related
+// to gh's pager/TTY detection).
+//
+// Use spawnSync — it separates stdout and stderr buffers and we concatenate
+// them — to get the help text regardless of where the CLI sent it.
 function captureHelp(cmd: string): string {
-  return execSync(`${cmd} 2>&1`, { encoding: 'utf8' });
+  const tokens = cmd.split(/\s+/);
+  const result = spawnSync(tokens[0]!, tokens.slice(1), {
+    encoding: 'utf8',
+    env: { ...process.env, GH_PAGER: '', PAGER: 'cat', GLAB_PAGER: '' },
+  });
+  return (result.stdout ?? '') + (result.stderr ?? '');
 }
 
 // --- CLI Availability Guards -----------------------------------------------
