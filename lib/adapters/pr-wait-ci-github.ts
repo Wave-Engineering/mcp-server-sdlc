@@ -30,6 +30,7 @@ import {
 import type {
   AdapterResult,
   PrWaitCiArgs,
+  PrWaitCiNoChecksResponse,
   PrWaitCiResponse,
 } from './types.js';
 
@@ -59,6 +60,15 @@ export interface RollupItem {
 interface PrViewResponse {
   url?: string;
   statusCheckRollup?: RollupItem[];
+}
+
+interface PrProbeResponse {
+  url?: string;
+  statusCheckRollup?: RollupItem[];
+  state?: string; // OPEN | CLOSED | MERGED
+  isDraft?: boolean;
+  mergeable?: string | boolean; // MERGEABLE | CONFLICTING | UNKNOWN | bool
+  mergeStateStatus?: string; // CLEAN | DIRTY | BLOCKED | UNSTABLE | UNKNOWN
 }
 
 type Bucket = 'pass' | 'fail' | 'pending' | 'skipping';
@@ -139,12 +149,73 @@ export function snapshotGithub(number: number, repo?: string): ChecksSnapshot {
   };
 }
 
+/**
+ * Initial probe — single `gh pr view` that pulls rollup + mergeability fields
+ * in one shot (#416). Used to detect the empty-rollup short-circuit case
+ * before the polling loop even starts. Separate from `snapshotGithub` because
+ * the polling loop's per-iteration query stays minimal (no need to repeat
+ * mergeability on every poll).
+ */
+export function probeGithub(number: number, repo?: string): PrProbeResponse {
+  const raw = exec(
+    `gh pr view ${number} --json statusCheckRollup,url,state,isDraft,mergeable,mergeStateStatus${repoFlag(repo)}`,
+  );
+  return JSON.parse(raw) as PrProbeResponse;
+}
+
+/**
+ * Resolve the empty-rollup short-circuit blocker (#416). Returns `null` when
+ * the PR is mergeable today (no checks AND no obstructions). Otherwise returns
+ * a short string naming the obstruction — `draft`, `closed`, `merged`,
+ * `conflicts`, or `not_mergeable` — for inclusion in the typed response.
+ *
+ * `mergeable` is a tri-state on GitHub: `MERGEABLE | CONFLICTING | UNKNOWN`
+ * (or boolean on older REST shapes). We treat anything that isn't an explicit
+ * "yes, mergeable" as a blocker so callers never get a false-positive on a PR
+ * that GitHub is still computing.
+ */
+export function emptyRollupBlocker(probe: PrProbeResponse): string | null {
+  const state = (probe.state ?? '').toUpperCase();
+  if (state === 'CLOSED') return 'closed';
+  if (state === 'MERGED') return 'merged';
+  if (probe.isDraft === true) return 'draft';
+
+  const mergeableRaw =
+    typeof probe.mergeable === 'string' ? probe.mergeable.toUpperCase() : probe.mergeable;
+  const mergeable = mergeableRaw === true || mergeableRaw === 'MERGEABLE';
+  if (!mergeable) {
+    const mergeState = (probe.mergeStateStatus ?? '').toUpperCase();
+    if (mergeState === 'DIRTY' || mergeableRaw === 'CONFLICTING') return 'conflicts';
+    return 'not_mergeable';
+  }
+  return null;
+}
+
 export async function prWaitCiGithub(
   args: PrWaitCiArgs,
 ): Promise<AdapterResult<PrWaitCiResponse>> {
   // Bound any exception that escapes the snapshot helper into a typed result —
   // adapter callers must not have to try/catch.
   try {
+    // #416 short-circuit. One probe BEFORE entering the polling loop: if the
+    // PR's rollup is empty there is nothing to settle and we return at t=0.
+    const probeStart = Date.now();
+    const probe = probeGithub(args.number, args.repo);
+    const rollup = probe.statusCheckRollup ?? [];
+    if (rollup.length === 0) {
+      const blocker = emptyRollupBlocker(probe);
+      const elapsedSec = Math.max(0, Math.floor((Date.now() - probeStart) / 1000));
+      const data: PrWaitCiNoChecksResponse = {
+        number: args.number,
+        status: 'no_checks_required',
+        elapsed_sec: elapsedSec,
+        mergeable: blocker === null,
+        url: probe.url ?? '',
+        ...(blocker !== null ? { blocker } : {}),
+      };
+      return { ok: true, data };
+    }
+
     const pollArgs: PollArgs = {
       number: args.number,
       poll_interval_sec: args.poll_interval_sec,

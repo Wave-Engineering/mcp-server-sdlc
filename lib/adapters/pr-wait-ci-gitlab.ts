@@ -29,6 +29,7 @@ import {
 import type {
   AdapterResult,
   PrWaitCiArgs,
+  PrWaitCiNoChecksResponse,
   PrWaitCiResponse,
 } from './types.js';
 
@@ -99,10 +100,61 @@ export function snapshotGitlab(number: number, repo?: string): ChecksSnapshot {
   };
 }
 
+/**
+ * Resolve the empty-pipeline short-circuit blocker (#416). Mirrors the GitHub
+ * adapter's `emptyRollupBlocker` but reads from a `GitlabMr` shape: an MR with
+ * no pipeline AND no obstructions returns `null`. Anything else returns a
+ * short string naming the obstruction — `draft`, `closed`, `merged`,
+ * `locked`, `conflicts`, or `not_mergeable`.
+ */
+function emptyPipelineBlockerGitlab(
+  mr: { state?: string; draft?: boolean; work_in_progress?: boolean; has_conflicts?: boolean; merge_status?: string; detailed_merge_status?: string },
+): string | null {
+  const state = (mr.state ?? '').toLowerCase();
+  if (state === 'closed') return 'closed';
+  if (state === 'merged') return 'merged';
+  if (state === 'locked') return 'locked';
+  if (mr.draft === true || mr.work_in_progress === true) return 'draft';
+  if (mr.has_conflicts === true) return 'conflicts';
+  // GitLab's `merge_status: 'cannot_be_merged'` (or the newer
+  // `detailed_merge_status` non-`mergeable` value) is the catch-all for any
+  // obstruction we haven't named explicitly above. `can_be_merged` /
+  // `mergeable` is the only happy path.
+  const ms = (mr.merge_status ?? '').toLowerCase();
+  const dms = (mr.detailed_merge_status ?? '').toLowerCase();
+  if (ms === 'cannot_be_merged') return 'not_mergeable';
+  if (dms !== '' && dms !== 'mergeable' && dms !== 'unchecked' && dms !== 'checking') {
+    return 'not_mergeable';
+  }
+  return null;
+}
+
 export async function prWaitCiGitlab(
   args: PrWaitCiArgs,
 ): Promise<AdapterResult<PrWaitCiResponse>> {
   try {
+    // #416 short-circuit. One probe BEFORE entering the polling loop: if the
+    // MR has no pipeline data at all (neither `head_pipeline` nor `pipeline`),
+    // there is nothing to settle and we return at t=0.
+    const probeStart = Date.now();
+    const mr = gitlabApiMr(args.number, parseSlugOpts(args.repo));
+    const hasPipeline =
+      (mr.head_pipeline !== undefined && mr.head_pipeline !== null) ||
+      (mr.pipeline !== undefined && mr.pipeline !== null);
+    if (!hasPipeline) {
+      const blocker = emptyPipelineBlockerGitlab(mr);
+      const elapsedSec = Math.max(0, Math.floor((Date.now() - probeStart) / 1000));
+      const data: PrWaitCiNoChecksResponse = {
+        number: args.number,
+        status: 'no_checks_required',
+        elapsed_sec: elapsedSec,
+        mergeable: blocker === null,
+        url: mr.web_url ?? '',
+        ...(blocker !== null ? { blocker } : {}),
+      };
+      return { ok: true, data };
+    }
+
     const pollArgs: PollArgs = {
       number: args.number,
       poll_interval_sec: args.poll_interval_sec,

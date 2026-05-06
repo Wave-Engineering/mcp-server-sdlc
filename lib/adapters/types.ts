@@ -276,13 +276,40 @@ export interface PrWaitCiChecks {
   summary: string;
 }
 
-export interface PrWaitCiResponse {
+/**
+ * Polling-loop return shape — the original `pr_wait_ci` response from before
+ * #416. Reached when the PR has at least one configured check; the adapter
+ * polls until every check is settled (or timeout).
+ */
+export interface PrWaitCiPolledResponse {
   number: number;
   final_state: PrWaitCiFinalState;
   checks: PrWaitCiChecks;
   waited_sec: number;
   url: string;
 }
+
+/**
+ * Short-circuit return shape (#416). Reached on the very first probe when the
+ * PR's status-check rollup is empty — there is nothing to settle, so the
+ * "wait until CI is settled" semantics are satisfied at t=0. `mergeable` and
+ * an optional `blocker` distinguish the happy path (PR is ready to merge)
+ * from the obstructed path (draft / conflicts / closed PR).
+ *
+ * `elapsed_sec` is intentionally a small integer (the wall-clock cost of the
+ * single probe), not a polling-loop duration.
+ */
+export interface PrWaitCiNoChecksResponse {
+  number: number;
+  status: 'no_checks_required';
+  elapsed_sec: number;
+  mergeable: boolean;
+  /** Reason the PR is not mergeable today (e.g. `draft`, `conflicts`, `closed`). Omitted when mergeable. */
+  blocker?: string;
+  url: string;
+}
+
+export type PrWaitCiResponse = PrWaitCiPolledResponse | PrWaitCiNoChecksResponse;
 
 export type CiWaitRunArgs = unknown;
 export type CiWaitRunResponse = unknown;

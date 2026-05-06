@@ -595,6 +595,139 @@ describe('pr_wait_ci handler', () => {
     expect(data.final_state).toBe('passed');
   });
 
+  // --- #416: empty-rollup short-circuit ---
+  // When `pr_wait_ci` is called against a PR whose head branch has no required
+  // status checks (or whose check rollup is empty for any reason), the handler
+  // must return immediately rather than spinning to timeout. The semantics is:
+  // "wait until CI is settled" — if there are no checks to settle, that
+  // condition is satisfied at t=0.
+
+  test('test_pr_wait_ci_empty_rollup_mergeable — empty rollup + mergeable returns no_checks_required immediately', async () => {
+    execMockFn = (cmd: string) => {
+      if (cmd.startsWith('git remote'))
+        return 'https://github.com/org/repo.git\n';
+      if (cmd.startsWith('gh pr view'))
+        return JSON.stringify({
+          url: 'https://github.com/org/repo/pull/42',
+          statusCheckRollup: [], // empty — nothing to settle
+          state: 'OPEN',
+          isDraft: false,
+          mergeable: 'MERGEABLE',
+          mergeStateStatus: 'CLEAN',
+        });
+      throw new Error(`unexpected exec: ${cmd}`);
+    };
+
+    const result = await handler.execute({
+      number: 42,
+      poll_interval_sec: 5,
+      // Generous timeout — proves the short-circuit returns *before* any sleep.
+      timeout_sec: 1800,
+    });
+    const data = parseResult(result);
+    expect(data.ok).toBe(true);
+    expect(data.status).toBe('no_checks_required');
+    expect(data.mergeable).toBe(true);
+    expect(typeof data.elapsed_sec).toBe('number');
+    expect(data.elapsed_sec).toBeLessThan(5); // far less than poll_interval
+    expect(data.blocker).toBeUndefined();
+    expect(data.url).toBe('https://github.com/org/repo/pull/42');
+    // `final_state` is the polling-loop shape — must NOT appear on the
+    // short-circuit envelope (would confuse callers reading the discriminator).
+    expect(data.final_state).toBeUndefined();
+  });
+
+  test('test_pr_wait_ci_empty_rollup_with_conflict — empty rollup + conflict returns no_checks_required + blocker', async () => {
+    execMockFn = (cmd: string) => {
+      if (cmd.startsWith('git remote'))
+        return 'https://github.com/org/repo.git\n';
+      if (cmd.startsWith('gh pr view'))
+        return JSON.stringify({
+          url: 'https://github.com/org/repo/pull/43',
+          statusCheckRollup: [],
+          state: 'OPEN',
+          isDraft: false,
+          mergeable: 'CONFLICTING',
+          mergeStateStatus: 'DIRTY',
+        });
+      throw new Error(`unexpected exec: ${cmd}`);
+    };
+
+    const result = await handler.execute({
+      number: 43,
+      poll_interval_sec: 5,
+      timeout_sec: 1800,
+    });
+    const data = parseResult(result);
+    expect(data.ok).toBe(true);
+    expect(data.status).toBe('no_checks_required');
+    expect(data.mergeable).toBe(false);
+    expect(data.blocker).toBe('conflicts');
+    expect(data.elapsed_sec).toBeLessThan(5);
+  });
+
+  test('test_pr_wait_ci_empty_rollup_draft — empty rollup + draft PR returns no_checks_required + draft blocker', async () => {
+    execMockFn = (cmd: string) => {
+      if (cmd.startsWith('git remote'))
+        return 'https://github.com/org/repo.git\n';
+      if (cmd.startsWith('gh pr view'))
+        return JSON.stringify({
+          url: 'https://github.com/org/repo/pull/44',
+          statusCheckRollup: [],
+          state: 'OPEN',
+          isDraft: true,
+          mergeable: 'MERGEABLE',
+          mergeStateStatus: 'CLEAN',
+        });
+      throw new Error(`unexpected exec: ${cmd}`);
+    };
+
+    const result = await handler.execute({ number: 44, poll_interval_sec: 5, timeout_sec: 60 });
+    const data = parseResult(result);
+    expect(data.ok).toBe(true);
+    expect(data.status).toBe('no_checks_required');
+    expect(data.mergeable).toBe(false);
+    expect(data.blocker).toBe('draft');
+  });
+
+  test('test_pr_wait_ci_normal_path_still_works — non-empty rollup behaves as today', async () => {
+    // Regression for #416 — the polling-loop path must NOT change shape when
+    // the rollup is non-empty. We expect `final_state: passed` and the full
+    // polled-response envelope, NOT the short-circuit `status` discriminator.
+    execMockFn = (cmd: string) => {
+      if (cmd.startsWith('git remote'))
+        return 'https://github.com/org/repo.git\n';
+      if (cmd.startsWith('gh pr view'))
+        return JSON.stringify({
+          url: 'https://github.com/org/repo/pull/45',
+          statusCheckRollup: [
+            { __typename: 'CheckRun', name: 'build', status: 'COMPLETED', conclusion: 'SUCCESS' },
+            { __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'SUCCESS' },
+          ],
+          state: 'OPEN',
+          isDraft: false,
+          mergeable: 'MERGEABLE',
+          mergeStateStatus: 'CLEAN',
+        });
+      throw new Error(`unexpected exec: ${cmd}`);
+    };
+
+    const result = await handler.execute({
+      number: 45,
+      poll_interval_sec: 5,
+      timeout_sec: 10,
+    });
+    const data = parseResult(result);
+    expect(data.ok).toBe(true);
+    // Polled-response shape — `final_state` present, `status` absent.
+    expect(data.final_state).toBe('passed');
+    expect(data.status).toBeUndefined();
+    expect(data.url).toBe('https://github.com/org/repo/pull/45');
+    const checks = data.checks as Record<string, number>;
+    expect(checks.passed).toBe(2);
+    expect(checks.total).toBe(2);
+  });
+
   test('strict_schema_accepts_repo — .strict() schema does not reject new field', async () => {
     // Proof that adding repo to a .strict() schema doesn't trigger InvalidParams
     // via the real MCP dispatch surface (handler.execute), not just the test seam.
