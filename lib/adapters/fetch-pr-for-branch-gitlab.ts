@@ -59,10 +59,18 @@ export async function fetchPrForBranchGitlab(
     const data = fetchPrForBranchGitlabSync(args.branch, state, args.repo);
     return { ok: true, data };
   } catch (err) {
+    // "empty output" from glab for an MR-list query means "no MRs" — treat
+    // the same as an empty array rather than propagating as a tool error.
+    // Intermittent: glab occasionally returns empty stdout with exit 0 for
+    // queries that legitimately have zero results (#428).
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes('empty output')) {
+      return { ok: true, data: null };
+    }
     return {
       ok: false,
       code: 'glab_api_mr_list_failed',
-      error: err instanceof Error ? err.message : String(err),
+      error: msg,
     };
   }
 }
