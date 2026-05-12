@@ -146,6 +146,8 @@ function execGlab(cmd: string): string {
   // Zero-exit-empty-stdout: caller would do JSON.parse('') → SyntaxError
   // ("Unexpected EOF") that loses the underlying cause. Surface a named
   // error instead so the failure is diagnosable. (#382)
+  // Note: `[]` and `{}` are valid empty-collection responses (e.g. "no MRs
+  // for this branch") — only truly empty output indicates a glab failure.
   if (raw.trim() === '') {
     throw new Error(`glab returned empty output for: ${cmd}`);
   }
@@ -255,7 +257,16 @@ export function gitlabApiMrList(
   }
 
   const query = queryParts.length > 0 ? `?${queryParts.join('&')}` : '';
-  const raw = execGlab(`glab api projects/${path}/merge_requests${query}`);
+  let raw: string;
+  try {
+    raw = execGlab(`glab api projects/${path}/merge_requests${query}`);
+  } catch (err) {
+    // List endpoints: empty output means "no results" — return [] rather
+    // than propagating "empty output" as a fatal error (#428).
+    const msg = err instanceof Error ? err.message : '';
+    if (msg.includes('empty output')) return [];
+    throw err;
+  }
   return JSON.parse(raw) as GitlabMr[];
 }
 
@@ -286,7 +297,14 @@ export function gitlabApiCiList(
   }
 
   const query = queryParts.length > 0 ? `?${queryParts.join('&')}` : '';
-  const raw = execGlab(`glab api projects/${path}/pipelines${query}`);
+  let raw: string;
+  try {
+    raw = execGlab(`glab api projects/${path}/pipelines${query}`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : '';
+    if (msg.includes('empty output')) return [];
+    throw err;
+  }
   return JSON.parse(raw) as GitlabPipeline[];
 }
 

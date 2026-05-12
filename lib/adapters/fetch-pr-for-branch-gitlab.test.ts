@@ -227,4 +227,18 @@ describe('fetch-pr-for-branch-gitlab — AdapterResult wrapper', () => {
     expect(result.code).toBe('glab_api_mr_list_failed');
     expect(result.error).toContain('glab');
   });
+
+  test('returns ok:true + data:null when glab returns empty output (#428)', async () => {
+    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    on('glab api projects/org%2Frepo/merge_requests', () => {
+      throw new Error(
+        'glab returned empty output for: glab api projects/org%2Frepo/merge_requests?state=opened&source_branch=chore%2F4-thing&per_page=1',
+      );
+    });
+    const result = await fetchPrForBranchGitlab({
+      branch: 'chore/4-thing',
+    });
+    expectOk(result);
+    expect(result.data).toBeNull();
+  });
 });
