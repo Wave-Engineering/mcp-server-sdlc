@@ -38,8 +38,23 @@ describe('getAdapter dispatch', () => {
     expect(getAdapter()).toBe(githubAdapter);
   });
 
-  test('accepts {repo} arg without throwing (forward-compat for cross-repo dispatch)', () => {
+  test('2-segment repo falls back to cwd detection (github origin)', () => {
     execMockFn = () => 'https://github.com/owner/repo.git';
-    expect(getAdapter({ repo: 'org/somewhere-else' })).toBe(githubAdapter);
+    expect(getAdapter({ repo: 'Wave-Engineering/ccwork-testtarget' })).toBe(githubAdapter);
+  });
+
+  test('2-segment repo falls back to cwd detection (gitlab origin)', () => {
+    execMockFn = () => 'https://gitlab.com/owner/repo.git';
+    expect(getAdapter({ repo: 'some-org/some-repo' })).toBe(gitlabAdapter);
+  });
+
+  test('3+-segment repo routes to gitlab regardless of cwd', () => {
+    execMockFn = () => 'https://github.com/owner/repo.git';
+    expect(getAdapter({ repo: 'analogicdev/blueshift/blueshift-cue' })).toBe(gitlabAdapter);
+  });
+
+  test('deeply nested repo routes to gitlab', () => {
+    execMockFn = () => 'https://github.com/owner/repo.git';
+    expect(getAdapter({ repo: 'analogicdev/internal/tools/blueshift/blueshift-cue' })).toBe(gitlabAdapter);
   });
 });
