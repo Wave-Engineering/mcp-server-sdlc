@@ -25,8 +25,8 @@ function projectDir(): string {
 }
 
 /**
- * Parse a GitLab MR note ID from the URL `glab mr note` prints to stdout.
- * Format: https://gitlab.com/<group>/<repo>/-/merge_requests/<num>#note_<id>
+ * Parse a GitLab note ID from the URL `glab mr note` / `glab issue note` prints.
+ * Format: https://gitlab.com/<group>/<repo>/-/{merge_requests|issues}/<num>#note_<id>
  */
 function parseGitlabNoteId(stdout: string): number | null {
   const match = /#note_(\d+)/.exec(stdout);
@@ -38,7 +38,9 @@ export async function prCommentGitlab(
 ): Promise<AdapterResult<PrCommentResponse>> {
   try {
     const cwd = projectDir();
-    const cmd = ['glab', 'mr', 'note', String(args.number), '--message', args.body];
+    const isIssue = args.target === 'issue';
+    const subcmd = isIssue ? 'issue' : 'mr';
+    const cmd = ['glab', subcmd, 'note', String(args.number), '--message', args.body];
     if (args.repo !== undefined) {
       cmd.push('-R', args.repo);
     }
@@ -47,8 +49,8 @@ export async function prCommentGitlab(
     if (result.exitCode !== 0) {
       return {
         ok: false,
-        code: 'glab_mr_note_failed',
-        error: `glab mr note failed: ${result.stderr.trim() || result.stdout.trim()}`,
+        code: isIssue ? 'glab_issue_note_failed' : 'glab_mr_note_failed',
+        error: `glab ${subcmd} note failed: ${result.stderr.trim() || result.stdout.trim()}`,
       };
     }
 

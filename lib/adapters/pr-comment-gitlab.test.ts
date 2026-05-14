@@ -175,4 +175,62 @@ describe('prCommentGitlab — subprocess boundary', () => {
     expect(glabCall).toContain('-R');
     expect(glabCall).toContain('target-org/target-repo');
   });
+
+  test('target:"issue" routes to glab issue note (#430)', async () => {
+    on(
+      'glab issue note',
+      'https://gitlab.com/org/repo/-/issues/2#note_5555\n',
+    );
+
+    const result = await prCommentGitlab({ number: 2, body: 'ledger entry', target: 'issue' });
+    expectOk(result);
+    expect(result.data.comment_id).toBe(5555);
+    expect(result.data.number).toBe(2);
+    expect(result.data.url).toBe('https://gitlab.com/org/repo/-/issues/2#note_5555');
+
+    const glabCall = findCall('glab issue note');
+    expect(glabCall).toContain('issue');
+    expect(glabCall).toContain('note');
+    expect(glabCall).not.toContain('mr');
+  });
+
+  test('target:"mr" explicitly routes to glab mr note', async () => {
+    on(
+      'glab mr note',
+      'https://gitlab.com/org/repo/-/merge_requests/3#note_6666\n',
+    );
+
+    const result = await prCommentGitlab({ number: 3, body: 'lgtm', target: 'mr' });
+    expectOk(result);
+    expect(result.data.comment_id).toBe(6666);
+
+    const glabCall = findCall('glab mr note');
+    expect(glabCall).toContain('mr');
+  });
+
+  test('target omitted defaults to mr (backwards compat)', async () => {
+    on(
+      'glab mr note',
+      'https://gitlab.com/org/repo/-/merge_requests/10#note_7777\n',
+    );
+
+    const result = await prCommentGitlab({ number: 10, body: 'default' });
+    expectOk(result);
+
+    const glabCall = findCall('glab mr note');
+    expect(glabCall).toContain('mr');
+  });
+
+  test('target:"issue" failure returns glab_issue_note_failed code', async () => {
+    on('glab issue note', () => {
+      const err = new Error('not found') as ThrowableError;
+      err.stderr = 'not found';
+      err.status = 1;
+      throw err;
+    });
+
+    const result = await prCommentGitlab({ number: 99, body: 'x', target: 'issue' });
+    expectErr(result);
+    expect(result.code).toBe('glab_issue_note_failed');
+  });
 });
