@@ -58,6 +58,56 @@ export async function statusDir(root: string): Promise<string> {
   return join(root, '.claude', 'status');
 }
 
+/**
+ * Detect and transform `/devspec upshift` plan shape into `wave-status init`
+ * shape. The upshift format uses `waves[].name` + `waves[].stories[]` while
+ * wave-status expects `waves[].id` + `waves[].issues[]`. Also injects
+ * top-level `project` from the plan's own slug field or the provided repo slug.
+ *
+ * Returns the JSON string (transformed if needed, original if already correct).
+ */
+export function normalizePlanJson(planJson: string, repoSlug?: string): string {
+  let plan: Record<string, unknown>;
+  try { plan = JSON.parse(planJson); }
+  catch { return planJson; }
+
+  const phases = plan.phases as Array<Record<string, unknown>> | undefined;
+  if (!Array.isArray(phases) || phases.length === 0) return planJson;
+
+  const firstWave = (phases[0].waves as Array<Record<string, unknown>> | undefined)?.[0];
+  if (!firstWave) return planJson;
+
+  const isUpshiftShape = Array.isArray(firstWave.stories) || (firstWave.name !== undefined && firstWave.id === undefined);
+  if (!isUpshiftShape) return planJson;
+
+  const project = (plan.project as string) ?? repoSlug ?? (plan.slug as string) ?? undefined;
+  const transformed: Record<string, unknown> = { ...plan };
+  if (project) transformed.project = project;
+
+  transformed.phases = phases.map((phase) => {
+    const waves = (phase.waves as Array<Record<string, unknown>> | undefined) ?? [];
+    return {
+      ...phase,
+      waves: waves.map((wave) => {
+        const id = (wave.id as string) ?? (wave.name as string) ?? undefined;
+        const stories = (wave.stories as Array<Record<string, unknown>> | undefined) ?? [];
+        const issues = (wave.issues as unknown[] | undefined) ?? stories.map((story) => {
+          const issueNum = (story.issue as number) ?? (story.number as number);
+          const storyRepo = (story.repo as string) ?? project;
+          const ref = storyRepo ? `${storyRepo}#${issueNum}` : `#${issueNum}`;
+          return { number: issueNum, repo: storyRepo, ref, title: story.title, depends_on: story.depends_on };
+        });
+        const result: Record<string, unknown> = { ...wave, id, issues };
+        delete result.name;
+        delete result.stories;
+        return result;
+      }),
+    };
+  });
+
+  return JSON.stringify(transformed);
+}
+
 export function countIssuesFromPlan(plan: PlanData): {
   phases_added: number;
   waves_added: number;
