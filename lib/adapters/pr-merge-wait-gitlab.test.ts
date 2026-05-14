@@ -144,22 +144,22 @@ describe('prMergeWaitGitlab — adapter orchestration (parity)', () => {
     expect(clock.sleepCount()).toBe(0);
   });
 
-  test('skip_train propagates platform_unsupported from prMerge as ok:false', async () => {
-    // GitLab's prMerge returns platform_unsupported for skip_train (R-03 typed
-    // asymmetry). pr_merge_wait can't proceed, so it surfaces this as ok:false
-    // with a descriptive code/error. Pre-state fetch happens first so we stub
-    // an OPEN MR.
-    on(
-      'glab api projects/org%2Frepo/merge_requests/55',
-      JSON.stringify({
+  test('skip_train is silently dropped — merge proceeds with warning (#423)', async () => {
+    let viewCalls = 0;
+    on('glab api projects/org%2Frepo/merge_requests/55', () => {
+      viewCalls += 1;
+      const merged = viewCalls >= 2;
+      return JSON.stringify({
         iid: 55,
-        state: 'opened',
+        state: merged ? 'merged' : 'opened',
         source_branch: 'feature/x',
         target_branch: 'main',
         web_url: 'https://gitlab.com/org/repo/-/merge_requests/55',
         labels: [],
-      }),
-    );
+        merge_commit_sha: merged ? 'skip55abc' : null,
+      });
+    });
+    on('glab mr merge 55 --squash --remove-source-branch --yes', '');
 
     const result = await prMergeWaitGitlab({
       number: 55,
@@ -167,9 +167,11 @@ describe('prMergeWaitGitlab — adapter orchestration (parity)', () => {
       skip_train: true,
     });
 
-    expectErr(result);
-    expect(result.error).toContain('platform_unsupported');
-    expect(result.error).toContain('merge trains');
+    expectOk(result);
+    expect(result.data.merged).toBe(true);
+    expect(result.data.warnings).toContain(
+      'skip_train ignored on GitLab — merge trains are auto-managed at the project level',
+    );
   });
 
   test('pr_merge failure propagates unchanged', async () => {
