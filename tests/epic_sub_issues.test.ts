@@ -158,6 +158,28 @@ describe('epic_sub_issues handler', () => {
     expect(parsed.count).toBe(2);
   });
 
+  test('parses_nested_bullet_phase_checklist — devspec upshift format', async () => {
+    mockBody(`## Phases
+
+- [ ] **Phase 1: Toolkit Foundation** (1 Story, 1 Wave)
+  - [ ] Story 1.1: Initialize toolkit foundation (#5)
+- [ ] **Phase 2: Bake Pipeline** (3 Stories, 2 Waves)
+  - [ ] Story 2.1: Bake orchestrator (#6)
+  - [ ] Story 2.2: Provision AppRole (other-org/other-repo#19)
+  - [ ] Story 2.3: Phase A secrets generation (#14)
+`);
+    const result = await handler.execute({ epic_ref: '#100' });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.count).toBe(4);
+    expect(parsed.sub_issues[0].ref).toBe('myorg/myrepo#5');
+    expect(parsed.sub_issues[0].title).toContain('Story 1.1');
+    expect(parsed.sub_issues[1].ref).toBe('myorg/myrepo#6');
+    expect(parsed.sub_issues[2].ref).toBe('other-org/other-repo#19');
+    expect(parsed.sub_issues[2].title).toBe('Story 2.2: Provision AppRole');
+    expect(parsed.sub_issues[3].ref).toBe('myorg/myrepo#14');
+  });
+
   test('accepted_sections_surfaced_when_missing', async () => {
     mockBody('## Summary\nnothing here.\n');
     const result = await handler.execute({ epic_ref: '#100' });
