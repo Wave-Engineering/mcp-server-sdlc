@@ -104,7 +104,39 @@ else
         echo "    The handler will return verdict=PROBE_UNAVAILABLE until installed."
     else
         echo "Installing commutativity-probe @ ${PROBE_REF}..."
-        if pip install --user --quiet "git+${PROBE_REPO_URL}@${PROBE_REF}"; then
+        PROBE_INSTALLED=false
+
+        # Strategy 1: pipx (preferred — manages its own venv, PEP 668 safe)
+        if command -v pipx >/dev/null 2>&1; then
+            echo "  → trying pipx..."
+            if pipx install "git+${PROBE_REPO_URL}@${PROBE_REF}" >/dev/null 2>&1 \
+                || pipx install --force "git+${PROBE_REPO_URL}@${PROBE_REF}" >/dev/null 2>&1; then
+                PROBE_INSTALLED=true
+            fi
+        fi
+
+        # Strategy 2: persistent venv + symlink (PEP 668 safe, no pipx needed)
+        if [[ "${PROBE_INSTALLED}" == false ]]; then
+            echo "  → trying venv fallback..."
+            PROBE_VENV="${HOME}/.local/share/commutativity-probe-venv"
+            rm -rf "${PROBE_VENV}" 2>/dev/null || true
+            if python3 -m venv "${PROBE_VENV}" 2>/dev/null \
+                && "${PROBE_VENV}/bin/pip" install --quiet "git+${PROBE_REPO_URL}@${PROBE_REF}" 2>/dev/null \
+                && [[ -x "${PROBE_VENV}/bin/commutativity-probe" ]]; then
+                ln -sf "${PROBE_VENV}/bin/commutativity-probe" "${INSTALL_DIR}/commutativity-probe"
+                PROBE_INSTALLED=true
+            fi
+        fi
+
+        # Strategy 3: pip --user (legacy systems without PEP 668)
+        if [[ "${PROBE_INSTALLED}" == false ]]; then
+            echo "  → trying pip install --user..."
+            if python3 -m pip install --user --quiet "git+${PROBE_REPO_URL}@${PROBE_REF}" 2>/dev/null; then
+                PROBE_INSTALLED=true
+            fi
+        fi
+
+        if [[ "${PROBE_INSTALLED}" == true ]]; then
             if command -v commutativity-probe >/dev/null 2>&1 && commutativity-probe --help >/dev/null 2>&1; then
                 echo "  ✓ commutativity-probe installed and verified"
             else
