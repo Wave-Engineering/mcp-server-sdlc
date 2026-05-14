@@ -33,7 +33,7 @@ import { getAdapter } from '../lib/adapters/index.js';
 import {
   projectDir, writePlanFile, statusDir, readJson, countIssuesFromPlan,
   extendModePrescan, readPhasesWavesTotals, bootstrapKahunaBranchRemote,
-  recordKahunaBranchInState, branchExistsOnRemote, fileExists,
+  recordKahunaBranchInState, branchExistsOnRemote, fileExists, normalizePlanJson,
   type PlanData, type StateData,
 } from '../lib/wave_init_plan.js';
 import { repoOptionalSchema } from '../lib/schemas/repo.js';
@@ -80,6 +80,7 @@ const waveInitHandler: HandlerDef = {
     catch (err) { return envelope({ ok: false, error: err instanceof Error ? err.message : String(err) }); }
 
     const cwd = projectDir(args.project_root);
+    args.plan_json = normalizePlanJson(args.plan_json, args.repo);
     if (args.extend) {
       const pre = await extendModePrescan(args.plan_json, cwd);
       if (!pre.ok) return envelope(pre);
