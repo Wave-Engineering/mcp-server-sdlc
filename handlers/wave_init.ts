@@ -41,6 +41,7 @@ import { repoOptionalSchema } from '../lib/schemas/repo.js';
 const inputSchema = z.object({
   plan_json: z.string().min(1, 'plan_json must be a non-empty JSON string'),
   extend: z.boolean().optional().default(false),
+  force: z.boolean().optional().default(false),
   project_root: z.string().optional(),
   // GitLab nested groups need arbitrary `/` depth — see lib/schemas/repo.ts (#290).
   repo: repoOptionalSchema,
@@ -112,8 +113,9 @@ const waveInitHandler: HandlerDef = {
       // ---- Step 3: persist plan to disk -----------------------------------
       const planFile = writePlanFile(args.plan_json);
       const extendFlag = args.extend ? ' --extend' : '';
+      const forceFlag = args.force ? ' --force' : '';
       const repoFlag = args.repo ? ` --repo ${shellQuote(args.repo)}` : '';
-      execSync(`wave-status init${extendFlag}${repoFlag} ${planFile}`, { cwd, encoding: 'utf8' });
+      execSync(`wave-status init${extendFlag}${forceFlag}${repoFlag} ${planFile}`, { cwd, encoding: 'utf8' });
 
       const counts = countIssuesFromPlan(plan);
       const totals = await readPhasesWavesTotals(cwd);
