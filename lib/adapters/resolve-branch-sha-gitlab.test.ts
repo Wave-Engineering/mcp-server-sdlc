@@ -131,10 +131,10 @@ describe('resolveBranchShaGitlab — subprocess boundary', () => {
     expect((result as { code: string }).code).toBe('invalid_repo');
   });
 
-  test('passes branch names with slashes (feature/1-demo) unharmed', async () => {
+  test('URL-encodes branch names with slashes (feature/1-demo → feature%2F1-demo)', async () => {
     const sha = 'b'.repeat(40);
     on(
-      'glab api projects/org%2Frepo/repository/branches/feature/1-demo',
+      'glab api projects/org%2Frepo/repository/branches/feature%2F1-demo',
       JSON.stringify({ commit: { id: sha } }),
     );
 
@@ -144,6 +144,28 @@ describe('resolveBranchShaGitlab — subprocess boundary', () => {
     });
     expectOk(result);
     expect(result.data).toEqual({ sha });
+
+    const call = findCall('glab api');
+    expect(call).toContain('branches/feature%2F1-demo');
+    expect(call).not.toContain('branches/feature/1-demo');
+  });
+
+  test('URL-encodes multi-segment branches (release/0.0.1)', async () => {
+    const sha = 'd'.repeat(40);
+    on(
+      'glab api projects/team%2Fproject%2Fsub%2Frepo/repository/branches/release%2F0.0.1',
+      JSON.stringify({ commit: { id: sha } }),
+    );
+
+    const result = await resolveBranchShaGitlab({
+      branch: 'release/0.0.1',
+      repo: 'team/project/sub/repo',
+    });
+    expectOk(result);
+    expect(result.data).toEqual({ sha });
+
+    const call = findCall('glab api');
+    expect(call).toContain('branches/release%2F0.0.1');
   });
 
   test('supports nested group slugs (org/sub/repo → org%2Fsub%2Frepo)', async () => {

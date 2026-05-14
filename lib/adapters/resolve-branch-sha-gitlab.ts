@@ -66,10 +66,11 @@ export async function resolveBranchShaGitlab(
     }
 
     const encoded = slug.replace(/\//g, '%2F');
+    const encodedBranch = encodeURIComponent(args.branch);
     const cmd = [
       'glab',
       'api',
-      `projects/${encoded}/repository/branches/${args.branch}`,
+      `projects/${encoded}/repository/branches/${encodedBranch}`,
     ];
     const result = runArgv(cmd, projectDir());
     if (result.exitCode !== 0) {
