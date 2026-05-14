@@ -808,4 +808,24 @@ describe('wave_init handler', () => {
     expect(typeof parsed.error).toBe('string');
     expect(mockExecSync.mock.calls.length).toBe(0);
   });
+
+  test('force_param — passes --force flag to wave-status init', async () => {
+    await setupStatusFixture(null);
+    const planJson = JSON.stringify({ project: 'org/repo', phases: [] });
+    const result = await handler.execute({ plan_json: planJson, force: true });
+    expect(lastExecCall).toContain('wave-status init');
+    expect(lastExecCall).toContain('--force');
+    expect(lastExecCall).not.toContain('--extend');
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+  });
+
+  test('force_param — not present when force is false/omitted', async () => {
+    await setupStatusFixture(null);
+    const planJson = JSON.stringify({ project: 'org/repo', phases: [] });
+    const result = await handler.execute({ plan_json: planJson });
+    expect(lastExecCall).not.toContain('--force');
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+  });
 });
