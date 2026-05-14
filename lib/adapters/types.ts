@@ -211,6 +211,7 @@ export interface PrCommentArgs {
   number: number;
   body: string;
   repo?: string;
+  target?: 'issue' | 'mr';
 }
 
 export interface PrCommentResponse {
