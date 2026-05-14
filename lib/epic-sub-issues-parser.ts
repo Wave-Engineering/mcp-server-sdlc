@@ -111,14 +111,14 @@ export function parseChecklistOrBullets(
     const text = m[1].trim();
     if (!text) continue;
     const refM =
-      /(?:^|\s)([^/\s#]+\/[^/\s#]+#\d+|https?:\/\/\S+\/issues\/\d+|#\d+)/.exec(text);
+      /(?:^|[\s(])([^/\s#()]+\/[^/\s#()]+#\d+|https?:\/\/\S+\/issues\/\d+|#\d+)/.exec(text);
     if (!refM) continue;
     const raw = refM[1];
     const ref = normalizeRef(raw, currentSlug);
     // Title = text with the ref token stripped out. Also strip leading
     // list/separator punctuation including em/en dashes commonly used in
     // `- #NN — Title` style bullets.
-    const title = text.replace(refM[0], '').trim().replace(/^[-:*\s—–]+/, '').trim();
+    const title = text.replace(refM[0], '').replace(/\s*\)+\s*$/, '').trim().replace(/^[-:*\s—–]+/, '').trim();
     subs.push({
       ref,
       title: title.length > 0 ? title : undefined,
