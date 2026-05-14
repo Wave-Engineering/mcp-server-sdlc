@@ -3,12 +3,6 @@ import type { AdapterResult, PrMergeResponse } from './types.ts';
 
 // Subprocess-boundary tests for the GitLab pr_merge adapter (R-15).
 // Integration-level coverage stays in tests/pr_merge.test.ts.
-//
-// **R-03 typed-asymmetry exemplar lives here.** The headline test
-// (`skip_train returns platform_unsupported`) is the load-bearing case
-// that justified the entire platform-adapter retrofit — pre-#247, the
-// flag was silently ignored on GitLab; post-#247, the asymmetry is a
-// typed signal callers can branch on.
 
 interface ThrowableError extends Error {
   stderr?: string;
@@ -61,14 +55,6 @@ function expectErr(
   }
 }
 
-function expectPlatformUnsupported(
-  r: AdapterResult<PrMergeResponse>,
-): asserts r is { platform_unsupported: true; hint: string } {
-  if (!('platform_unsupported' in r)) {
-    throw new Error(`expected platform_unsupported result, got ${JSON.stringify(r)}`);
-  }
-}
-
 function findCall(needle: string): string {
   return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
@@ -118,29 +104,47 @@ describe('prMergeGitlab — subprocess boundary', () => {
     expect(execCalls.find((c) => c.includes('gh api graphql'))).toBeUndefined();
   });
 
-  // ===========================================================================
-  // R-03 TYPED-ASYMMETRY EXEMPLAR — the headline test for the entire retrofit
-  // ===========================================================================
-  test('skip_train returns platform_unsupported (R-03 typed asymmetry exemplar)', async () => {
-    const result = await prMergeGitlab({ number: 9, skip_train: true });
-    expectPlatformUnsupported(result);
-    expect(result.platform_unsupported).toBe(true);
-    expect(result.hint).toBe(
-      'merge trains are auto-managed by GitLab; skip_train is GitHub-merge-queue-only',
+  test('skip_train is silently dropped — merge proceeds with warning (#423)', async () => {
+    on('glab mr merge 9 --squash --remove-source-branch --yes', '');
+    on(
+      'glab api projects/org%2Frepo/merge_requests/9',
+      JSON.stringify({
+        iid: 9,
+        state: 'merged',
+        source_branch: 'feature/train',
+        target_branch: 'main',
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/9',
+        labels: [],
+        merge_commit_sha: 'abc123def456',
+      }),
     );
-    // Critical: NO subprocess work should have happened — the asymmetry
-    // is detected before any glab invocation.
-    expect(execCalls.length).toBe(0);
+
+    const result = await prMergeGitlab({ number: 9, skip_train: true, repo: 'org/repo' });
+    expectOk(result);
+    expect(result.data.merged).toBe(true);
+    expect(result.data.warnings).toContain(
+      'skip_train ignored on GitLab — merge trains are auto-managed at the project level',
+    );
   });
 
-  test('skip_train guard fires before slug parsing / repo resolution', async () => {
-    const result = await prMergeGitlab({
-      number: 1,
-      skip_train: true,
-      repo: 'org/repo',
-    });
-    expectPlatformUnsupported(result);
-    expect(execCalls.length).toBe(0);
+  test('skip_train omitted — no warning in response', async () => {
+    on('glab mr merge 10 --squash --remove-source-branch --yes', '');
+    on(
+      'glab api projects/org%2Frepo/merge_requests/10',
+      JSON.stringify({
+        iid: 10,
+        state: 'merged',
+        source_branch: 'feature/no-train',
+        target_branch: 'main',
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/10',
+        labels: [],
+        merge_commit_sha: 'deadbeef0000',
+      }),
+    );
+
+    const result = await prMergeGitlab({ number: 10, repo: 'org/repo' });
+    expectOk(result);
+    expect(result.data.warnings).toEqual([]);
   });
 
   test('returns AdapterResult{ok:false, code} on glab failure (not thrown)', async () => {

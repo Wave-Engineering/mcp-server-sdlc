@@ -5,14 +5,11 @@
  * `pr-merge-github.ts` — the handler dispatches to either depending on cwd
  * platform.
  *
- * **Typed asymmetry exemplar (R-03).** `args.skip_train === true` returns
- * `{platform_unsupported: true, hint: ...}` — the HEADLINE behavior the entire
- * platform-adapter retrofit was built around. GitLab has merge trains, but
- * they are auto-managed at the project level — there is no caller-side
- * control equivalent to GitHub's merge queue + skip_train. Pre-retrofit, the
- * handler accepted the flag and silently swallowed it; the typed asymmetry
- * signal closes that leak so MCP callers can branch on the discriminator
- * instead of being lied to.
+ * `skip_train` is silently dropped (#423): GitLab merge trains are
+ * auto-managed at the project level — there is no caller-side equivalent to
+ * GitHub's merge queue + skip_train. Callers pass the flag unconditionally
+ * and the adapter proceeds with the merge, surfacing a warning in the
+ * response rather than short-circuiting with `platform_unsupported`.
  *
  * Story 1.11 (#248) routes the post-merge state lookup through
  * `getAdapter().fetchPrState(...)` — the FIRST hybrid sub-call dispatched
@@ -89,18 +86,11 @@ function buildGitlabMergeCommand(
 export async function prMergeGitlab(
   args: PrMergeArgs,
 ): Promise<AdapterResult<PrMergeResponse>> {
-  // R-03 typed-asymmetry exemplar: `skip_train` is meaningless on GitLab
-  // (merge trains are auto-managed at the project level — no caller-side
-  // control equivalent to GitHub's merge queue + skip_train). Surface the
-  // asymmetry as a typed signal so MCP callers can branch on the discriminator
-  // instead of being lied to with a fake "merged: true". See Dev Spec §4.4
-  // step 4 + the issue #247 description.
-  if (args.skip_train === true) {
-    return {
-      platform_unsupported: true,
-      hint: 'merge trains are auto-managed by GitLab; skip_train is GitHub-merge-queue-only',
-    };
-  }
+  // #423: `skip_train` is meaningless on GitLab (merge trains are
+  // auto-managed at the project level). Silently drop it and proceed with the
+  // merge — callers pass the flag unconditionally and expect the adapter to
+  // handle the asymmetry without short-circuiting.
+  const skippedTrain = args.skip_train === true;
 
   try {
     // GitLab has no merge-queue concept; queue stays empty.
@@ -140,7 +130,9 @@ export async function prMergeGitlab(
         pr_state: info.state === 'merged' ? 'MERGED' : 'OPEN',
         url: info.url,
         merge_commit_sha: info.mergeCommitSha,
-        warnings: [],
+        warnings: skippedTrain
+          ? ['skip_train ignored on GitLab — merge trains are auto-managed at the project level']
+          : [],
         // GitLab has no queue concept — queue_fallback always false. Required
         // by PrMergeResponse since bug #280 / #294 added the field.
         queue_fallback: false,
