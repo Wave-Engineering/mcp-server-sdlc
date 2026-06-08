@@ -66,9 +66,18 @@ beforeEach(() => {
   execCalls = [];
 });
 
+// Fixture convention: use the house-standard `org/repo` slug for the cwd
+// remote (matches all sibling adapter tests). Do NOT diverge to a unique slug
+// here — `parseRepoSlug()` resolves `execSync` from `child_process`, which every
+// test file mocks via Bun's process-global `mock.module`. At full-suite scale on
+// the CI runner's file-discovery order, that shared binding can resolve to a
+// *different* file's mock registry, so a slug that diverges from the universal
+// `org/repo` is the only one that mismatches and flakes the release (#445).
+// Slug-PARSING correctness is owned by lib/shared/parse-repo-slug.test.ts; these
+// boundary tests only verify the cwd fallback fires and the URL is composed.
 describe('ciRunLogsGitlab — subprocess boundary', () => {
   test('argv: glab ci trace <job_id> when caller supplies job_id (no resolution)', async () => {
-    on('git remote get-url', 'https://gitlab.com/grp/proj.git\n');
+    on('git remote get-url', 'https://gitlab.com/org/repo.git\n');
     on('glab ci trace 77', 'trace content\n');
 
     const result = await ciRunLogsGitlab({
@@ -87,7 +96,7 @@ describe('ciRunLogsGitlab — subprocess boundary', () => {
   });
 
   test('resolves failed job then fetches trace (two-step flow)', async () => {
-    on('git remote get-url', 'https://gitlab.com/grp/proj.git\n');
+    on('git remote get-url', 'https://gitlab.com/org/repo.git\n');
     on(
       'glab api projects/:id/pipelines/55/jobs',
       JSON.stringify([
@@ -162,7 +171,7 @@ describe('ciRunLogsGitlab — subprocess boundary', () => {
   });
 
   test('returns AdapterResult with url built from cwd slug when repo omitted', async () => {
-    on('git remote get-url', 'https://gitlab.com/grp/proj.git\n');
+    on('git remote get-url', 'https://gitlab.com/org/repo.git\n');
     on('glab ci trace 77', 'log\n');
 
     const result = await ciRunLogsGitlab({
@@ -171,11 +180,11 @@ describe('ciRunLogsGitlab — subprocess boundary', () => {
       failed_only: true,
     });
     expectOk(result);
-    expect(result.data.url).toBe('https://gitlab.com/grp/proj/-/jobs/77');
+    expect(result.data.url).toBe('https://gitlab.com/org/repo/-/jobs/77');
   });
 
   test('returns AdapterResult.error when no failed job in pipeline', async () => {
-    on('git remote get-url', 'https://gitlab.com/grp/proj.git\n');
+    on('git remote get-url', 'https://gitlab.com/org/repo.git\n');
     on(
       'glab api projects/:id/pipelines/99/jobs',
       JSON.stringify([{ id: 1, status: 'success' }]),
@@ -188,7 +197,7 @@ describe('ciRunLogsGitlab — subprocess boundary', () => {
   });
 
   test('returns AdapterResult.error when glab api fails', async () => {
-    on('git remote get-url', 'https://gitlab.com/grp/proj.git\n');
+    on('git remote get-url', 'https://gitlab.com/org/repo.git\n');
     on('glab api', () => {
       const err = new Error('glab: not authenticated') as ThrowableError;
       err.stderr = 'glab: not authenticated';
@@ -203,7 +212,7 @@ describe('ciRunLogsGitlab — subprocess boundary', () => {
   });
 
   test('returns AdapterResult.error when glab ci trace fails', async () => {
-    on('git remote get-url', 'https://gitlab.com/grp/proj.git\n');
+    on('git remote get-url', 'https://gitlab.com/org/repo.git\n');
     on('glab ci trace', () => {
       const err = new Error('glab: job not found') as ThrowableError;
       err.stderr = 'glab: job not found';
