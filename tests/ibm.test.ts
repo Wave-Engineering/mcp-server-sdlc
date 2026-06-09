@@ -41,6 +41,9 @@ describe('ibm handler', () => {
 
     expect(data.ok).toBe(false);
     expect((data.error as string)).toContain("protected");
+    // #448: the protected-branch guidance must use the singular convention too
+    // (it previously hardcoded plural 'docs', contradicting the regex path).
+    expect((data.error as string)).toContain("'doc/' not 'docs/'");
   });
 
   // --- protected_branch_release ---
@@ -55,14 +58,18 @@ describe('ibm handler', () => {
   });
 
   // --- no_issue_in_branch ---
-  test('no_issue_in_branch — branch without issue number returns error', async () => {
+  test('no_issue_in_branch — branch without issue number returns unrecognized-prefix error', async () => {
     execRegistry['git branch --show-current'] = 'feat-no-number';
 
     const result = await ibmHandler.execute({});
     const data = parseResult(result.content);
 
     expect(data.ok).toBe(false);
-    expect(data.error).toBe('Branch has no linked issue. Name format: type/NNN-description');
+    // Distinct from an issue-linkage failure (#448): name the format + branch.
+    expect(data.error as string).toContain("Branch 'feat-no-number'");
+    expect(data.error as string).toContain('unrecognized prefix or missing issue number');
+    expect(data.error as string).toContain("'doc/' not 'docs/'");
+    expect(data.error as string).not.toContain('no linked issue');
   });
 
   // --- issue_open ---
@@ -171,15 +178,39 @@ describe('ibm handler', () => {
     }
   });
 
-  // --- plural docs/ rejected (regression guard for #381) ---
-  test('plural_docs_rejected — docs/ (plural) returns no-issue error', async () => {
+  // --- plural docs/ rejected (regression guard for #381, message clarity #448) ---
+  test('plural_docs_rejected — docs/ (plural) returns unrecognized-prefix error, not a linkage error', async () => {
     execRegistry['git branch --show-current'] = 'docs/42-some-doc';
 
     const result = await ibmHandler.execute({});
     const data = parseResult(result.content);
 
     expect(data.ok).toBe(false);
-    expect(data.error).toBe('Branch has no linked issue. Name format: type/NNN-description');
+    // #448: a plural/unknown prefix must read as a branch-name problem, not as
+    // "no linked issue" — that misdirection sent an agent chasing work-items.
+    expect(data.error as string).toContain('unrecognized prefix');
+    expect(data.error as string).toContain("'doc/' not 'docs/'");
+    // The regex fails before any issue lookup — no fetchIssue call is registered.
+    expect(data.error as string).not.toContain('no linked issue');
+  });
+
+  // --- issue-not-found is distinct from an unrecognized prefix (#448) ---
+  test('issue_lookup_failed — well-formed branch names the parsed issue number on lookup failure', async () => {
+    const branch = 'feature/77-missing-issue';
+    execRegistry['git branch --show-current'] = branch;
+    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
+    // 'gh issue view 77' is deliberately NOT registered → the adapter's
+    // execSync throws, fetchIssueGithub bounds it into { ok:false }, and the
+    // handler surfaces the issue-specific message.
+
+    const result = await ibmHandler.execute({});
+    const data = parseResult(result.content);
+
+    expect(data.ok).toBe(false);
+    // Issue-specific message: names #77 and signals the branch format was accepted.
+    expect(data.error as string).toContain('references issue #77');
+    expect(data.error as string).toContain('lookup failed');
+    expect(data.error as string).not.toContain('unrecognized prefix');
   });
 
   // --- gitlab platform ---
