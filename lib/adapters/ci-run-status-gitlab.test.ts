@@ -1,4 +1,4 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
 import {
   installChildProcessMock,
   onExec,
@@ -13,9 +13,11 @@ import type { AdapterResult, CiRunStatusResponse } from './types.ts';
 // enum-normalization assertions.
 //
 // The adapter routes its subprocess through `gitlabApiCiList` in
-// `lib/gitlab-api.ts`. That means we mock `child_process.execSync` directly
-// AND stub `parseRepoSlug` so `gitlabApiCiList`'s `git remote` peek doesn't
-// need a real repo.
+// `lib/gitlab-api.ts`. We mock `child_process.execSync` via the shared helper
+// and stub the `git remote get-url origin` peek so `parseRepoSlug` resolves to
+// org/repo without a real repo. (We do NOT mock the parse-repo-slug module —
+// mock.module is process-global and would leak into parse-repo-slug's own
+// tests, #455.)
 
 interface ThrowableError extends Error {
   stderr?: string;
@@ -28,9 +30,6 @@ function unquote(cmd: string): string {
 }
 
 installChildProcessMock();
-mock.module('../shared/parse-repo-slug.js', () => ({
-  parseRepoSlug: () => 'org/repo',
-}));
 
 const { ciRunStatusGitlab } = await import('./ci-run-status-gitlab.ts');
 
@@ -56,6 +55,8 @@ function findCall(needle: string): string {
 
 beforeEach(() => {
   resetExecMock();
+  // parseRepoSlug's `git remote` peek → org/repo, without mocking the module.
+  onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
 });
 
 describe('ciRunStatusGitlab — subprocess boundary', () => {
