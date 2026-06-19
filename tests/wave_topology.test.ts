@@ -1,14 +1,17 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  setExecMock,
+  resetExecMock,
+} from '../lib/test-support/mock-child-process.ts';
 
-let execMockFn: (cmd: string) => string = () => '';
-const mockExecSync = mock((cmd: string, _opts?: unknown) => execMockFn(cmd));
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { default: handler } = await import('../handlers/wave_topology.ts');
 
 function resetMocks() {
-  execMockFn = () => '';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => '');
 }
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
@@ -16,7 +19,7 @@ function parseResult(result: { content: Array<{ type: string; text: string }> })
 }
 
 function mockIssues(bodies: Record<string, string>, origin = 'https://github.com/org/repo.git') {
-  execMockFn = (cmd: string) => {
+  setExecMock((cmd: string) => {
     if (cmd.startsWith('git remote')) return origin + '\n';
     if (cmd.includes('gh issue view')) {
       const m = /gh issue view (\S+)/.exec(cmd);
@@ -26,7 +29,7 @@ function mockIssues(bodies: Record<string, string>, origin = 'https://github.com
       }
     }
     return '';
-  };
+  });
 }
 
 describe('wave_topology handler', () => {
@@ -93,7 +96,7 @@ describe('wave_topology handler', () => {
   });
 
   test('accepts_epic_ref_alternative', async () => {
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
       if (cmd.includes('gh issue view 100')) {
         return JSON.stringify({
@@ -108,7 +111,7 @@ describe('wave_topology handler', () => {
         return JSON.stringify({ body: '## Dependencies\nNone\n', title: '6' });
       }
       return '';
-    };
+    });
     const result = await handler.execute({ epic_ref: '#100' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -142,7 +145,7 @@ describe('wave_topology handler', () => {
   });
 
   test('partial_failure — some fetches fail', async () => {
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
       if (cmd.includes('gh issue view 5')) {
         return JSON.stringify({ body: '## Dependencies\nNone\n', title: 'Issue 5' });
@@ -154,7 +157,7 @@ describe('wave_topology handler', () => {
         return JSON.stringify({ body: '## Dependencies\nNone\n', title: 'Issue 7' });
       }
       return '';
-    };
+    });
     const result = await handler.execute({ issue_refs: ['#5', '#6', '#7'] });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -166,13 +169,13 @@ describe('wave_topology handler', () => {
   });
 
   test('total_failure — all fetches fail', async () => {
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
       if (cmd.includes('gh issue view')) {
         throw new Error('fetch failed');
       }
       return '';
-    };
+    });
     const result = await handler.execute({ issue_refs: ['#5', '#6'] });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);
@@ -182,7 +185,7 @@ describe('wave_topology handler', () => {
   });
 
   test('cross_repo_epic_bare_ref_resolves_to_epic_repo', async () => {
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/myorg/myrepo.git\n';
       if (cmd.includes('gh issue view 42') && cmd.includes('--repo Wave-Engineering/sdlc')) {
         return JSON.stringify({
@@ -197,7 +200,7 @@ describe('wave_topology handler', () => {
         return JSON.stringify({ body: '## Dependencies\n- #5\n', title: 'second' });
       }
       return JSON.stringify({ body: '', title: '' });
-    };
+    });
     const result = await handler.execute({ epic_ref: 'Wave-Engineering/sdlc#42' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -209,7 +212,7 @@ describe('wave_topology handler', () => {
   });
 
   test('cross_repo_epic_already_qualified_ref_preserved', async () => {
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/myorg/myrepo.git\n';
       if (cmd.includes('gh issue view 42') && cmd.includes('--repo Wave-Engineering/sdlc')) {
         return JSON.stringify({
@@ -221,7 +224,7 @@ describe('wave_topology handler', () => {
         return JSON.stringify({ body: '## Dependencies\nNone\n', title: 'seven' });
       }
       return JSON.stringify({ body: '', title: '' });
-    };
+    });
     const result = await handler.execute({ epic_ref: 'Wave-Engineering/sdlc#42' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -231,7 +234,7 @@ describe('wave_topology handler', () => {
 
   test('unqualified_epic_bare_ref_falls_back_to_cwd_slug', async () => {
     // Back-compat: bare epic_ref → bare `#N` in body resolves against cwd.
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/myorg/myrepo.git\n';
       if (cmd.includes('gh issue view 42')) {
         return JSON.stringify({
@@ -243,7 +246,7 @@ describe('wave_topology handler', () => {
         return JSON.stringify({ body: '## Dependencies\nNone\n', title: 'story' });
       }
       return JSON.stringify({ body: '', title: '' });
-    };
+    });
     const result = await handler.execute({ epic_ref: '#42' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -252,13 +255,13 @@ describe('wave_topology handler', () => {
   });
 
   test('epic_ref_path_surfaces_errors_loudly', async () => {
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
       if (cmd.includes('gh issue view 100')) {
         throw new Error('epic fetch failed');
       }
       return '';
-    };
+    });
     const result = await handler.execute({ epic_ref: '#100' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);

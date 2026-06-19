@@ -1,21 +1,18 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  setExecMock,
+  resetExecMock,
+  execCalls,
+} from '../lib/test-support/mock-child-process.ts';
 
-let lastExecCall = '';
-let execMockFn: (cmd: string) => string = () => 'flight done\n';
-
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  lastExecCall = cmd;
-  return execMockFn(cmd);
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { default: handler } = await import('../handlers/wave_flight_done.ts');
 
 function resetMocks() {
-  lastExecCall = '';
-  execMockFn = () => 'flight done\n';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => 'flight done\n');
 }
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
@@ -33,16 +30,16 @@ describe('wave_flight_done handler', () => {
 
   test('happy_path — invokes wave-status flight-done with N', async () => {
     const result = await handler.execute({ flight_number: 1 });
-    expect(lastExecCall).toBe('wave-status flight-done 1');
+    expect(execCalls().at(-1) ?? '').toBe('wave-status flight-done 1');
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
     expect(parsed.data).toBe('flight done');
   });
 
   test('cli_error — returns ok:false on non-zero exit', async () => {
-    execMockFn = () => {
+    setExecMock(() => {
       throw new Error("wave-status: flight 1 is 'pending', not 'running'");
-    };
+    });
     const result = await handler.execute({ flight_number: 1 });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);

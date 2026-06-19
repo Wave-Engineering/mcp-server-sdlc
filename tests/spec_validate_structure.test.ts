@@ -1,14 +1,17 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  setExecMock,
+  resetExecMock,
+} from '../lib/test-support/mock-child-process.ts';
 
-let execMockFn: (cmd: string) => string = () => '';
-const mockExecSync = mock((cmd: string, _opts?: unknown) => execMockFn(cmd));
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { default: handler } = await import('../handlers/spec_validate_structure.ts');
 
 function resetMocks() {
-  execMockFn = () => '';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => '');
 }
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
@@ -16,13 +19,13 @@ function parseResult(result: { content: Array<{ type: string; text: string }> })
 }
 
 function mockBody(body: string) {
-  execMockFn = (cmd: string) => {
+  setExecMock((cmd: string) => {
     if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
     if (cmd.includes('gh issue view')) {
       return JSON.stringify({ body });
     }
     return '';
-  };
+  });
 }
 
 describe('spec_validate_structure handler', () => {

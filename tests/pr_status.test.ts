@@ -1,34 +1,19 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import { installChildProcessMock, onExec, setExecMock, resetExecMock, execCalls } from '../lib/test-support/mock-child-process.ts';
 
 // --- Mock child_process.execSync at module level ---
 //
 // pr_status now dispatches through the platform adapter (Story 1.7 / #244), and
 // the GitHub adapter calls subprocess via `runArgv` which shell-escapes its
 // argv (`'gh' 'pr' 'view' '42' '--json' 'state,...'`). The `unquote` shim
-// strips that quoting so test match-keys can stay as plain `gh pr view 42`
+// strips that quoting so test assertions can match plain `gh pr view 42`
 // strings — same pattern adopted by tests/pr_create.test.ts in PR #266 and
 // tests/pr_files.test.ts in PR #268.
-let execRegistry: Array<{ match: string; value: string }> = [];
-let execError: Error | null = null;
-let execCalls: string[] = [];
+installChildProcessMock();
 
 function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
-
-function mockExec(cmd: string): string {
-  execCalls.push(cmd);
-  if (execError) throw execError;
-  const flat = unquote(cmd);
-  for (const { match, value } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) return value;
-  }
-  throw new Error(`Unexpected exec call: ${cmd}`);
-}
-
-mock.module('child_process', () => ({
-  execSync: (cmd: string, _opts?: unknown) => mockExec(cmd),
-}));
 
 // Import AFTER the mock is registered
 const { default: prStatusHandler } = await import('../handlers/pr_status.ts');
@@ -38,7 +23,7 @@ function parseResult(content: Array<{ type: string; text: string }>) {
 }
 
 function register(match: string, value: string) {
-  execRegistry.push({ match, value });
+  onExec(match, value);
 }
 
 function registerGithubRemote() {
@@ -50,9 +35,7 @@ function registerGitlabRemote() {
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execError = null;
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('pr_status handler', () => {
@@ -389,7 +372,9 @@ describe('pr_status handler', () => {
 
   test('exec_failure_surfaces_as_ok_false', async () => {
     registerGithubRemote();
-    execError = new Error('command failed: gh: not found');
+    setExecMock(() => {
+      throw new Error('command failed: gh: not found');
+    });
 
     const result = await prStatusHandler.execute({ number: 1 });
     const out = parseResult(result.content);
@@ -421,10 +406,10 @@ describe('pr_status handler', () => {
     expect(out.ok).toBe(true);
 
     const viewCall =
-      execCalls.find((c) => unquote(c).startsWith('gh pr view 42')) ?? '';
+      execCalls().find((c) => unquote(c).startsWith('gh pr view 42')) ?? '';
     expect(unquote(viewCall)).toContain('--repo Wave-Engineering/mcp-server-sdlc');
     const checksCall =
-      execCalls.find((c) => unquote(c).startsWith('gh pr checks 42')) ?? '';
+      execCalls().find((c) => unquote(c).startsWith('gh pr checks 42')) ?? '';
     expect(unquote(checksCall)).toContain('--repo Wave-Engineering/mcp-server-sdlc');
   });
 
@@ -449,7 +434,7 @@ describe('pr_status handler', () => {
     const out = parseResult(result.content);
     expect(out.ok).toBe(true);
 
-    const glabCall = execCalls.find((c) => c.includes('glab api projects/')) ?? '';
+    const glabCall = execCalls().find((c) => c.includes('glab api projects/')) ?? '';
     expect(glabCall).toContain('target-org%2Ftarget-repo');
     expect(glabCall).not.toContain('cwd-org%2Fcwd-repo');
   });
@@ -470,10 +455,10 @@ describe('pr_status handler', () => {
     await prStatusHandler.execute({ number: 42 });
 
     const viewCall =
-      execCalls.find((c) => unquote(c).startsWith('gh pr view 42')) ?? '';
+      execCalls().find((c) => unquote(c).startsWith('gh pr view 42')) ?? '';
     expect(unquote(viewCall)).not.toContain('--repo');
     const checksCall =
-      execCalls.find((c) => unquote(c).startsWith('gh pr checks 42')) ?? '';
+      execCalls().find((c) => unquote(c).startsWith('gh pr checks 42')) ?? '';
     expect(unquote(checksCall)).not.toContain('--repo');
   });
 
@@ -483,6 +468,6 @@ describe('pr_status handler', () => {
 
     expect(out.ok).toBe(false);
     expect(typeof out.error).toBe('string');
-    expect(execCalls).toHaveLength(0);
+    expect(execCalls()).toHaveLength(0);
   });
 });

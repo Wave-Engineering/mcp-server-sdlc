@@ -1,21 +1,17 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import { installChildProcessMock, setExecMock, resetExecMock, execCalls } from '../lib/test-support/mock-child-process.ts';
 
-let lastExecCall = '';
-let execMockFn: (cmd: string) => string = () => 'issue closed\n';
-
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  lastExecCall = cmd;
-  return execMockFn(cmd);
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { default: handler } = await import('../handlers/wave_close_issue.ts');
 
 function resetMocks() {
-  lastExecCall = '';
-  execMockFn = () => 'issue closed\n';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => 'issue closed\n');
+}
+
+function lastExec(): string {
+  return execCalls().at(-1) ?? '';
 }
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
@@ -33,16 +29,16 @@ describe('wave_close_issue handler', () => {
 
   test('happy_path — invokes wave-status close-issue with N', async () => {
     const result = await handler.execute({ issue_number: 42 });
-    expect(lastExecCall).toBe('wave-status close-issue 42');
+    expect(lastExec()).toBe('wave-status close-issue 42');
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
     expect(parsed.data).toBe('issue closed');
   });
 
   test('cli_error — returns ok:false on non-zero exit', async () => {
-    execMockFn = () => {
+    setExecMock(() => {
       throw new Error('wave-status: issue #42 does not exist in the plan');
-    };
+    });
     const result = await handler.execute({ issue_number: 42 });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);
@@ -63,16 +59,16 @@ describe('wave_close_issue handler', () => {
 
   test('issue_ref_uses_qualified_ref_in_CLI', async () => {
     const result = await handler.execute({ issue_ref: 'Wave-Engineering/sdlc#185' });
-    expect(lastExecCall).toContain('wave-status close-issue');
-    expect(lastExecCall).toContain("'Wave-Engineering/sdlc#185'");
-    expect(lastExecCall).not.toMatch(/close-issue 185$/);
+    expect(lastExec()).toContain('wave-status close-issue');
+    expect(lastExec()).toContain("'Wave-Engineering/sdlc#185'");
+    expect(lastExec()).not.toMatch(/close-issue 185$/);
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
   });
 
   test('issue_number_fallback — bare number still works when issue_ref absent', async () => {
     const result = await handler.execute({ issue_number: 42 });
-    expect(lastExecCall).toBe('wave-status close-issue 42');
+    expect(lastExec()).toBe('wave-status close-issue 42');
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
   });

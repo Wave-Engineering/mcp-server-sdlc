@@ -1,4 +1,9 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  setExecMock,
+  resetExecMock,
+} from '../lib/test-support/mock-child-process.ts';
 
 // --- Mock child_process.execSync at module level ---
 //
@@ -13,9 +18,7 @@ import { describe, test, expect, mock, beforeEach } from 'bun:test';
 // (`repo` flag forwarding). Subprocess-boundary argv assertions live in the
 // colocated adapter tests (lib/adapters/ci-failed-jobs-{github,gitlab}.test.ts).
 
-let execMockFn: (cmd: string) => string = () => '';
-const mockExecSync = mock((cmd: string, _opts?: unknown) => execMockFn(cmd));
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { default: ciFailedJobsHandler } = await import('../handlers/ci_failed_jobs.ts');
 
@@ -28,8 +31,8 @@ function parseResult(result: { content: Array<{ type: string; text: string }> })
 }
 
 function resetMocks() {
-  execMockFn = () => '';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => '');
 }
 
 beforeEach(resetMocks);
@@ -60,7 +63,7 @@ describe('ci_failed_jobs handler', () => {
 
   // --- End-to-end: handler → adapter → subprocess → envelope ---
   test('github_end_to_end — returns failed jobs in standard envelope', async () => {
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       const flat = unquote(cmd);
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
       if (flat.includes('gh run view 12345 --json jobs')) {
@@ -79,7 +82,7 @@ describe('ci_failed_jobs handler', () => {
         });
       }
       throw new Error(`Unexpected exec: ${cmd}`);
-    };
+    });
 
     const result = await ciFailedJobsHandler.execute({ run_id: 12345 });
     const data = parseResult(result);
@@ -93,7 +96,7 @@ describe('ci_failed_jobs handler', () => {
   });
 
   test('gitlab_end_to_end — returns failed jobs with stage populated', async () => {
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       const flat = unquote(cmd);
       if (cmd.startsWith('git remote')) return 'https://gitlab.com/org/repo.git\n';
       if (flat.includes('glab api projects/:id/pipelines/42/jobs')) {
@@ -110,7 +113,7 @@ describe('ci_failed_jobs handler', () => {
         ]);
       }
       throw new Error(`Unexpected exec: ${cmd}`);
-    };
+    });
 
     const result = await ciFailedJobsHandler.execute({ run_id: 42 });
     const data = parseResult(result);
@@ -127,7 +130,7 @@ describe('ci_failed_jobs handler', () => {
 
   test('github_explicit_repo — appends --repo flag to gh run view', async () => {
     let sawRepoFlag = false;
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       const flat = unquote(cmd);
       if (cmd.startsWith('git remote'))
         return 'https://github.com/cwd-org/cwd-repo.git\n';
@@ -148,7 +151,7 @@ describe('ci_failed_jobs handler', () => {
         });
       }
       throw new Error(`Unexpected exec: ${cmd}`);
-    };
+    });
 
     const result = await ciFailedJobsHandler.execute({
       run_id: 777,
@@ -162,7 +165,7 @@ describe('ci_failed_jobs handler', () => {
   test('gitlab_explicit_repo — replaces :id with encoded explicit slug', async () => {
     let sawExplicitPath = false;
     let sawColonId = false;
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       const flat = unquote(cmd);
       if (cmd.startsWith('git remote'))
         return 'https://gitlab.com/cwd-org/cwd-repo.git\n';
@@ -183,7 +186,7 @@ describe('ci_failed_jobs handler', () => {
         ]);
       }
       throw new Error(`Unexpected exec: ${cmd}`);
-    };
+    });
 
     const result = await ciFailedJobsHandler.execute({
       run_id: 101,
@@ -197,7 +200,7 @@ describe('ci_failed_jobs handler', () => {
 
   test('regression_no_repo — preserves :id shorthand when repo not provided', async () => {
     let sawColonId = false;
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       const flat = unquote(cmd);
       if (cmd.startsWith('git remote'))
         return 'https://gitlab.com/org/repo.git\n';
@@ -206,7 +209,7 @@ describe('ci_failed_jobs handler', () => {
         return JSON.stringify([]);
       }
       throw new Error(`Unexpected exec: ${cmd}`);
-    };
+    });
 
     const result = await ciFailedJobsHandler.execute({ run_id: 202 });
     const data = parseResult(result);
@@ -216,13 +219,13 @@ describe('ci_failed_jobs handler', () => {
 
   // --- exec error surfaces as ok:false ---
   test('exec_error — surfaces platform command failure as ok:false', async () => {
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
       if (cmd.includes('gh') && cmd.includes('run') && cmd.includes('view')) {
         throw new Error('gh: run not found');
       }
       throw new Error(`Unexpected exec: ${cmd}`);
-    };
+    });
 
     const result = await ciFailedJobsHandler.execute({ run_id: 404 });
     const data = parseResult(result);

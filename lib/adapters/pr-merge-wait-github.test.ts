@@ -1,13 +1,19 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../test-support/mock-child-process.ts';
 import type { AdapterResult, PrMergeWaitResponse } from './types.ts';
 
 // Subprocess-boundary tests for the GitHub pr_merge_wait adapter (R-15).
 // Lifted from tests/pr_merge_wait.test.ts during Story 1.11 (#248). The
 // adapter orchestrates: detect-and-skip via fetchPrState, dispatch to
 // prMerge, and poll-until-merged on the queue path. Subprocess interception
-// happens via mock.module('child_process', ...) — every test installs its OWN
-// mock BEFORE the dynamic import (56-file convention; see
-// `.claude/projects/.../memory/MEMORY.md` "Bun mock.module pollution").
+// goes through the shared helper (lib/test-support/mock-child-process.ts) via
+// installChildProcessMock() — a single shared mock over shared state, so the
+// per-file mock.module no longer leaks across Bun's module space (#455).
 
 interface ThrowableError extends Error {
   stderr?: string;
@@ -15,47 +21,20 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-type Responder = string | (() => string);
-
-let execRegistry: Array<{ match: string; respond: Responder }> = [];
-let execCalls: string[] = [];
-
-function unquote(cmd: string): string {
-  return cmd.replace(/'([^']*)'/g, '$1');
-}
-
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { executeMergeWaitForTest } = await import('./pr-merge-wait-github.ts');
 const { clearMergeQueueCache } = await import('../merge_queue_detect.ts');
 
-function on(match: string, respond: Responder) {
-  execRegistry.push({ match, respond });
-}
-
 function stubNoQueue() {
-  on(
+  onExec(
     'gh api graphql',
     JSON.stringify({ data: { repository: { mergeQueue: null } } }),
   );
 }
 
 function stubEnforcedQueue() {
-  on(
+  onExec(
     'gh api graphql',
     JSON.stringify({ data: { repository: { mergeQueue: { __typename: 'MergeQueue' } } } }),
   );
@@ -91,22 +70,20 @@ function expectErr(
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
   clearMergeQueueCache();
   // Default cwd remote — GitHub origin so detectPlatform() picks github.
-  on('git remote get-url origin', 'https://github.com/org/repo.git\n');
+  onExec('git remote get-url origin', 'https://github.com/org/repo.git\n');
 });
 
 afterEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
   clearMergeQueueCache();
 });
 
 describe('prMergeWaitGithub — adapter orchestration', () => {
   test('detect-and-skip: PR already merged → no merge call, warning emitted', async () => {
-    on(
+    onExec(
       'gh pr view 50 --json state,url,mergeCommit',
       JSON.stringify({
         state: 'MERGED',
@@ -126,13 +103,13 @@ describe('prMergeWaitGithub — adapter orchestration', () => {
     expect(result.data.merge_commit_sha).toBe('preexisting');
     expect(result.data.warnings.length).toBe(1);
     expect(result.data.warnings[0]).toContain('already merged');
-    expect(execCalls.find((c) => c.includes('gh pr merge'))).toBeUndefined();
+    expect(execCalls().find((c) => c.includes('gh pr merge'))).toBeUndefined();
   });
 
   test('direct merge path → returns synchronously, no polling', async () => {
     stubNoQueue();
     let viewCalls = 0;
-    on('gh pr view 51 --json state,url,mergeCommit', () => {
+    onExec('gh pr view 51 --json state,url,mergeCommit', () => {
       viewCalls += 1;
       const merged = viewCalls >= 2;
       return JSON.stringify({
@@ -141,7 +118,7 @@ describe('prMergeWaitGithub — adapter orchestration', () => {
         mergeCommit: merged ? { oid: 'direct51' } : null,
       });
     });
-    on('gh pr merge 51 --squash --delete-branch', '');
+    onExec('gh pr merge 51 --squash --delete-branch', '');
 
     const clock = fakeClock();
     const result = await executeMergeWaitForTest(
@@ -163,7 +140,7 @@ describe('prMergeWaitGithub — adapter orchestration', () => {
   test('regression #258: direct path returns merged:false → polls until landing', async () => {
     stubNoQueue();
     let viewCallCount = 0;
-    on('gh pr view 257 --json state,url,mergeCommit', () => {
+    onExec('gh pr view 257 --json state,url,mergeCommit', () => {
       viewCallCount += 1;
       if (viewCallCount >= 5) {
         return JSON.stringify({
@@ -178,7 +155,7 @@ describe('prMergeWaitGithub — adapter orchestration', () => {
         mergeCommit: null,
       });
     });
-    on('gh pr merge 257 --squash --delete-branch', '');
+    onExec('gh pr merge 257 --squash --delete-branch', '');
 
     const clock = fakeClock();
     const result = await executeMergeWaitForTest(
@@ -196,7 +173,7 @@ describe('prMergeWaitGithub — adapter orchestration', () => {
   test('queue path → polls until state flips to merged', async () => {
     stubEnforcedQueue();
     let viewCallCount = 0;
-    on('gh pr view 60 --json state,url,mergeCommit', () => {
+    onExec('gh pr view 60 --json state,url,mergeCommit', () => {
       viewCallCount += 1;
       if (viewCallCount >= 5) {
         return JSON.stringify({
@@ -211,7 +188,7 @@ describe('prMergeWaitGithub — adapter orchestration', () => {
         mergeCommit: null,
       });
     });
-    on('gh pr merge 60 --squash --delete-branch --auto', '');
+    onExec('gh pr merge 60 --squash --delete-branch --auto', '');
 
     const clock = fakeClock();
     const result = await executeMergeWaitForTest(
@@ -229,7 +206,7 @@ describe('prMergeWaitGithub — adapter orchestration', () => {
 
   test('queue path → timeout returns ok:false with descriptive error', async () => {
     stubEnforcedQueue();
-    on(
+    onExec(
       'gh pr view 70 --json state,url,mergeCommit',
       JSON.stringify({
         state: 'OPEN',
@@ -237,7 +214,7 @@ describe('prMergeWaitGithub — adapter orchestration', () => {
         mergeCommit: null,
       }),
     );
-    on('gh pr merge 70 --squash --delete-branch --auto', '');
+    onExec('gh pr merge 70 --squash --delete-branch --auto', '');
 
     const clock = fakeClock();
     const result = await executeMergeWaitForTest(
@@ -254,7 +231,7 @@ describe('prMergeWaitGithub — adapter orchestration', () => {
   test('queue path → fetch_error mid-poll surfaces "after enrollment" context', async () => {
     stubEnforcedQueue();
     let viewCallCount = 0;
-    on('gh pr view 71 --json state,url,mergeCommit', () => {
+    onExec('gh pr view 71 --json state,url,mergeCommit', () => {
       viewCallCount += 1;
       if (viewCallCount >= 4) {
         throw new Error('gh: API rate limit exceeded');
@@ -265,7 +242,7 @@ describe('prMergeWaitGithub — adapter orchestration', () => {
         mergeCommit: null,
       });
     });
-    on('gh pr merge 71 --squash --delete-branch --auto', '');
+    onExec('gh pr merge 71 --squash --delete-branch --auto', '');
 
     const clock = fakeClock();
     const result = await executeMergeWaitForTest(
@@ -282,7 +259,7 @@ describe('prMergeWaitGithub — adapter orchestration', () => {
 
   test('pr_merge failure propagates unchanged', async () => {
     stubNoQueue();
-    on(
+    onExec(
       'gh pr view 80 --json state,url,mergeCommit',
       JSON.stringify({
         state: 'OPEN',
@@ -290,7 +267,7 @@ describe('prMergeWaitGithub — adapter orchestration', () => {
         mergeCommit: null,
       }),
     );
-    on('gh pr merge 80 --squash --delete-branch', () => {
+    onExec('gh pr merge 80 --squash --delete-branch', () => {
       const err = new Error('Pull request is not mergeable: conflicts') as ThrowableError;
       err.stderr = 'Pull request is not mergeable: conflicts\n';
       throw err;
@@ -306,7 +283,7 @@ describe('prMergeWaitGithub — adapter orchestration', () => {
   });
 
   test('initial state-fetch failure surfaces a clear error', async () => {
-    on('gh pr view 90 --json state,url,mergeCommit', () => {
+    onExec('gh pr view 90 --json state,url,mergeCommit', () => {
       throw new Error('PR not found');
     });
 

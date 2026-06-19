@@ -1,14 +1,13 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import { installChildProcessMock, setExecMock, resetExecMock } from '../lib/test-support/mock-child-process.ts';
 
-let execMockFn: (cmd: string) => string = () => '';
-const mockExecSync = mock((cmd: string, _opts?: unknown) => execMockFn(cmd));
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { default: handler } = await import('../handlers/wave_compute.ts');
 
 function resetMocks() {
-  execMockFn = () => '';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => '');
 }
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
@@ -24,7 +23,7 @@ function mockGraph(
   epicBody: string,
   subIssues: Record<string, { body: string; title?: string }>,
 ) {
-  execMockFn = (cmd: string) => {
+  setExecMock((cmd: string) => {
     if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
     if (cmd.includes('gh issue view')) {
       // Detect which issue is being asked for.
@@ -45,7 +44,7 @@ function mockGraph(
       return JSON.stringify({ body: '', title: `Issue ${n}` });
     }
     return '';
-  };
+  });
 }
 
 describe('wave_compute handler', () => {
@@ -173,7 +172,7 @@ describe('wave_compute handler', () => {
 - #6 second
 - #7 third
 `;
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
       if (cmd.includes('gh issue view 100')) {
         return JSON.stringify({ body: epicBody, title: 'Epic 100' });
@@ -188,7 +187,7 @@ describe('wave_compute handler', () => {
         return JSON.stringify({ body: '## Dependencies\nNone\n', title: 'Issue 7' });
       }
       return '';
-    };
+    });
     const result = await handler.execute({ epic_ref: '#100' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -205,7 +204,7 @@ describe('wave_compute handler', () => {
 - #5 first
 - #6 second
 `;
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
       if (cmd.includes('gh issue view 100')) {
         return JSON.stringify({ body: epicBody, title: 'Epic 100' });
@@ -214,7 +213,7 @@ describe('wave_compute handler', () => {
         throw new Error('fetch failed');
       }
       return '';
-    };
+    });
     const result = await handler.execute({ epic_ref: '#100' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);
@@ -237,13 +236,13 @@ describe('wave_compute handler', () => {
 
 - [ ] Thing done.
 `;
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
       if (cmd.includes('gh issue view 398')) {
         return JSON.stringify({ body: storyBody, title: 'Story 398' });
       }
       return '';
-    };
+    });
     const result = await handler.execute({ epic_ref: '#398' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -267,13 +266,13 @@ describe('wave_compute handler', () => {
 
 - Verify the thing.
 `;
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
       if (cmd.includes('gh issue view 398')) {
         return JSON.stringify({ body: storyBody, title: 'Story 398' });
       }
       return '';
-    };
+    });
     const result = await handler.execute({ epic_ref: '#398' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);
@@ -313,7 +312,7 @@ describe('wave_compute handler', () => {
     // Epic is qualified to a DIFFERENT repo than cwd. Bare `#N` refs in
     // the epic body (and in each sub-issue's Dependencies) must resolve
     // against the epic's repo.
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/myorg/myrepo.git\n';
       if (cmd.includes('gh issue view 42') && cmd.includes('--repo Wave-Engineering/sdlc')) {
         return JSON.stringify({
@@ -328,7 +327,7 @@ describe('wave_compute handler', () => {
         return JSON.stringify({ body: '## Dependencies\n- #5\n', title: 'second' });
       }
       return JSON.stringify({ body: '', title: '' });
-    };
+    });
     const result = await handler.execute({ epic_ref: 'Wave-Engineering/sdlc#42' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -344,7 +343,7 @@ describe('wave_compute handler', () => {
 
   test('cross_repo_epic_already_qualified_ref_preserved', async () => {
     // Already-qualified refs in the epic body preserved verbatim.
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/myorg/myrepo.git\n';
       if (cmd.includes('gh issue view 42') && cmd.includes('--repo Wave-Engineering/sdlc')) {
         return JSON.stringify({
@@ -356,7 +355,7 @@ describe('wave_compute handler', () => {
         return JSON.stringify({ body: '## Dependencies\nNone\n', title: 'seven' });
       }
       return JSON.stringify({ body: '', title: '' });
-    };
+    });
     const result = await handler.execute({ epic_ref: 'Wave-Engineering/sdlc#42' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -368,7 +367,7 @@ describe('wave_compute handler', () => {
 
   test('unqualified_epic_bare_ref_falls_back_to_cwd_slug', async () => {
     // Back-compat: bare epic_ref → bare `#N` in body resolves against cwd.
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/myorg/myrepo.git\n';
       if (cmd.includes('gh issue view 42')) {
         return JSON.stringify({
@@ -380,7 +379,7 @@ describe('wave_compute handler', () => {
         return JSON.stringify({ body: '## Dependencies\nNone\n', title: 'story' });
       }
       return JSON.stringify({ body: '', title: '' });
-    };
+    });
     const result = await handler.execute({ epic_ref: '#42' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -391,13 +390,13 @@ describe('wave_compute handler', () => {
   });
 
   test('epic_fetch_failure_surfaces_loudly', async () => {
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
       if (cmd.includes('gh issue view 100')) {
         throw new Error('epic fetch failed');
       }
       return '';
-    };
+    });
     const result = await handler.execute({ epic_ref: '#100' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);

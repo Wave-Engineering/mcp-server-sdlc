@@ -1,5 +1,6 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { join } from 'path';
+import { installChildProcessMock, onExec, resetExecMock, execCalls, execCallsDetailed } from '../lib/test-support/mock-child-process.ts';
 // Intentionally NOT importing from 'fs' — sibling test files partially mock
 // 'fs' (only writeFileSync exposed), and Bun's mock.module leaks across the
 // suite. Test setup uses Bun native APIs instead. See lesson_mcp_gotchas.md §6.
@@ -10,24 +11,7 @@ import { join } from 'path';
 // through the same registry. Argv assertions use the `runArgv` shell-escape
 // style (each token single-quoted) — see `lib/shared/shell-escape.ts`.
 
-type Responder = string | (() => string);
-
-let execRegistry: Array<{ match: string; respond: Responder }> = [];
-let execCalls: string[] = [];
-
-function mockExec(cmd: string): string {
-  execCalls.push(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  throw new Error(`Unexpected exec call: ${cmd}`);
-}
-
-mock.module('child_process', () => ({
-  execSync: (cmd: string, _opts?: unknown) => mockExec(cmd),
-}));
+installChildProcessMock();
 
 let currentPlatform: 'github' | 'gitlab' = 'github';
 
@@ -35,10 +19,6 @@ const { default: handler, assembleBody } = await import('../handlers/wave_finali
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
   return JSON.parse(result.content[0].text) as Record<string, unknown>;
-}
-
-function onExec(match: string, respond: Responder) {
-  execRegistry.push({ match, respond });
 }
 
 // --- tmp artifacts helpers ---
@@ -71,21 +51,19 @@ function mockGithubCreate(prNumber: number, headRef: string, baseRef = 'main') {
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
   currentPlatform = 'github';
   tmpRoot = makeTmpRoot();
-  execRegistry.push({
-    match: 'git remote get-url origin',
-    respond: () => currentPlatform === 'gitlab'
+  onExec(
+    'git remote get-url origin',
+    () => currentPlatform === 'gitlab'
       ? 'git@gitlab.com:o/r.git'
       : 'git@github.com:o/r.git',
-  });
+  );
 });
 
 afterEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
   // Tmp files in /tmp are reaped by the OS; explicit cleanup intentionally
   // skipped to avoid depending on fs.rmSync (mock leakage risk).
 });
@@ -137,7 +115,7 @@ describe('wave_finalize handler', () => {
     expect(data.ok).toBe(true);
     // gh pr list was called with --base main (default). The adapter
     // validates head/base against a strict charset and emits unquoted argv.
-    const listCall = execCalls.find(c => c.includes('gh pr list'));
+    const listCall = execCalls().find(c => c.includes('gh pr list'));
     expect(listCall).toBeDefined();
     expect(listCall).toContain('--base main');
   });
@@ -248,7 +226,7 @@ describe('wave_finalize handler', () => {
       body_artifacts_dir: tmpRoot,
     });
 
-    expect(execCalls.some(c => c.includes("'pr' 'create'"))).toBe(false);
+    expect(execCalls().some(c => c.includes("'pr' 'create'"))).toBe(false);
   });
 
   // --- happy path: github ---
@@ -276,6 +254,32 @@ describe('wave_finalize handler', () => {
     expect((data.body_sha as string).length).toBe(64);
   });
 
+  test('#453: handler threads `root` into BOTH the find and create PR subprocess cwd', async () => {
+    // The wave-status read + branch probe were already rooted; this pins that the PR
+    // find/create subprocesses ALSO run in `root`, not the session project (finding #8).
+    await writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md',
+      '# Results\n\nAdded widget.\nPR: https://github.com/o/r/pull/100\n');
+    mockGithubCreate(555, 'kahuna/42-foo');
+
+    const result = await handler.execute({
+      plan_id: 42,
+      kahuna_branch: 'kahuna/42-foo',
+      body_artifacts_dir: tmpRoot,
+      root: tmpRoot, // the wave's target repo root
+    });
+    const data = parseResult(result);
+    expect(data.ok).toBe(true);
+    expect(data.created).toBe(true);
+
+    // findExistingPr (`gh pr list`) and prCreate (`'pr' 'create'`) must both have run with cwd=root.
+    const findIdx = execCalls().findIndex((c) => c.includes('gh pr list'));
+    const createIdx = execCalls().findIndex((c) => c.includes("'pr' 'create'"));
+    expect(findIdx).toBeGreaterThanOrEqual(0);
+    expect(createIdx).toBeGreaterThanOrEqual(0);
+    expect((execCallsDetailed()[findIdx].opts as { cwd?: string } | undefined)?.cwd).toBe(tmpRoot);
+    expect((execCallsDetailed()[createIdx].opts as { cwd?: string } | undefined)?.cwd).toBe(tmpRoot);
+  });
+
   test('title uses plan(#N): <slug> — kahuna to <target_branch>', async () => {
     await writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md', 'done');
 
@@ -287,7 +291,7 @@ describe('wave_finalize handler', () => {
       body_artifacts_dir: tmpRoot,
     });
 
-    const createCall = execCalls.find(c => c.includes("'pr' 'create'"));
+    const createCall = execCalls().find(c => c.includes("'pr' 'create'"));
     expect(createCall).toBeDefined();
     expect(createCall).toContain("'--title' 'plan(#42): wave-status-cli — kahuna to main'");
   });
@@ -304,7 +308,7 @@ describe('wave_finalize handler', () => {
       body_artifacts_dir: tmpRoot,
     });
 
-    const createCall = execCalls.find(c => c.includes("'pr' 'create'"));
+    const createCall = execCalls().find(c => c.includes("'pr' 'create'"));
     expect(createCall).toBeDefined();
     expect(createCall as string).toContain('kahuna to release/v2');
     expect(createCall as string).toContain("'--base' 'release/v2'");
@@ -465,7 +469,7 @@ describe('wave_finalize handler', () => {
     expect(data.ok).toBe(true);
     expect(data.created).toBe(false);
     expect(data.number).toBe(77);
-    expect(execCalls.some(c => c.includes("'mr' 'create'"))).toBe(false);
+    expect(execCalls().some(c => c.includes("'mr' 'create'"))).toBe(false);
   });
 
   // --- path containment ---
@@ -575,7 +579,7 @@ describe('wave_finalize handler', () => {
 
     // The submitted body must contain one bullet per issue with the recorded
     // PR URL — verify by inspecting the `gh pr create` argv.
-    const createCall = execCalls.find(c => c.includes("'pr' 'create'"));
+    const createCall = execCalls().find(c => c.includes("'pr' 'create'"));
     expect(createCall).toBeDefined();
     expect(createCall as string).toContain('Issue #10');
     expect(createCall as string).toContain('Issue #11');
@@ -627,7 +631,7 @@ describe('wave_finalize handler', () => {
       root: projectRoot,
     });
 
-    const createCall = execCalls.find(c => c.includes("'pr' 'create'"));
+    const createCall = execCalls().find(c => c.includes("'pr' 'create'"));
     expect(createCall).toBeDefined();
     expect(createCall as string).toContain('Issue #99');
     expect(createCall as string).toContain('https://github.com/o/r/pull/999');

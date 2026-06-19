@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../lib/test-support/mock-child-process.ts';
 
 // --- Mock child_process.execSync at module level ---
 //
@@ -20,25 +26,11 @@ interface MockExecError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
 function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  throw new Error(`Unexpected exec: ${cmd}`);
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { default: handler } = await import('../handlers/label_list.ts');
 
@@ -46,13 +38,8 @@ function parseResult(content: Array<{ type: string; text: string }>) {
   return JSON.parse(content[0].text) as Record<string, unknown>;
 }
 
-function onExec(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
-
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('label_list handler', () => {
@@ -92,7 +79,7 @@ describe('label_list handler', () => {
     onExec('gh label list', '[]');
     await handler.execute({});
     // runArgv shell-escapes argv, so match against the unquoted form.
-    const call = execCalls.find((c) => unquote(c).includes('gh label list')) ?? '';
+    const call = execCalls().find((c) => unquote(c).includes('gh label list')) ?? '';
     expect(call).toContain("'--limit' '100'");
   });
 
@@ -131,7 +118,7 @@ describe('label_list handler', () => {
     onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
     onExec('glab label list', '[]');
     await handler.execute({ limit: 25, repo: 'foo/bar' });
-    const call = execCalls.find((c) => unquote(c).includes('glab label list')) ?? '';
+    const call = execCalls().find((c) => unquote(c).includes('glab label list')) ?? '';
     expect(call).toContain("'--per-page' '25'");
     expect(call).toContain("'-R' 'foo/bar'");
     expect(call).toContain("'-F' 'json'");

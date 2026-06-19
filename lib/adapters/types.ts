@@ -49,6 +49,8 @@ export interface PrCreateArgs {
   head?: string;
   draft?: boolean;
   repo?: string;
+  /** Working directory for the git/gh|glab invocation; defaults to CLAUDE_PROJECT_DIR ?? process.cwd(). */
+  cwd?: string;
 }
 
 export interface PrCreateResponse {
@@ -812,6 +814,8 @@ export interface FindExistingPrArgs {
   base: string;
   state: 'open' | 'closed' | 'merged';
   repo?: string;
+  /** Working directory for the gh|glab invocation; defaults to CLAUDE_PROJECT_DIR ?? process.cwd(). */
+  cwd?: string;
 }
 
 /**

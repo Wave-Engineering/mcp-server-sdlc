@@ -1,17 +1,21 @@
 import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  setExecMock,
+  resetExecMock,
+  execCalls,
+  mockExecSync,
+} from '../lib/test-support/mock-child-process.ts';
 
 // ---- Mocks ----------------------------------------------------------------
-let lastExecCall = '';
-let execMockFn: (cmd: string) => string = () => 'wave plan initialized\n';
-
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  lastExecCall = cmd;
-  return execMockFn(cmd);
-});
+function lastExecCall(): string {
+  const c = execCalls();
+  return c[c.length - 1] ?? '';
+}
 
 const mockWriteFileSync = mock((_path: unknown, _data: unknown) => undefined);
 
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 // Story 2.22 (#316): the handler now imports `getAdapter()` which transitively
 // pulls in `logger.ts` → `node:fs`. Bun aliases `'fs'` mocks to `'node:fs'`,
 // so the mock surface must include every export `logger.ts` reaches for —
@@ -30,9 +34,8 @@ const { default: handler } = await import('../handlers/wave_init.ts');
 const ORIGINAL_ENV = process.env.CLAUDE_PROJECT_DIR;
 
 function resetMocks() {
-  lastExecCall = '';
-  execMockFn = () => 'wave plan initialized\n';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => 'wave plan initialized\n');
   mockWriteFileSync.mockClear();
 }
 
@@ -89,8 +92,8 @@ describe('wave_init handler', () => {
     const planJson = JSON.stringify({ project: 'foo', phases: [] });
     const result = await handler.execute({ plan_json: planJson });
     expect(mockExecSync.mock.calls.length).toBe(1);
-    expect(lastExecCall).toContain('wave-status init');
-    expect(lastExecCall).not.toContain('--extend');
+    expect(lastExecCall()).toContain('wave-status init');
+    expect(lastExecCall()).not.toContain('--extend');
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
     expect(parsed.mode).toBe('init');
@@ -100,8 +103,8 @@ describe('wave_init handler', () => {
     await setupStatusFixture({ waves: {} }, { phases: [] });
     const planJson = JSON.stringify({ phases: [{ name: 'extra', waves: [] }] });
     await handler.execute({ plan_json: planJson, extend: true });
-    expect(lastExecCall).toContain('wave-status init');
-    expect(lastExecCall).toContain('--extend');
+    expect(lastExecCall()).toContain('wave-status init');
+    expect(lastExecCall()).toContain('--extend');
   });
 
   test('happy_path — writes plan_json to a temp file', async () => {
@@ -118,9 +121,9 @@ describe('wave_init handler', () => {
   // ---- cli_error ----------------------------------------------------------
   test('cli_error — returns ok:false on non-zero exit, does not throw', async () => {
     await setupStatusFixture(null);
-    execMockFn = () => {
+    setExecMock(() => {
       throw new Error('wave-status: refusing to overwrite existing plan');
-    };
+    });
     const result = await handler.execute({ plan_json: '{}' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);
@@ -252,9 +255,9 @@ describe('wave_init handler', () => {
     await setupStatusFixture(null);
     const planJson = JSON.stringify({ project: 'foo', phases: [] });
     await handler.execute({ plan_json: planJson, repo: 'Wave-Engineering/sdlc' });
-    expect(lastExecCall).toContain('wave-status init');
+    expect(lastExecCall()).toContain('wave-status init');
     // Value is single-quoted for shell safety; consistent with wave_record_mr.
-    expect(lastExecCall).toContain(`--repo 'Wave-Engineering/sdlc'`);
+    expect(lastExecCall()).toContain(`--repo 'Wave-Engineering/sdlc'`);
   });
 
   test('repo_param — rejects invalid repo format', async () => {
@@ -286,7 +289,7 @@ describe('wave_init handler', () => {
     return cmd.replace(/'([^']*)'/g, '$1');
   }
   function setExecRoutes(routes: Array<{ match: string; respond: string | (() => string) }>): void {
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       const flat = unquote(cmd);
       for (const r of routes) {
         if (cmd.includes(r.match) || flat.includes(r.match)) {
@@ -294,7 +297,7 @@ describe('wave_init handler', () => {
         }
       }
       return 'wave plan initialized\n';
-    };
+    });
   }
 
   test('kahuna bootstrap — fresh creation: branch absent everywhere → creates and records', async () => {
@@ -813,9 +816,9 @@ describe('wave_init handler', () => {
     await setupStatusFixture(null);
     const planJson = JSON.stringify({ project: 'org/repo', phases: [] });
     const result = await handler.execute({ plan_json: planJson, force: true });
-    expect(lastExecCall).toContain('wave-status init');
-    expect(lastExecCall).toContain('--force');
-    expect(lastExecCall).not.toContain('--extend');
+    expect(lastExecCall()).toContain('wave-status init');
+    expect(lastExecCall()).toContain('--force');
+    expect(lastExecCall()).not.toContain('--extend');
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
   });
@@ -824,7 +827,7 @@ describe('wave_init handler', () => {
     await setupStatusFixture(null);
     const planJson = JSON.stringify({ project: 'org/repo', phases: [] });
     const result = await handler.execute({ plan_json: planJson });
-    expect(lastExecCall).not.toContain('--force');
+    expect(lastExecCall()).not.toContain('--force');
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
   });

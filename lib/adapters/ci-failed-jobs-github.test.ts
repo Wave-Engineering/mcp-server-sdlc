@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../test-support/mock-child-process.ts';
 import type { AdapterResult, CiFailedJobsResponse } from './types.ts';
 
 // Subprocess-boundary tests for the GitHub ci_failed_jobs adapter (R-15).
@@ -12,34 +18,9 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
-function unquote(cmd: string): string {
-  return cmd.replace(/'([^']*)'/g, '$1');
-}
-
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { ciFailedJobsGithub } = await import('./ci-failed-jobs-github.ts');
-
-function on(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
 
 function expectOk(
   r: AdapterResult<CiFailedJobsResponse>,
@@ -58,17 +39,17 @@ function expectErr(
 }
 
 function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
+  const unquote = (cmd: string) => cmd.replace(/'([^']*)'/g, '$1');
+  return execCalls().find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('ciFailedJobsGithub — subprocess boundary', () => {
   test('argv: gh run view <id> --json jobs', async () => {
-    on('gh run view', JSON.stringify({ jobs: [] }));
+    onExec('gh run view', JSON.stringify({ jobs: [] }));
 
     const result = await ciFailedJobsGithub({ run_id: 12345 });
     expectOk(result);
@@ -82,7 +63,7 @@ describe('ciFailedJobsGithub — subprocess boundary', () => {
   });
 
   test('normalizes failed jobs — mixed success/failure/timed_out', async () => {
-    on(
+    onExec(
       'gh run view',
       JSON.stringify({
         jobs: [
@@ -141,7 +122,7 @@ describe('ciFailedJobsGithub — subprocess boundary', () => {
   });
 
   test('skips in-progress jobs (status !== "completed")', async () => {
-    on(
+    onExec(
       'gh run view',
       JSON.stringify({
         jobs: [
@@ -174,7 +155,7 @@ describe('ciFailedJobsGithub — subprocess boundary', () => {
   });
 
   test('all success returns empty list', async () => {
-    on(
+    onExec(
       'gh run view',
       JSON.stringify({
         jobs: [
@@ -197,7 +178,7 @@ describe('ciFailedJobsGithub — subprocess boundary', () => {
   });
 
   test('missing jobs field defaults to empty list', async () => {
-    on('gh run view', JSON.stringify({}));
+    onExec('gh run view', JSON.stringify({}));
 
     const result = await ciFailedJobsGithub({ run_id: 1 });
     expectOk(result);
@@ -205,7 +186,7 @@ describe('ciFailedJobsGithub — subprocess boundary', () => {
   });
 
   test('returns AdapterResult.error on gh failure (not thrown)', async () => {
-    on('gh run view', () => {
+    onExec('gh run view', () => {
       const err = new Error('gh: run not found') as ThrowableError;
       err.stderr = 'gh: run not found';
       err.status = 1;
@@ -219,7 +200,7 @@ describe('ciFailedJobsGithub — subprocess boundary', () => {
   });
 
   test('--repo flag forwarded when args.repo provided', async () => {
-    on('gh run view', JSON.stringify({ jobs: [] }));
+    onExec('gh run view', JSON.stringify({ jobs: [] }));
 
     await ciFailedJobsGithub({ run_id: 777, repo: 'other-org/other-repo' });
     const call = findCall('gh run view');
@@ -228,7 +209,7 @@ describe('ciFailedJobsGithub — subprocess boundary', () => {
   });
 
   test('missing databaseId / missing fields coerce to safe defaults', async () => {
-    on(
+    onExec(
       'gh run view',
       JSON.stringify({
         jobs: [

@@ -1,22 +1,18 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  setExecMock,
+  resetExecMock,
+  execCalls,
+} from '../lib/test-support/mock-child-process.ts';
 
-let lastExecCall = '';
-let execMockFn: (cmd: string) => string = () =>
-  'Project: test\nPhase: 1/1\nWave: 1/1\n';
-
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  lastExecCall = cmd;
-  return execMockFn(cmd);
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { default: handler } = await import('../handlers/wave_show.ts');
 
 function resetMocks() {
-  lastExecCall = '';
-  execMockFn = () => 'Project: test\nPhase: 1/1\nWave: 1/1\n';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => 'Project: test\nPhase: 1/1\nWave: 1/1\n');
 }
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
@@ -34,16 +30,16 @@ describe('wave_show handler', () => {
 
   test('happy_path — invokes wave-status show', async () => {
     const result = await handler.execute({});
-    expect(lastExecCall).toBe('wave-status show');
+    expect(execCalls().at(-1) ?? '').toBe('wave-status show');
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
     expect(parsed.data).toContain('Project');
   });
 
   test('cli_error — returns ok:false on non-zero exit', async () => {
-    execMockFn = () => {
+    setExecMock(() => {
       throw new Error('wave-status: state file not found');
-    };
+    });
     const result = await handler.execute({});
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);

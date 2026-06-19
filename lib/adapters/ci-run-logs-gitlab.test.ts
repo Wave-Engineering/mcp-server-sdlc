@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../test-support/mock-child-process.ts';
 import type { AdapterResult, CiRunLogsResponse } from './types.ts';
 
 // Subprocess-boundary tests for the GitLab ci_run_logs adapter (R-15).
@@ -12,34 +18,9 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
-function unquote(cmd: string): string {
-  return cmd.replace(/'([^']*)'/g, '$1');
-}
-
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { ciRunLogsGitlab } = await import('./ci-run-logs-gitlab.ts');
-
-function on(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
 
 function expectOk(
   r: AdapterResult<CiRunLogsResponse>,
@@ -58,12 +39,12 @@ function expectErr(
 }
 
 function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
+  const unquote = (cmd: string) => cmd.replace(/'([^']*)'/g, '$1');
+  return execCalls().find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 // Fixture convention: use the house-standard `org/repo` slug for the cwd
@@ -77,8 +58,8 @@ beforeEach(() => {
 // boundary tests only verify the cwd fallback fires and the URL is composed.
 describe('ciRunLogsGitlab — subprocess boundary', () => {
   test('argv: glab ci trace <job_id> when caller supplies job_id (no resolution)', async () => {
-    on('git remote get-url', 'https://gitlab.com/org/repo.git\n');
-    on('glab ci trace 77', 'trace content\n');
+    onExec('git remote get-url', 'https://gitlab.com/org/repo.git\n');
+    onExec('glab ci trace 77', 'trace content\n');
 
     const result = await ciRunLogsGitlab({
       run_id: 10,
@@ -96,8 +77,8 @@ describe('ciRunLogsGitlab — subprocess boundary', () => {
   });
 
   test('resolves failed job then fetches trace (two-step flow)', async () => {
-    on('git remote get-url', 'https://gitlab.com/org/repo.git\n');
-    on(
+    onExec('git remote get-url', 'https://gitlab.com/org/repo.git\n');
+    onExec(
       'glab api projects/:id/pipelines/55/jobs',
       JSON.stringify([
         { id: 100, status: 'success' },
@@ -105,7 +86,7 @@ describe('ciRunLogsGitlab — subprocess boundary', () => {
         { id: 102, status: 'failed' },
       ]),
     );
-    on('glab ci trace 101', 'failed job log\n');
+    onExec('glab ci trace 101', 'failed job log\n');
 
     const result = await ciRunLogsGitlab({ run_id: 55, failed_only: true });
     expectOk(result);
@@ -118,11 +99,11 @@ describe('ciRunLogsGitlab — subprocess boundary', () => {
   });
 
   test('argv: explicit repo URL-encoded in pipelines path', async () => {
-    on(
+    onExec(
       'glab api projects/other-org%2Fother-repo/pipelines/99/jobs',
       JSON.stringify([{ id: 701, status: 'failed' }]),
     );
-    on('glab ci trace 701', 'xr trace\n');
+    onExec('glab ci trace 701', 'xr trace\n');
 
     const result = await ciRunLogsGitlab({
       run_id: 99,
@@ -137,11 +118,11 @@ describe('ciRunLogsGitlab — subprocess boundary', () => {
   });
 
   test('argv: -R <slug> forwarded to glab ci trace when repo provided', async () => {
-    on(
+    onExec(
       'glab api projects/other-org%2Fother-repo/pipelines/12/jobs',
       JSON.stringify([{ id: 7, status: 'failed' }]),
     );
-    on('glab ci trace 7', 'log\n');
+    onExec('glab ci trace 7', 'log\n');
 
     await ciRunLogsGitlab({
       run_id: 12,
@@ -155,11 +136,11 @@ describe('ciRunLogsGitlab — subprocess boundary', () => {
   });
 
   test('returns AdapterResult with url built from explicit slug', async () => {
-    on(
+    onExec(
       'glab api projects/other-org%2Fother-repo/pipelines/12/jobs',
       JSON.stringify([{ id: 7, status: 'failed' }]),
     );
-    on('glab ci trace 7', 'log\n');
+    onExec('glab ci trace 7', 'log\n');
 
     const result = await ciRunLogsGitlab({
       run_id: 12,
@@ -171,8 +152,8 @@ describe('ciRunLogsGitlab — subprocess boundary', () => {
   });
 
   test('returns AdapterResult with url built from cwd slug when repo omitted', async () => {
-    on('git remote get-url', 'https://gitlab.com/org/repo.git\n');
-    on('glab ci trace 77', 'log\n');
+    onExec('git remote get-url', 'https://gitlab.com/org/repo.git\n');
+    onExec('glab ci trace 77', 'log\n');
 
     const result = await ciRunLogsGitlab({
       run_id: 10,
@@ -184,8 +165,8 @@ describe('ciRunLogsGitlab — subprocess boundary', () => {
   });
 
   test('returns AdapterResult.error when no failed job in pipeline', async () => {
-    on('git remote get-url', 'https://gitlab.com/org/repo.git\n');
-    on(
+    onExec('git remote get-url', 'https://gitlab.com/org/repo.git\n');
+    onExec(
       'glab api projects/:id/pipelines/99/jobs',
       JSON.stringify([{ id: 1, status: 'success' }]),
     );
@@ -197,8 +178,8 @@ describe('ciRunLogsGitlab — subprocess boundary', () => {
   });
 
   test('returns AdapterResult.error when glab api fails', async () => {
-    on('git remote get-url', 'https://gitlab.com/org/repo.git\n');
-    on('glab api', () => {
+    onExec('git remote get-url', 'https://gitlab.com/org/repo.git\n');
+    onExec('glab api', () => {
       const err = new Error('glab: not authenticated') as ThrowableError;
       err.stderr = 'glab: not authenticated';
       err.status = 1;
@@ -212,8 +193,8 @@ describe('ciRunLogsGitlab — subprocess boundary', () => {
   });
 
   test('returns AdapterResult.error when glab ci trace fails', async () => {
-    on('git remote get-url', 'https://gitlab.com/org/repo.git\n');
-    on('glab ci trace', () => {
+    onExec('git remote get-url', 'https://gitlab.com/org/repo.git\n');
+    onExec('glab ci trace', () => {
       const err = new Error('glab: job not found') as ThrowableError;
       err.stderr = 'glab: job not found';
       err.status = 1;

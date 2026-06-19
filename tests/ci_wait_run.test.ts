@@ -1,14 +1,24 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  setExecMock,
+  resetExecMock,
+  execCalls,
+} from '../lib/test-support/mock-child-process.ts';
 
 // --- Mock child_process.execSync at module level ---
 // Each registry entry can be either:
 //   - a string (sticky: returned on every matching call)
 //   - an array of strings (sequence: consumed one per matching call; last value sticks)
 // Entries are matched by `cmd.includes(key)`. Longer keys win to disambiguate.
+//
+// This file's dispatch has bespoke semantics the shared registry idiom does not
+// model (string-sequence consumption + longest-key-wins matching), so it keeps
+// a local responder and installs it via the shared `setExecMock`. The shared
+// mock records calls automatically; read them via `execCalls()`.
 
 type RegistryValue = string | string[];
 let execRegistry: Record<string, RegistryValue> = {};
-let execCallLog: string[] = [];
 
 // Story 2.19 (#313): post-migration, subprocess calls go through `runArgv`
 // which single-quotes every argv element. To keep the existing registry keys
@@ -20,7 +30,6 @@ function normalizeCmd(cmd: string): string {
 }
 
 function mockExec(cmd: string): string {
-  execCallLog.push(cmd);
   const normalized = normalizeCmd(cmd);
   const keys = Object.keys(execRegistry).sort((a, b) => b.length - a.length);
   for (const key of keys) {
@@ -39,9 +48,7 @@ function mockExec(cmd: string): string {
   throw new Error(`Unexpected exec call: ${cmd}`);
 }
 
-mock.module('child_process', () => ({
-  execSync: (cmd: string, _opts?: unknown) => mockExec(cmd),
-}));
+installChildProcessMock();
 
 // Import AFTER the mock is registered.
 const handlerMod = await import('../handlers/ci_wait_run.ts');
@@ -56,10 +63,10 @@ function parseResult(content: Array<{ type: string; text: string }>) {
 // each element is single-quoted. Use this helper to filter & inspect cmd
 // strings regardless of quoting style.
 function ghRunListCalls(): string[] {
-  return execCallLog.filter((c) => normalizeCmd(c).includes('gh run list'));
+  return execCalls().filter((c) => normalizeCmd(c).includes('gh run list'));
 }
 function glabApiCalls(): string[] {
-  return execCallLog.filter((c) => normalizeCmd(c).includes('glab api'));
+  return execCalls().filter((c) => normalizeCmd(c).includes('glab api'));
 }
 
 // Helpers to construct fake gh/glab output.
@@ -94,7 +101,8 @@ function glabPipeline(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   execRegistry = {};
-  execCallLog = [];
+  resetExecMock();
+  setExecMock(mockExec);
   // No-op sleep so tests run instantly.
   __setSleep(async (_ms: number) => {
     // intentionally empty
@@ -550,11 +558,11 @@ describe('ci_wait_run handler', () => {
     // Verify the branch-to-SHA resolution hit the EXPLICIT slug, NOT the cwd
     // slug — the handler must have skipped `parseRepoSlug()` (which would
     // have returned `cwd-org/cwd-repo`) and used the caller's `repo` directly.
-    const apiCalls = execCallLog.filter((c) =>
+    const apiCalls = execCalls().filter((c) =>
       normalizeCmd(c).includes('gh api repos/other-org/other-repo/git/refs/heads/main'),
     );
     expect(apiCalls.length).toBe(1);
-    const wrongApiCalls = execCallLog.filter((c) =>
+    const wrongApiCalls = execCalls().filter((c) =>
       normalizeCmd(c).includes('gh api repos/cwd-org/cwd-repo/git/refs/'),
     );
     expect(wrongApiCalls.length).toBe(0);
@@ -615,7 +623,7 @@ describe('ci_wait_run handler', () => {
     expect(data.final_status).toBe('not_applicable');
     expect(data.reason).toBe('merge_group_validated');
     // Must not have asked the cwd for a SHA.
-    const wrongApiCalls = execCallLog.filter((c) =>
+    const wrongApiCalls = execCalls().filter((c) =>
       normalizeCmd(c).includes('gh api repos/cwd-org/cwd-repo/git/refs/'),
     );
     expect(wrongApiCalls.length).toBe(0);

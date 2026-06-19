@@ -1,4 +1,11 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+  mockExecSync,
+} from '../test-support/mock-child-process.ts';
 import type { AdapterResult, PrCreateResponse } from './types.ts';
 
 // Subprocess-boundary tests for the GitLab pr_create adapter (R-15).
@@ -10,34 +17,13 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
 function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { prCreateGitlab } = await import('./pr-create-gitlab.ts');
-
-function on(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
 
 // Narrow AdapterResult into the success branch — throws if it's an error or
 // platform_unsupported variant. Lets test bodies access `.data` directly.
@@ -58,21 +44,27 @@ function expectErr(
 }
 
 function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
+  return execCalls().find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
+}
+
+function optsForCall(needle: string): { cwd?: string } | undefined {
+  const idx = execCalls().findIndex((c) => c.includes(needle) || unquote(c).includes(needle));
+  return idx >= 0
+    ? (mockExecSync.mock.calls[idx]?.[1] as { cwd?: string } | undefined)
+    : undefined;
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('prCreateGitlab — subprocess boundary', () => {
   test('glab CLI invocation matches expected argv shape (happy path)', async () => {
-    on('git branch --show-current', 'feature/gl\n');
-    on('glab mr create', 'https://gitlab.com/o/r/-/merge_requests/9\n');
+    onExec('git branch --show-current', 'feature/gl\n');
+    onExec('glab mr create', 'https://gitlab.com/o/r/-/merge_requests/9\n');
     // Post-create lookup goes via `glab api projects/.../merge_requests?source_branch=...`
     // (#383 — `glab mr view -F json` does not exist on glab 1.36.0).
-    on(
+    onExec(
       'merge_requests?source_branch',
       JSON.stringify([{
         iid: 9,
@@ -106,13 +98,33 @@ describe('prCreateGitlab — subprocess boundary', () => {
     expect(createCall).not.toContain('--draft');
     // Regression guard for #383: post-create lookup MUST NOT use
     // `glab mr view -F json` (the broken pre-#383 form).
-    expect(execCalls.some((c) => c.includes('mr view') && c.includes('-F'))).toBe(false);
+    expect(execCalls().some((c) => c.includes('mr view') && c.includes('-F'))).toBe(false);
+  });
+
+  test('runs glab in args.cwd when supplied (#453)', async () => {
+    onExec('git branch --show-current', 'feature/rooted\n');
+    onExec('glab mr create', 'created\n');
+    onExec(
+      'merge_requests?source_branch',
+      JSON.stringify([{
+        iid: 21,
+        web_url: 'https://gitlab.com/o/r/-/merge_requests/21',
+        state: 'opened',
+        source_branch: 'feature/rooted',
+        target_branch: 'main',
+      }]),
+    );
+
+    await prCreateGitlab({ title: 't', body: 'b', base: 'main', cwd: '/work/tree' });
+    expect(optsForCall('git branch --show-current')?.cwd).toBe('/work/tree');
+    expect(optsForCall('glab mr create')?.cwd).toBe('/work/tree');
+    expect(optsForCall('merge_requests?source_branch')?.cwd).toBe('/work/tree');
   });
 
   test('parses post-create MR lookup response into PrCreateResponse', async () => {
-    on('git branch --show-current', 'feature/y\n');
-    on('glab mr create', 'created\n');
-    on(
+    onExec('git branch --show-current', 'feature/y\n');
+    onExec('glab mr create', 'created\n');
+    onExec(
       'merge_requests?source_branch',
       JSON.stringify([{
         iid: 12,
@@ -136,8 +148,8 @@ describe('prCreateGitlab — subprocess boundary', () => {
   });
 
   test('returns AdapterResult{ok:false, code} on glab failure (not thrown)', async () => {
-    on('git branch --show-current', 'feature/z\n');
-    on('glab mr create', () => {
+    onExec('git branch --show-current', 'feature/z\n');
+    onExec('glab mr create', () => {
       const err = new Error('glab: not authenticated') as ThrowableError;
       err.stderr = 'glab: not authenticated';
       err.status = 1;
@@ -151,14 +163,14 @@ describe('prCreateGitlab — subprocess boundary', () => {
   });
 
   test('idempotent path: "already exists" → looks up existing MR and returns created:false', async () => {
-    on('git branch --show-current', 'feature/dup\n');
-    on('glab mr create', () => {
+    onExec('git branch --show-current', 'feature/dup\n');
+    onExec('glab mr create', () => {
       const err = new Error('Another open merge request already exists') as ThrowableError;
       err.stderr = 'Another open merge request already exists';
       err.status = 1;
       throw err;
     });
-    on(
+    onExec(
       'merge_requests?source_branch',
       JSON.stringify([{
         iid: 77,
@@ -176,9 +188,9 @@ describe('prCreateGitlab — subprocess boundary', () => {
   });
 
   test('-R flag forwarded on create when args.repo provided; lookup uses URL-encoded slug', async () => {
-    on('git branch --show-current', 'feature/cross\n');
-    on('glab mr create', 'created\n');
-    on(
+    onExec('git branch --show-current', 'feature/cross\n');
+    onExec('glab mr create', 'created\n');
+    onExec(
       'merge_requests?source_branch',
       JSON.stringify([{
         iid: 5,
@@ -201,10 +213,10 @@ describe('prCreateGitlab — subprocess boundary', () => {
   });
 
   test('default-branch resolution via glab api projects/<encoded> when args.base undefined', async () => {
-    on('git branch --show-current', 'feature/no-base\n');
+    onExec('git branch --show-current', 'feature/no-base\n');
     // Post-create lookup match — registered FIRST so the MR-listing call
     // doesn't fall through to the default-branch matcher.
-    on(
+    onExec(
       'merge_requests?source_branch',
       JSON.stringify([{
         iid: 33,
@@ -214,11 +226,11 @@ describe('prCreateGitlab — subprocess boundary', () => {
         target_branch: 'main',
       }]),
     );
-    on(
+    onExec(
       'glab api projects/',
       JSON.stringify({ default_branch: 'main' }),
     );
-    on('glab mr create', 'created\n');
+    onExec('glab mr create', 'created\n');
 
     const result = await prCreateGitlab({ title: 't', body: 'b', repo: 'Org/Repo' });
     expectOk(result);
@@ -237,9 +249,9 @@ describe('prCreateGitlab — subprocess boundary', () => {
     // The adapter must forward the slug verbatim to `-R` and URL-encode
     // every `/` (→ `%2F`) for the api lookup path segment.
     const repo = 'analogicdev/internal/tools/blueshift/blueshift-docmancer-ui';
-    on('git branch --show-current', 'feature/nested\n');
-    on('glab mr create', 'created\n');
-    on(
+    onExec('git branch --show-current', 'feature/nested\n');
+    onExec('glab mr create', 'created\n');
+    onExec(
       'merge_requests?source_branch',
       JSON.stringify([{
         iid: 42,
@@ -269,10 +281,10 @@ describe('prCreateGitlab — subprocess boundary', () => {
   });
 
   test('post-create lookup failure surfaces glab_mr_view_failed (regression guard for soft-fallback)', async () => {
-    on('git branch --show-current', 'feature/orphan\n');
-    on('glab mr create', 'created\n');
+    onExec('git branch --show-current', 'feature/orphan\n');
+    onExec('glab mr create', 'created\n');
     // Lookup returns empty array — no opened MR found despite create succeeding
-    on('merge_requests?source_branch', JSON.stringify([]));
+    onExec('merge_requests?source_branch', JSON.stringify([]));
 
     const result = await prCreateGitlab({ title: 't', body: 'b', base: 'main' });
     expectErr(result);

@@ -1,4 +1,9 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  setExecMock,
+  resetExecMock,
+} from '../test-support/mock-child-process.ts';
 import type { AdapterResult, CiTrustSignal } from './types.ts';
 
 // Subprocess-boundary tests for the GitLab fetchCiTrustSignal adapter
@@ -21,22 +26,15 @@ function expectErr(
   }
 }
 
-let execCalls: string[] = [];
-let execMockFn: (cmd: string) => string = () => '';
-const mockExecSync = mock((cmd: string) => {
-  execCalls.push(cmd);
-  return execMockFn(cmd);
-});
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { fetchCiTrustSignalGitlab, fetchCiTrustSignalGitlabSync } = await import(
   './fetch-ci-trust-signal-gitlab.ts'
 );
 
 beforeEach(() => {
-  execCalls = [];
-  execMockFn = () => '';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => '');
 });
 
 function stubProjectRepo(merge_trains_enabled: boolean): (cmd: string) => string {
@@ -61,21 +59,21 @@ function stubProjectRepo(merge_trains_enabled: boolean): (cmd: string) => string
 
 describe('fetchCiTrustSignalGitlabSync — subprocess boundary', () => {
   test('merge_trains_enabled=true → pre_merge_authoritative', () => {
-    execMockFn = stubProjectRepo(true);
+    setExecMock(stubProjectRepo(true));
     const signal = fetchCiTrustSignalGitlabSync();
     expect(signal.level).toBe('pre_merge_authoritative');
     expect(signal.reason).toContain('merge trains');
   });
 
   test('merge_trains_enabled=false → post_merge_required', () => {
-    execMockFn = stubProjectRepo(false);
+    setExecMock(stubProjectRepo(false));
     const signal = fetchCiTrustSignalGitlabSync();
     expect(signal.level).toBe('post_merge_required');
     expect(signal.reason).toContain('without merge trains');
   });
 
   test('merge_trains_enabled missing → post_merge_required', () => {
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.includes('git remote get-url')) {
         return 'https://gitlab.com/org/repo.git\n';
       }
@@ -89,7 +87,7 @@ describe('fetchCiTrustSignalGitlabSync — subprocess boundary', () => {
         });
       }
       return '{}';
-    };
+    });
     const signal = fetchCiTrustSignalGitlabSync();
     expect(signal.level).toBe('post_merge_required');
   });
@@ -97,16 +95,22 @@ describe('fetchCiTrustSignalGitlabSync — subprocess boundary', () => {
 
 describe('fetchCiTrustSignalGitlab — AdapterResult wrapper', () => {
   test('returns ok:true wrapping CiTrustSignal on success', async () => {
-    execMockFn = stubProjectRepo(true);
+    setExecMock(stubProjectRepo(true));
     const result = await fetchCiTrustSignalGitlab({});
     expectOk(result);
     expect(result.data.level).toBe('pre_merge_authoritative');
   });
 
   test('returns ok:false with code on subprocess failure', async () => {
-    execMockFn = () => {
+    // Realistic failure: origin resolves, then the glab API call fails. (The
+    // earlier stub threw for EVERY command, so the source died at slug parsing
+    // and never surfaced the glab error — a bug the mock-leak was masking, #455.)
+    setExecMock((cmd) => {
+      if (cmd.includes('git remote get-url')) {
+        return 'https://gitlab.com/org/repo.git\n';
+      }
       throw new Error('glab: 401 unauthorized');
-    };
+    });
     const result = await fetchCiTrustSignalGitlab({});
     expectErr(result);
     expect(result.code).toBe('glab_ci_trust_failed');

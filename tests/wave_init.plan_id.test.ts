@@ -7,18 +7,11 @@
 // reuse, orphan/desync, etc.); here we just pin the AC-1 + AC-2 contract.
 
 import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
-
-let lastExecCall = '';
-let execMockFn: (cmd: string) => string = () => 'wave plan initialized\n';
-
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  lastExecCall = cmd;
-  return execMockFn(cmd);
-});
+import { installChildProcessMock, setExecMock, resetExecMock, mockExecSync } from '../lib/test-support/mock-child-process.ts';
 
 const mockWriteFileSync = mock((_path: unknown, _data: unknown) => undefined);
 
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 mock.module('fs', () => ({
   writeFileSync: mockWriteFileSync,
   appendFileSync: () => undefined,
@@ -31,9 +24,8 @@ const { default: handler } = await import('../handlers/wave_init.ts');
 const ORIGINAL_ENV = process.env.CLAUDE_PROJECT_DIR;
 
 function resetMocks() {
-  lastExecCall = '';
-  execMockFn = () => 'wave plan initialized\n';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => 'wave plan initialized\n');
   mockWriteFileSync.mockClear();
 }
 
@@ -64,7 +56,7 @@ function unquote(cmd: string): string {
 }
 
 function setExecRoutes(routes: Array<{ match: string; respond: string | (() => string) }>): void {
-  execMockFn = (cmd: string) => {
+  setExecMock((cmd: string) => {
     const flat = unquote(cmd);
     for (const r of routes) {
       if (cmd.includes(r.match) || flat.includes(r.match)) {
@@ -72,7 +64,7 @@ function setExecRoutes(routes: Array<{ match: string; respond: string | (() => s
       }
     }
     return 'wave plan initialized\n';
-  };
+  });
 }
 
 describe('wave_init — kahuna: { plan_id, slug } (Story 2.1 / #362)', () => {

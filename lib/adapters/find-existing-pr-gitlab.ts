@@ -39,10 +39,16 @@ export function findExistingPrGitlabSync(
   base: string,
   state: GlabState,
   repo?: string,
+  cwd?: string,
 ): NormalizedPr | null {
+  // `cwd` defaults to undefined → pre-#453 behavior (resolves slug + runs glab
+  // from process.cwd()). Threading an explicit cwd roots both the
+  // `git remote get-url origin` slug resolution and the `glab api` call in that
+  // directory — required when wave_finalize runs against a worktree.
   const mrs = gitlabApiMrList(
     { head, base, state, limit: 1 },
     parseSlugOpts(repo),
+    cwd,
   );
   if (!Array.isArray(mrs) || mrs.length === 0) return null;
   const first = mrs[0];
@@ -76,6 +82,7 @@ export async function findExistingPrGitlab(
       args.base,
       args.state,
       args.repo,
+      args.cwd,
     );
     return { ok: true, data };
   } catch (err) {

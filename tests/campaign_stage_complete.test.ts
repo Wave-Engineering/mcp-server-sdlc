@@ -1,24 +1,18 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  setExecMock,
+  resetExecMock,
+  execCallsDetailed,
+} from '../lib/test-support/mock-child-process.ts';
 
-interface ExecCall {
-  cmd: string;
-  opts: { cwd?: string; encoding?: string } | undefined;
-}
-
-let execCalls: ExecCall[] = [];
-let execMockFn: (cmd: string, opts?: { cwd?: string }) => string = () => '';
-const mockExecSync = mock((cmd: string, opts?: { cwd?: string; encoding?: string }) => {
-  execCalls.push({ cmd, opts });
-  return execMockFn(cmd, opts);
-});
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { default: handler } = await import('../handlers/campaign_stage_complete.ts');
 
 function resetMocks() {
-  execCalls = [];
-  execMockFn = () => '';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => '');
 }
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
@@ -35,7 +29,7 @@ describe('campaign_stage_complete handler', () => {
   });
 
   test('completes concept stage with campaign_complete:false', async () => {
-    execMockFn = () => "Stage 'concept' is now complete.\n";
+    setExecMock(() => "Stage 'concept' is now complete.\n");
     const result = await handler.execute({ stage: 'concept', root: '/tmp/repo' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -44,7 +38,7 @@ describe('campaign_stage_complete handler', () => {
   });
 
   test('completes dod stage with campaign_complete:true', async () => {
-    execMockFn = () => "Stage 'dod' is now complete.\n";
+    setExecMock(() => "Stage 'dod' is now complete.\n");
     const result = await handler.execute({ stage: 'dod', root: '/tmp/repo' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -52,7 +46,7 @@ describe('campaign_stage_complete handler', () => {
   });
 
   test('completes each non-dod stage with campaign_complete:false', async () => {
-    execMockFn = () => "Stage 'x' is now complete.\n";
+    setExecMock(() => "Stage 'x' is now complete.\n");
     for (const stage of ['concept', 'prd', 'backlog', 'implementation']) {
       const result = await handler.execute({ stage, root: '/tmp/repo' });
       const parsed = parseResult(result);
@@ -68,17 +62,17 @@ describe('campaign_stage_complete handler', () => {
   });
 
   test('passes stage to CLI with correct cwd', async () => {
-    execMockFn = () => "Stage 'prd' is now complete.\n";
+    setExecMock(() => "Stage 'prd' is now complete.\n");
     await handler.execute({ stage: 'prd', root: '/tmp/myrepo' });
-    const call = execCalls[0];
+    const call = execCallsDetailed()[0];
     expect(call.cmd).toBe(`campaign-status stage-complete 'prd'`);
-    expect(call.opts?.cwd).toBe('/tmp/myrepo');
+    expect((call.opts as { cwd?: string }).cwd).toBe('/tmp/myrepo');
   });
 
   test('errors when CLI fails (review-gated stage not reviewed)', async () => {
-    execMockFn = () => {
+    setExecMock(() => {
       throw new Error('Error: stage prd must be reviewed before completion');
-    };
+    });
     const result = await handler.execute({ stage: 'prd', root: '/tmp/repo' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);
@@ -88,10 +82,10 @@ describe('campaign_stage_complete handler', () => {
   test('uses CLAUDE_PROJECT_DIR when root not provided', async () => {
     const oldEnv = process.env.CLAUDE_PROJECT_DIR;
     process.env.CLAUDE_PROJECT_DIR = '/tmp/from-env';
-    execMockFn = () => "Stage 'concept' is now complete.\n";
+    setExecMock(() => "Stage 'concept' is now complete.\n");
     try {
       await handler.execute({ stage: 'concept' });
-      expect(execCalls[0].opts?.cwd).toBe('/tmp/from-env');
+      expect((execCallsDetailed()[0].opts as { cwd?: string }).cwd).toBe('/tmp/from-env');
     } finally {
       if (oldEnv === undefined) {
         delete process.env.CLAUDE_PROJECT_DIR;

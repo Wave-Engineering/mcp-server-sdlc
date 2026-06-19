@@ -1,5 +1,11 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
 import type { AdapterResult, PrForBranchRef } from './types.ts';
+import {
+  installChildProcessMock,
+  onExec as on,
+  resetExecMock,
+  execCalls,
+} from '../test-support/mock-child-process.ts';
 
 // Subprocess-boundary tests for the GitLab fetchPrForBranch adapter
 // (Story 2.18, #312). Each test file installs its OWN mock.module BEFORE
@@ -11,34 +17,14 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { fetchPrForBranchGitlab, fetchPrForBranchGitlabSync } = await import(
   './fetch-pr-for-branch-gitlab.ts'
 );
 
-function on(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
-
 function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle)) ?? '';
+  return execCalls().find((c) => c.includes(needle)) ?? '';
 }
 
 function expectOk(
@@ -58,8 +44,7 @@ function expectErr(
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('fetch-pr-for-branch-gitlab — argv + state filter', () => {

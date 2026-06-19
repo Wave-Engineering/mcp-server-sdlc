@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../test-support/mock-child-process.ts';
 import type { AdapterResult, PrCommentResponse } from './types.ts';
 
 // Subprocess-boundary tests for the GitHub pr_comment adapter (R-15).
@@ -12,34 +18,13 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
 function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { prCommentGithub } = await import('./pr-comment-github.ts');
-
-function on(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
 
 function expectOk(
   r: AdapterResult<PrCommentResponse>,
@@ -58,17 +43,16 @@ function expectErr(
 }
 
 function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
+  return execCalls().find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('prCommentGithub — subprocess boundary', () => {
   test('gh CLI invocation matches expected argv shape (happy path)', async () => {
-    on(
+    onExec(
       'gh pr comment',
       'https://github.com/org/repo/pull/42#issuecomment-1001\n',
     );
@@ -91,7 +75,7 @@ describe('prCommentGithub — subprocess boundary', () => {
   });
 
   test('multi-line markdown body is preserved verbatim through shell-escape', async () => {
-    on(
+    onExec(
       'gh pr comment',
       'https://github.com/org/repo/pull/7#issuecomment-2002\n',
     );
@@ -127,7 +111,7 @@ describe('prCommentGithub — subprocess boundary', () => {
   });
 
   test('parses comment_id from #issuecomment-<id> URL fragment', async () => {
-    on(
+    onExec(
       'gh pr comment',
       'https://github.com/org/repo/pull/3#issuecomment-3003\n',
     );
@@ -139,7 +123,7 @@ describe('prCommentGithub — subprocess boundary', () => {
   });
 
   test('returns AdapterResult{ok:false, code} on gh failure (not thrown)', async () => {
-    on('gh pr comment', () => {
+    onExec('gh pr comment', () => {
       const err = new Error('HTTP 404: Not Found') as ThrowableError;
       err.stderr = 'HTTP 404: Not Found';
       err.status = 1;
@@ -154,7 +138,7 @@ describe('prCommentGithub — subprocess boundary', () => {
   });
 
   test('returns parse-failure code when stdout lacks #issuecomment-<id>', async () => {
-    on('gh pr comment', 'posted comment ok\n');
+    onExec('gh pr comment', 'posted comment ok\n');
 
     const result = await prCommentGithub({ number: 1, body: 'x' });
     expectErr(result);
@@ -163,7 +147,7 @@ describe('prCommentGithub — subprocess boundary', () => {
   });
 
   test('--repo flag forwarded when args.repo provided', async () => {
-    on(
+    onExec(
       'gh pr comment',
       'https://github.com/Wave-Engineering/mcp-server-sdlc/pull/42#issuecomment-1001\n',
     );

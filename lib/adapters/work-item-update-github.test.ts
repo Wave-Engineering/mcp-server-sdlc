@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  onExec,
+  execCalls,
+  resetExecMock,
+  installChildProcessMock,
+} from '../test-support/mock-child-process.ts';
 import type { AdapterResult, WorkItemUpdateResponse } from './types.ts';
 
 // Subprocess-boundary tests for the GitHub work_item_update adapter (#287).
@@ -11,42 +17,13 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
 function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  if (
-    flat.includes('gh issue edit') &&
-    (/\s-R\s/.test(flat) || /--description/.test(flat))
-  ) {
-    const err = new Error('FAIL: gh issue edit invoked with glab-style flags') as ThrowableError;
-    err.status = 127;
-    throw err;
-  }
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { workItemUpdateGithub } = await import('./work-item-update-github.ts');
-
-function on(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
 
 function expectOk(
   r: AdapterResult<WorkItemUpdateResponse>,
@@ -65,19 +42,18 @@ function expectErr(
 }
 
 function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
+  return execCalls().find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('workItemUpdateGithub — subprocess boundary', () => {
   // ---- title-only patch ----
 
   test("title-only patch: emits gh issue edit with --title and no --body", async () => {
-    on('gh issue edit', 'https://github.com/org/repo/issues/42\n');
+    onExec('gh issue edit', 'https://github.com/org/repo/issues/42\n');
 
     const result = await workItemUpdateGithub({
       issue_ref: '#42',
@@ -97,7 +73,7 @@ describe('workItemUpdateGithub — subprocess boundary', () => {
   // ---- body-only patch (no pre-fetch needed) ----
 
   test('body-only patch: emits --body and skips the pre-fetch view', async () => {
-    on('gh issue edit', 'https://github.com/org/repo/issues/42\n');
+    onExec('gh issue edit', 'https://github.com/org/repo/issues/42\n');
 
     const result = await workItemUpdateGithub({
       issue_ref: '#42',
@@ -105,7 +81,7 @@ describe('workItemUpdateGithub — subprocess boundary', () => {
     });
     expectOk(result);
 
-    expect(execCalls.some((c) => unquote(c).includes('gh issue view'))).toBe(false);
+    expect(execCalls().some((c) => unquote(c).includes('gh issue view'))).toBe(false);
     const call = findCall('gh issue edit');
     expect(call).toContain("'--body' 'completely new body'");
     expect(result.data.updated_fields).toEqual(['body']);
@@ -114,7 +90,7 @@ describe('workItemUpdateGithub — subprocess boundary', () => {
   // ---- repo flag forwarding ----
 
   test('--repo forwarded for cross-repo update', async () => {
-    on('gh issue edit', 'https://github.com/foo/bar/issues/9\n');
+    onExec('gh issue edit', 'https://github.com/foo/bar/issues/9\n');
 
     await workItemUpdateGithub({
       issue_ref: '#9',
@@ -139,7 +115,7 @@ describe('workItemUpdateGithub — subprocess boundary', () => {
   // ---- issue_ref parsing ----
 
   test('parses owner/repo#N issue_ref', async () => {
-    on('gh issue edit', 'https://github.com/org/repo/issues/123\n');
+    onExec('gh issue edit', 'https://github.com/org/repo/issues/123\n');
 
     const result = await workItemUpdateGithub({
       issue_ref: 'org/repo#123',
@@ -161,7 +137,7 @@ describe('workItemUpdateGithub — subprocess boundary', () => {
   // ---- labels: replacement-via-add/remove diff ----
 
   test('labels patch: pre-fetches current labels and emits add/remove diff', async () => {
-    on(
+    onExec(
       'gh issue view',
       JSON.stringify({
         number: 7,
@@ -171,7 +147,7 @@ describe('workItemUpdateGithub — subprocess boundary', () => {
         assignees: [],
       }),
     );
-    on('gh issue edit', 'https://github.com/org/repo/issues/7\n');
+    onExec('gh issue edit', 'https://github.com/org/repo/issues/7\n');
 
     const result = await workItemUpdateGithub({
       issue_ref: '#7',
@@ -188,7 +164,7 @@ describe('workItemUpdateGithub — subprocess boundary', () => {
   // ---- assignees: same diff shape ----
 
   test('assignees patch: emits add/remove diff against current set', async () => {
-    on(
+    onExec(
       'gh issue view',
       JSON.stringify({
         number: 11,
@@ -198,7 +174,7 @@ describe('workItemUpdateGithub — subprocess boundary', () => {
         assignees: [{ login: 'alice' }, { login: 'bob' }],
       }),
     );
-    on('gh issue edit', 'https://github.com/org/repo/issues/11\n');
+    onExec('gh issue edit', 'https://github.com/org/repo/issues/11\n');
 
     await workItemUpdateGithub({
       issue_ref: '#11',
@@ -214,7 +190,7 @@ describe('workItemUpdateGithub — subprocess boundary', () => {
   // ---- milestone (GitHub only) ----
 
   test('milestone patch: emits --milestone flag', async () => {
-    on('gh issue edit', 'https://github.com/org/repo/issues/3\n');
+    onExec('gh issue edit', 'https://github.com/org/repo/issues/3\n');
 
     await workItemUpdateGithub({
       issue_ref: '#3',
@@ -239,7 +215,7 @@ describe('workItemUpdateGithub — subprocess boundary', () => {
       '- [ ] AC',
     ].join('\n');
 
-    on(
+    onExec(
       'gh issue view',
       JSON.stringify({
         number: 5,
@@ -249,7 +225,7 @@ describe('workItemUpdateGithub — subprocess boundary', () => {
         assignees: [],
       }),
     );
-    on('gh issue edit', 'https://github.com/org/repo/issues/5\n');
+    onExec('gh issue edit', 'https://github.com/org/repo/issues/5\n');
 
     const result = await workItemUpdateGithub({
       issue_ref: '#5',
@@ -271,7 +247,7 @@ describe('workItemUpdateGithub — subprocess boundary', () => {
   });
 
   test('body_section: missing section returns typed error, no edit invoked', async () => {
-    on(
+    onExec(
       'gh issue view',
       JSON.stringify({
         number: 5,
@@ -288,7 +264,7 @@ describe('workItemUpdateGithub — subprocess boundary', () => {
     });
     expectErr(result);
     expect(result.code).toBe('section_splice_failed');
-    expect(execCalls.some((c) => unquote(c).includes('gh issue edit'))).toBe(false);
+    expect(execCalls().some((c) => unquote(c).includes('gh issue edit'))).toBe(false);
   });
 
   // ---- dry_run: no side effect ----
@@ -302,11 +278,11 @@ describe('workItemUpdateGithub — subprocess boundary', () => {
     expectOk(result);
     expect(result.data.dry_run).toBe(true);
     expect(result.data.updated_fields).toEqual(['title']);
-    expect(execCalls.some((c) => unquote(c).includes('gh issue edit'))).toBe(false);
+    expect(execCalls().some((c) => unquote(c).includes('gh issue edit'))).toBe(false);
   });
 
   test('dry_run:true with body_section pre-fetches and returns resolved_body', async () => {
-    on(
+    onExec(
       'gh issue view',
       JSON.stringify({
         number: 9,
@@ -325,7 +301,7 @@ describe('workItemUpdateGithub — subprocess boundary', () => {
     expectOk(result);
     expect(result.data.dry_run).toBe(true);
     expect(result.data.resolved_body).toContain('new');
-    expect(execCalls.some((c) => unquote(c).includes('gh issue edit'))).toBe(false);
+    expect(execCalls().some((c) => unquote(c).includes('gh issue edit'))).toBe(false);
   });
 
   // ---- patch validation ----
@@ -348,7 +324,7 @@ describe('workItemUpdateGithub — subprocess boundary', () => {
   // ---- error surface ----
 
   test('returns AdapterResult.error on gh issue edit failure', async () => {
-    on('gh issue edit', () => {
+    onExec('gh issue edit', () => {
       const err = new Error('not authenticated') as ThrowableError;
       err.stderr = 'gh: not authenticated';
       err.status = 1;
@@ -361,7 +337,7 @@ describe('workItemUpdateGithub — subprocess boundary', () => {
   });
 
   test('returns AdapterResult.error on gh issue view failure during pre-fetch', async () => {
-    on('gh issue view', () => {
+    onExec('gh issue view', () => {
       const err = new Error('not found') as ThrowableError;
       err.stderr = 'no such issue';
       err.status = 1;

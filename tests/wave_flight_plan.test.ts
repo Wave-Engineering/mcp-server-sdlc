@@ -1,24 +1,21 @@
 import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
-
-let lastExecCall = '';
-let execMockFn: (cmd: string) => string = () => 'flight plan stored\n';
-
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  lastExecCall = cmd;
-  return execMockFn(cmd);
-});
+import {
+  setExecMock,
+  resetExecMock,
+  execCalls,
+  installChildProcessMock,
+} from '../lib/test-support/mock-child-process.ts';
 
 const mockWriteFileSync = mock((_path: unknown, _data: unknown) => undefined);
 
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 mock.module('fs', () => ({ writeFileSync: mockWriteFileSync }));
 
 const { default: handler } = await import('../handlers/wave_flight_plan.ts');
 
 function resetMocks() {
-  lastExecCall = '';
-  execMockFn = () => 'flight plan stored\n';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => 'flight plan stored\n');
   mockWriteFileSync.mockClear();
 }
 
@@ -42,6 +39,7 @@ describe('wave_flight_plan handler', () => {
     const writtenPath = mockWriteFileSync.mock.calls[0][0] as string;
     expect(writtenPath).toMatch(/^\/tmp\/wave-flight-plan-/);
     expect(mockWriteFileSync.mock.calls[0][1]).toBe(planJson);
+    const lastExecCall = execCalls()[execCalls().length - 1] ?? '';
     expect(lastExecCall).toContain('wave-status flight-plan');
     expect(lastExecCall).toContain(writtenPath);
     const parsed = parseResult(result);
@@ -50,9 +48,9 @@ describe('wave_flight_plan handler', () => {
   });
 
   test('cli_error — returns ok:false on non-zero exit', async () => {
-    execMockFn = () => {
+    setExecMock(() => {
       throw new Error('wave-status: no current wave');
-    };
+    });
     const result = await handler.execute({ plan_json: '[]' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);

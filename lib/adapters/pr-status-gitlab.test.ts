@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  onExec,
+  execCalls,
+  resetExecMock,
+  installChildProcessMock,
+} from '../test-support/mock-child-process.ts';
 import type { AdapterResult, PrStatusResponse } from './types.ts';
 
 // Subprocess-boundary tests for the GitLab pr_status adapter (R-15).
@@ -14,34 +20,13 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
 function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { prStatusGitlab, aggregateGitlabPipeline } = await import('./pr-status-gitlab.ts');
-
-function on(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
 
 function expectOk(
   r: AdapterResult<PrStatusResponse>,
@@ -60,18 +45,17 @@ function expectErr(
 }
 
 function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
+  return execCalls().find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('prStatusGitlab — subprocess boundary', () => {
   test('glab API invocation matches expected URL shape (happy path)', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on(
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec(
       'glab api projects/org%2Frepo/merge_requests/5',
       JSON.stringify({
         iid: 5,
@@ -94,8 +78,8 @@ describe('prStatusGitlab — subprocess boundary', () => {
   });
 
   test('parses MR response into PrStatusResponse with success pipeline', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on(
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec(
       'glab api projects/org%2Frepo/merge_requests/5',
       JSON.stringify({
         iid: 5,
@@ -120,8 +104,8 @@ describe('prStatusGitlab — subprocess boundary', () => {
   });
 
   test('detailed_merge_status: ci_must_pass → blocked, conflict → dirty', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on(
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec(
       'glab api projects/org%2Frepo/merge_requests/6',
       JSON.stringify({
         iid: 6,
@@ -137,10 +121,9 @@ describe('prStatusGitlab — subprocess boundary', () => {
     expectOk(r1);
     expect(r1.data.merge_state).toBe('blocked');
 
-    execRegistry = [];
-    execCalls = [];
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on(
+    resetExecMock();
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec(
       'glab api projects/org%2Frepo/merge_requests/7',
       JSON.stringify({
         iid: 7,
@@ -158,8 +141,8 @@ describe('prStatusGitlab — subprocess boundary', () => {
   });
 
   test('legacy merge_status fallback when detailed_merge_status absent', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on(
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec(
       'glab api projects/org%2Frepo/merge_requests/44',
       JSON.stringify({
         iid: 44,
@@ -183,10 +166,9 @@ describe('prStatusGitlab — subprocess boundary', () => {
       ['closed', 'closed'],
     ];
     for (const [raw, expected] of cases) {
-      execRegistry = [];
-      execCalls = [];
-      on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-      on(
+      resetExecMock();
+      onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+      onExec(
         'glab api projects/org%2Frepo/merge_requests/9',
         JSON.stringify({
           iid: 9,
@@ -205,8 +187,8 @@ describe('prStatusGitlab — subprocess boundary', () => {
   });
 
   test('pipeline preferred over head_pipeline when both present', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on(
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec(
       'glab api projects/org%2Frepo/merge_requests/8',
       JSON.stringify({
         iid: 8,
@@ -228,8 +210,8 @@ describe('prStatusGitlab — subprocess boundary', () => {
   });
 
   test('returns AdapterResult{ok:false, code} on glab failure (not thrown)', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on('glab api projects/org%2Frepo/merge_requests/77', () => {
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests/77', () => {
       const err = new Error('glab: not authenticated') as ThrowableError;
       err.stderr = 'glab: not authenticated';
       err.status = 1;
@@ -243,8 +225,8 @@ describe('prStatusGitlab — subprocess boundary', () => {
   });
 
   test('args.repo slug routed into glab api path (URL-encoded), overriding cwd remote', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/cwd-org/cwd-repo.git');
-    on(
+    onExec('git remote get-url origin', 'https://gitlab.com/cwd-org/cwd-repo.git');
+    onExec(
       'glab api projects/target-org%2Ftarget-repo/merge_requests/3',
       JSON.stringify({
         iid: 3,
@@ -276,8 +258,8 @@ describe('prStatusGitlab — subprocess boundary', () => {
   // -------------------------------------------------------------------------
   describe('explicit pipeline-status fallthrough (R-03)', () => {
     test('MR with NO pipeline AND NO head_pipeline → summary "no_pipeline_data"', async () => {
-      on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-      on(
+      onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+      onExec(
         'glab api projects/org%2Frepo/merge_requests/100',
         JSON.stringify({
           iid: 100,
@@ -299,8 +281,8 @@ describe('prStatusGitlab — subprocess boundary', () => {
     });
 
     test('MR with head_pipeline:null AND no pipeline field → summary "no_pipeline_data"', async () => {
-      on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-      on(
+      onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+      onExec(
         'glab api projects/org%2Frepo/merge_requests/101',
         JSON.stringify({
           iid: 101,
@@ -319,8 +301,8 @@ describe('prStatusGitlab — subprocess boundary', () => {
     });
 
     test('MR with pipeline.status present is NOT no_pipeline_data', async () => {
-      on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-      on(
+      onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+      onExec(
         'glab api projects/org%2Frepo/merge_requests/102',
         JSON.stringify({
           iid: 102,
@@ -338,8 +320,8 @@ describe('prStatusGitlab — subprocess boundary', () => {
     });
 
     test('MR with head_pipeline.status present is NOT no_pipeline_data', async () => {
-      on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-      on(
+      onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+      onExec(
         'glab api projects/org%2Frepo/merge_requests/103',
         JSON.stringify({
           iid: 103,
@@ -357,8 +339,8 @@ describe('prStatusGitlab — subprocess boundary', () => {
     });
 
     test('explicit empty-string pipeline.status falls through to legacy "none" (still distinguishable)', async () => {
-      on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-      on(
+      onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+      onExec(
         'glab api projects/org%2Frepo/merge_requests/104',
         JSON.stringify({
           iid: 104,

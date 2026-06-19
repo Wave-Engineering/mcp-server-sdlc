@@ -1,48 +1,51 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  setExecMock,
+  resetExecMock,
+} from '../test-support/mock-child-process.ts';
 
-let execMockFn: (cmd: string) => string = () => '';
-const mockExecSync = mock((cmd: string) => execMockFn(cmd));
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { detectPlatform, detectPlatformForRef } = await import('./detect-platform.ts');
 
 function reset() {
-  execMockFn = () => '';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => '');
 }
 
 describe('detectPlatform (lib/shared/)', () => {
   beforeEach(() => reset());
 
   test('returns "gitlab" for gitlab.com origin', () => {
-    execMockFn = () => 'https://gitlab.com/owner/repo.git';
+    setExecMock(() => 'https://gitlab.com/owner/repo.git');
     expect(detectPlatform()).toBe('gitlab');
   });
 
   test('returns "gitlab" for self-hosted GitLab origin', () => {
-    execMockFn = () => 'https://gitlab.company.com/owner/repo.git';
+    setExecMock(() => 'https://gitlab.company.com/owner/repo.git');
     expect(detectPlatform()).toBe('gitlab');
   });
 
   test('returns "gitlab" for SSH GitLab origin', () => {
-    execMockFn = () => 'git@gitlab.com:owner/repo.git';
+    setExecMock(() => 'git@gitlab.com:owner/repo.git');
     expect(detectPlatform()).toBe('gitlab');
   });
 
   test('returns "github" for github.com origin', () => {
-    execMockFn = () => 'https://github.com/owner/repo.git';
+    setExecMock(() => 'https://github.com/owner/repo.git');
     expect(detectPlatform()).toBe('github');
   });
 
   test('returns "github" for GitHub Enterprise origin', () => {
-    execMockFn = () => 'https://github.acme.com/owner/repo.git';
+    setExecMock(() => 'https://github.acme.com/owner/repo.git');
     expect(detectPlatform()).toBe('github');
   });
 
   test('falls back to "github" when origin cannot be read', () => {
-    execMockFn = () => {
+    setExecMock(() => {
       throw new Error('not a git repository');
-    };
+    });
     expect(detectPlatform()).toBe('github');
   });
 });
@@ -57,14 +60,14 @@ describe('detectPlatformForRef (lib/shared/)', () => {
   });
 
   test('falls back to cwd detection for single-segment owner', () => {
-    execMockFn = () => 'https://github.com/owner/repo.git';
+    setExecMock(() => 'https://github.com/owner/repo.git');
     expect(detectPlatformForRef({ owner: 'owner', repo: 'repo', number: 1 })).toBe(
       'github',
     );
   });
 
   test('falls back to cwd detection for local refs (no owner)', () => {
-    execMockFn = () => 'https://gitlab.com/owner/repo.git';
+    setExecMock(() => 'https://gitlab.com/owner/repo.git');
     expect(detectPlatformForRef({ owner: null, repo: null, number: 42 })).toBe(
       'gitlab',
     );

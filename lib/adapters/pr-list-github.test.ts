@@ -1,5 +1,11 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
 import type { AdapterResult, PrListResponse } from './types.ts';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../test-support/mock-child-process.ts';
 
 // Subprocess-boundary tests for the GitHub pr_list adapter (R-15).
 // Integration-level coverage (handler dispatch, error envelope, slug routing)
@@ -13,34 +19,13 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
 function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { prListGithub } = await import('./pr-list-github.ts');
-
-function on(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
 
 // Narrow AdapterResult into the success branch — throws if it's an error or
 // platform_unsupported variant. Lets test bodies access `.data` directly
@@ -62,17 +47,16 @@ function expectErr(
 }
 
 function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
+  return execCalls().find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('prListGithub — subprocess boundary', () => {
   test('gh CLI invocation matches expected argv shape (happy path)', async () => {
-    on(
+    onExec(
       'gh pr list',
       JSON.stringify([
         {
@@ -107,7 +91,7 @@ describe('prListGithub — subprocess boundary', () => {
   });
 
   test('parses gh pr list JSON response into PrListResponse with normalized fields', async () => {
-    on(
+    onExec(
       'gh pr list',
       JSON.stringify([
         {
@@ -152,7 +136,7 @@ describe('prListGithub — subprocess boundary', () => {
   });
 
   test('empty result list returns {prs: []} (not an error)', async () => {
-    on('gh pr list', JSON.stringify([]));
+    onExec('gh pr list', JSON.stringify([]));
 
     const result = await prListGithub({
       head: 'feature/99-none',
@@ -164,10 +148,10 @@ describe('prListGithub — subprocess boundary', () => {
   });
 
   test('--state argv translation: each enum value passes through verbatim', async () => {
-    on('gh pr list', JSON.stringify([]));
+    onExec('gh pr list', JSON.stringify([]));
 
     for (const state of ['open', 'closed', 'merged', 'all'] as const) {
-      execCalls = [];
+      resetExecMock();
       await prListGithub({ state, limit: 20 });
       const call = unquote(findCall('gh pr list'));
       expect(call).toContain(`--state ${state}`);
@@ -175,7 +159,7 @@ describe('prListGithub — subprocess boundary', () => {
   });
 
   test('--author flag forwarded only when args.author provided', async () => {
-    on('gh pr list', JSON.stringify([]));
+    onExec('gh pr list', JSON.stringify([]));
 
     // With author
     await prListGithub({ author: '@me', state: 'open', limit: 20 });
@@ -183,14 +167,14 @@ describe('prListGithub — subprocess boundary', () => {
     expect(call).toContain('--author @me');
 
     // Without author
-    execCalls = [];
+    resetExecMock();
     await prListGithub({ state: 'open', limit: 20 });
     call = unquote(findCall('gh pr list'));
     expect(call).not.toContain('--author');
   });
 
   test('--base flag forwarded only when args.base provided', async () => {
-    on('gh pr list', JSON.stringify([]));
+    onExec('gh pr list', JSON.stringify([]));
 
     await prListGithub({ base: 'main', state: 'open', limit: 20 });
     const call = unquote(findCall('gh pr list'));
@@ -198,7 +182,7 @@ describe('prListGithub — subprocess boundary', () => {
   });
 
   test('custom limit is rendered into the --limit argv value', async () => {
-    on('gh pr list', JSON.stringify([]));
+    onExec('gh pr list', JSON.stringify([]));
 
     await prListGithub({ state: 'open', limit: 5 });
     const call = unquote(findCall('gh pr list'));
@@ -206,7 +190,7 @@ describe('prListGithub — subprocess boundary', () => {
   });
 
   test('returns AdapterResult{ok:false, code} on gh failure (not thrown)', async () => {
-    on('gh pr list', () => {
+    onExec('gh pr list', () => {
       const err = new Error('gh: not authenticated') as ThrowableError;
       err.stderr = 'gh: not authenticated';
       err.status = 4;
@@ -220,7 +204,7 @@ describe('prListGithub — subprocess boundary', () => {
   });
 
   test('--repo flag forwarded when args.repo provided', async () => {
-    on('gh pr list', JSON.stringify([]));
+    onExec('gh pr list', JSON.stringify([]));
 
     await prListGithub({ state: 'open', limit: 20, repo: 'Org/Other' });
     const call = unquote(findCall('gh pr list'));
@@ -228,7 +212,7 @@ describe('prListGithub — subprocess boundary', () => {
   });
 
   test('returns AdapterResult{ok:false, code:unexpected_error} when JSON.parse throws', async () => {
-    on('gh pr list', 'not json at all');
+    onExec('gh pr list', 'not json at all');
 
     const result = await prListGithub({ state: 'open', limit: 20 });
     expectErr(result);

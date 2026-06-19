@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../test-support/mock-child-process.ts';
 import type { AdapterResult, CiListRunsResponse } from './types.ts';
 
 // Subprocess-boundary tests for the GitHub ciListRuns adapter (R-15).
@@ -12,33 +18,13 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
-function unquote(cmd: string): string {
-  return cmd.replace(/'([^']*)'/g, '$1');
-}
-
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { ciListRunsGithub } = await import('./ci-list-runs-github.ts');
 
-function on(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
+function findCall(needle: string): string {
+  const unquote = (cmd: string) => cmd.replace(/'([^']*)'/g, '$1');
+  return execCalls().find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
 
 function expectOk(
@@ -55,10 +41,6 @@ function expectErr(
   if (!('ok' in r) || r.ok) {
     throw new Error(`expected error result, got ${JSON.stringify(r)}`);
   }
-}
-
-function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
 
 function ghRun(overrides: Record<string, unknown> = {}) {
@@ -78,13 +60,12 @@ function ghRun(overrides: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('ciListRunsGithub — subprocess boundary', () => {
   test('argv: --branch for non-SHA ref; normalizes single run with event', async () => {
-    on('gh run list', JSON.stringify([ghRun({ event: 'push' })]));
+    onExec('gh run list', JSON.stringify([ghRun({ event: 'push' })]));
 
     const result = await ciListRunsGithub({ ref: 'feature/1-demo', limit: 20 });
     expectOk(result);
@@ -109,7 +90,7 @@ describe('ciListRunsGithub — subprocess boundary', () => {
 
   test('argv: --commit for 40-char hex SHA ref', async () => {
     const sha = 'a'.repeat(40);
-    on('gh run list', JSON.stringify([ghRun({ headSha: sha })]));
+    onExec('gh run list', JSON.stringify([ghRun({ headSha: sha })]));
 
     await ciListRunsGithub({ ref: sha, limit: 5 });
     const call = findCall('gh run list');
@@ -120,7 +101,7 @@ describe('ciListRunsGithub — subprocess boundary', () => {
 
   test('argv: expected_sha with branch ref passes BOTH --branch and --commit', async () => {
     const sha = 'b'.repeat(40);
-    on('gh run list', JSON.stringify([ghRun({ headSha: sha })]));
+    onExec('gh run list', JSON.stringify([ghRun({ headSha: sha })]));
 
     await ciListRunsGithub({ ref: 'main', expected_sha: sha, limit: 20 });
     const call = findCall('gh run list');
@@ -132,7 +113,7 @@ describe('ciListRunsGithub — subprocess boundary', () => {
 
   test('argv: expected_sha with SHA ref passes ONLY --commit (no --branch)', async () => {
     const sha = 'c'.repeat(40);
-    on('gh run list', JSON.stringify([ghRun({ headSha: sha })]));
+    onExec('gh run list', JSON.stringify([ghRun({ headSha: sha })]));
 
     await ciListRunsGithub({ ref: sha, expected_sha: sha, limit: 20 });
     const call = findCall('gh run list');
@@ -141,7 +122,7 @@ describe('ciListRunsGithub — subprocess boundary', () => {
   });
 
   test('argv: --workflow and --repo forwarded', async () => {
-    on('gh run list', JSON.stringify([]));
+    onExec('gh run list', JSON.stringify([]));
 
     await ciListRunsGithub({
       ref: 'main',
@@ -157,7 +138,7 @@ describe('ciListRunsGithub — subprocess boundary', () => {
   });
 
   test('empty array returns ok with empty data', async () => {
-    on('gh run list', JSON.stringify([]));
+    onExec('gh run list', JSON.stringify([]));
 
     const result = await ciListRunsGithub({ ref: 'main', limit: 20 });
     expectOk(result);
@@ -165,7 +146,7 @@ describe('ciListRunsGithub — subprocess boundary', () => {
   });
 
   test('empty stdout returns ok with empty data', async () => {
-    on('gh run list', '');
+    onExec('gh run list', '');
 
     const result = await ciListRunsGithub({ ref: 'main', limit: 20 });
     expectOk(result);
@@ -173,7 +154,7 @@ describe('ciListRunsGithub — subprocess boundary', () => {
   });
 
   test('normalizes merge_group event (feeds the pre-flight detector)', async () => {
-    on(
+    onExec(
       'gh run list',
       JSON.stringify([ghRun({ event: 'merge_group', databaseId: 777 })]),
     );
@@ -185,7 +166,7 @@ describe('ciListRunsGithub — subprocess boundary', () => {
   });
 
   test('workflowName preferred over name for workflow_name field', async () => {
-    on(
+    onExec(
       'gh run list',
       JSON.stringify([ghRun({ name: 'fallback', workflowName: 'Real CI' })]),
     );
@@ -196,7 +177,7 @@ describe('ciListRunsGithub — subprocess boundary', () => {
   });
 
   test('returns AdapterResult.error on gh failure (not thrown)', async () => {
-    on('gh run list', () => {
+    onExec('gh run list', () => {
       const err = new Error('gh: not authenticated') as ThrowableError;
       err.stderr = 'gh: not authenticated';
       err.status = 1;

@@ -23,8 +23,8 @@ import { parseRepoSlug } from './shared/parse-repo-slug.js';
  * Throws if the origin URL cannot be parsed. Callers that want a graceful
  * fallback should catch the error and fall through to the GitHub code path.
  */
-export function gitlabProjectPath(): string {
-  const slug = parseRepoSlug();
+export function gitlabProjectPath(cwd?: string): string {
+  const slug = parseRepoSlug(cwd);
   if (!slug) throw new Error('could not parse gitlab project path from origin url');
   return encodeURIComponent(slug);
 }
@@ -124,13 +124,18 @@ export interface GitlabRepo {
 // Low-level exec wrapper
 // ---------------------------------------------------------------------------
 
-function execGlab(cmd: string): string {
+function execGlab(cmd: string, cwd?: string): string {
   let raw: string;
   try {
+    // `cwd` defaults to undefined, leaving execSync on `process.cwd()` —
+    // identical to pre-#453 behavior for every existing caller. Callers that
+    // thread an explicit cwd (e.g. find-existing-pr-gitlab via wave_finalize)
+    // run `glab` in that directory so the API hits the right project.
     raw = execSync(cmd, {
       encoding: 'utf8',
       maxBuffer: 1024 * 1024 * 64,
       stdio: ['pipe', 'pipe', 'pipe'],
+      cwd,
     });
   } catch (err) {
     if (err instanceof Error && ('stderr' in err || 'status' in err)) {
@@ -158,11 +163,11 @@ function execGlab(cmd: string): string {
  * Build a URL-encoded project path, using explicit owner/repo if provided,
  * otherwise falling back to the current repo's slug.
  */
-function projectPath(opts?: { owner?: string; repo?: string }): string {
+function projectPath(opts?: { owner?: string; repo?: string }, cwd?: string): string {
   if (opts && opts.owner && opts.repo) {
     return encodeURIComponent(`${opts.owner}/${opts.repo}`);
   }
-  return gitlabProjectPath();
+  return gitlabProjectPath(cwd);
 }
 
 // ---------------------------------------------------------------------------
@@ -228,8 +233,9 @@ export function gitlabApiMrList(
     limit?: number;
   },
   opts?: { owner?: string; repo?: string },
+  cwd?: string,
 ): GitlabMr[] {
-  const path = projectPath(opts);
+  const path = projectPath(opts, cwd);
   const queryParts: string[] = [];
 
   // State translation: GitLab REST API uses 'opened' (not 'open'). 'all'
@@ -259,7 +265,7 @@ export function gitlabApiMrList(
   const query = queryParts.length > 0 ? `?${queryParts.join('&')}` : '';
   let raw: string;
   try {
-    raw = execGlab(`glab api projects/${path}/merge_requests${query}`);
+    raw = execGlab(`glab api projects/${path}/merge_requests${query}`, cwd);
   } catch (err) {
     // List endpoints: empty output means "no results" — return [] rather
     // than propagating "empty output" as a fatal error (#428).

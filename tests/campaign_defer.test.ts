@@ -1,24 +1,19 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  setExecMock,
+  resetExecMock,
+  execCalls,
+  mockExecSync,
+} from '../lib/test-support/mock-child-process.ts';
 
-interface ExecCall {
-  cmd: string;
-  opts: { cwd?: string; encoding?: string } | undefined;
-}
-
-let execCalls: ExecCall[] = [];
-let execMockFn: (cmd: string, opts?: { cwd?: string }) => string = () => '';
-const mockExecSync = mock((cmd: string, opts?: { cwd?: string; encoding?: string }) => {
-  execCalls.push({ cmd, opts });
-  return execMockFn(cmd, opts);
-});
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { default: handler } = await import('../handlers/campaign_defer.ts');
 
 function resetMocks() {
-  execCalls = [];
-  execMockFn = () => '';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => '');
 }
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
@@ -35,7 +30,7 @@ describe('campaign_defer handler', () => {
   });
 
   test('defers an item with reason', async () => {
-    execMockFn = () => 'Deferred: telemetry-rework\n';
+    setExecMock(() => 'Deferred: telemetry-rework\n');
     const result = await handler.execute({
       item: 'telemetry-rework',
       reason: 'requires schema RFC',
@@ -48,13 +43,16 @@ describe('campaign_defer handler', () => {
   });
 
   test('passes item and --reason to CLI', async () => {
-    execMockFn = () => 'Deferred: x\n';
+    setExecMock(() => 'Deferred: x\n');
     await handler.execute({
       item: 'my-item',
       reason: 'because reasons',
       root: '/tmp/myrepo',
     });
-    const call = execCalls[0];
+    const call = {
+      cmd: execCalls()[0],
+      opts: mockExecSync.mock.calls[0]?.[1] as { cwd?: string } | undefined,
+    };
     expect(call.cmd).toContain(`campaign-status defer 'my-item'`);
     expect(call.cmd).toContain(`--reason 'because reasons'`);
     expect(call.opts?.cwd).toBe('/tmp/myrepo');
@@ -93,9 +91,9 @@ describe('campaign_defer handler', () => {
   });
 
   test('errors when CLI fails (.sdlc missing)', async () => {
-    execMockFn = () => {
+    setExecMock(() => {
       throw new Error('Error: not a campaign-status project');
-    };
+    });
     const result = await handler.execute({
       item: 'x',
       reason: 'y',
@@ -107,14 +105,14 @@ describe('campaign_defer handler', () => {
   });
 
   test('handles items and reasons containing single quotes safely', async () => {
-    execMockFn = () => 'Deferred: x\n';
+    setExecMock(() => 'Deferred: x\n');
     await handler.execute({
       item: "user's request",
       reason: "it's complicated",
       root: '/tmp/repo',
     });
     // Single-quote escape shape: 'user'\''s request'
-    const call = execCalls[0];
+    const call = { cmd: execCalls()[0] };
     expect(call.cmd).toContain(`'user'\\''s request'`);
     expect(call.cmd).toContain(`'it'\\''s complicated'`);
   });
@@ -122,10 +120,12 @@ describe('campaign_defer handler', () => {
   test('uses CLAUDE_PROJECT_DIR when root not provided', async () => {
     const oldEnv = process.env.CLAUDE_PROJECT_DIR;
     process.env.CLAUDE_PROJECT_DIR = '/tmp/from-env';
-    execMockFn = () => 'Deferred: x\n';
+    setExecMock(() => 'Deferred: x\n');
     try {
       await handler.execute({ item: 'foo', reason: 'bar' });
-      expect(execCalls[0].opts?.cwd).toBe('/tmp/from-env');
+      expect(
+        (mockExecSync.mock.calls[0]?.[1] as { cwd?: string } | undefined)?.cwd,
+      ).toBe('/tmp/from-env');
     } finally {
       if (oldEnv === undefined) {
         delete process.env.CLAUDE_PROJECT_DIR;

@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../test-support/mock-child-process.ts';
 import type { AdapterResult, WorkItemResponse } from './types.ts';
 
 // Subprocess-boundary tests for the GitLab work_item adapter (R-15).
@@ -17,45 +23,13 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
 function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  // Argv strictness — gh-style flags on the glab path means we regressed.
-  if (
-    (flat.includes('glab issue create') || flat.includes('glab mr create')) &&
-    (/--repo\s/.test(flat) || /--body\s/.test(flat) || /--head\s/.test(flat) || /--base\s/.test(flat))
-  ) {
-    const err = new Error(
-      `FAIL: glab ${flat.includes('issue') ? 'issue' : 'mr'} create invoked with gh-style flags`,
-    ) as ThrowableError;
-    err.status = 127;
-    throw err;
-  }
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { workItemGitlab } = await import('./work-item-gitlab.ts');
-
-function on(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
 
 function expectOk(
   r: AdapterResult<WorkItemResponse>,
@@ -82,12 +56,11 @@ function expectUnsupported(
 }
 
 function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
+  return execCalls().find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('workItemGitlab — subprocess boundary', () => {
@@ -98,13 +71,13 @@ describe('workItemGitlab — subprocess boundary', () => {
     expectUnsupported(result);
     expect(result.hint).toContain('type="mr"');
     // No `gh` sub-command should have been attempted.
-    expect(execCalls.length).toBe(0);
+    expect(execCalls().length).toBe(0);
   });
 
   // --- issue types → glab issue create ---
 
   test("argv: glab issue create for type:'story' auto-merges type::story label", async () => {
-    on('glab issue create', 'https://gitlab.com/org/repo/-/issues/7\n');
+    onExec('glab issue create', 'https://gitlab.com/org/repo/-/issues/7\n');
 
     const result = await workItemGitlab({ type: 'story', title: 'GL story', body: 'details' });
     expectOk(result);
@@ -118,7 +91,7 @@ describe('workItemGitlab — subprocess boundary', () => {
   });
 
   test('argv: forwards caller labels as CSV alongside auto type::* label', async () => {
-    on('glab issue create', 'https://gitlab.com/org/repo/-/issues/12\n');
+    onExec('glab issue create', 'https://gitlab.com/org/repo/-/issues/12\n');
 
     await workItemGitlab({ type: 'bug', title: 'A bug', labels: ['priority::high', 'team::alpha'] });
 
@@ -128,7 +101,7 @@ describe('workItemGitlab — subprocess boundary', () => {
   });
 
   test('argv: -R (not --repo) forwarded for cross-repo issue create', async () => {
-    on('glab issue create', 'https://gitlab.com/foo/bar/-/issues/3\n');
+    onExec('glab issue create', 'https://gitlab.com/foo/bar/-/issues/3\n');
 
     await workItemGitlab({ type: 'chore', title: 'Cleanup', repo: 'foo/bar' });
 
@@ -140,7 +113,7 @@ describe('workItemGitlab — subprocess boundary', () => {
   // --- type:'mr' → glab mr create ---
 
   test("argv: glab mr create for type:'mr' with source/target/draft", async () => {
-    on('glab mr create', 'https://gitlab.com/org/repo/-/merge_requests/99\n');
+    onExec('glab mr create', 'https://gitlab.com/org/repo/-/merge_requests/99\n');
 
     const result = await workItemGitlab({
       type: 'mr',
@@ -162,7 +135,7 @@ describe('workItemGitlab — subprocess boundary', () => {
   });
 
   test("type:'mr' gets no automatic type label; caller labels still forwarded as CSV", async () => {
-    on('glab mr create', 'https://gitlab.com/org/repo/-/merge_requests/5\n');
+    onExec('glab mr create', 'https://gitlab.com/org/repo/-/merge_requests/5\n');
 
     await workItemGitlab({ type: 'mr', title: 'Patch', labels: ['size::S', 'team::beta'] });
 
@@ -172,7 +145,7 @@ describe('workItemGitlab — subprocess boundary', () => {
   });
 
   test('argv: omits --label when no labels supplied for MR', async () => {
-    on('glab mr create', 'https://gitlab.com/org/repo/-/merge_requests/5\n');
+    onExec('glab mr create', 'https://gitlab.com/org/repo/-/merge_requests/5\n');
 
     await workItemGitlab({ type: 'mr', title: 'Patch', head_branch: 'x', base_branch: 'main' });
 
@@ -183,7 +156,7 @@ describe('workItemGitlab — subprocess boundary', () => {
   // --- error surface ---
 
   test('returns AdapterResult.error on glab issue failure (not thrown)', async () => {
-    on('glab issue create', () => {
+    onExec('glab issue create', () => {
       const err = new Error('glab: not authenticated') as ThrowableError;
       err.stderr = 'glab: not authenticated';
       err.status = 1;
@@ -197,7 +170,7 @@ describe('workItemGitlab — subprocess boundary', () => {
   });
 
   test('returns AdapterResult.error on glab mr failure (not thrown)', async () => {
-    on('glab mr create', () => {
+    onExec('glab mr create', () => {
       const err = new Error('glab: cannot find target branch') as ThrowableError;
       err.stderr = 'no such ref';
       err.status = 1;

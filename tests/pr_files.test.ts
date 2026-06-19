@@ -1,4 +1,11 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  setExecMock,
+  resetExecMock,
+  execCalls,
+} from '../lib/test-support/mock-child-process.ts';
 
 // --- Mock child_process.execSync at module level ---
 //
@@ -8,27 +15,12 @@ import { describe, test, expect, mock, beforeEach } from 'bun:test';
 // that quoting so test match-keys can stay as plain `gh pr view 10` strings —
 // same pattern adopted by tests/pr_create.test.ts in PR #266 and
 // tests/pr_diff.test.ts in PR #267.
-let execRegistry: Record<string, string> = {};
-let execError: Error | null = null;
-let execCalls: string[] = [];
 
 function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-function mockExec(cmd: string): string {
-  execCalls.push(cmd);
-  if (execError) throw execError;
-  const flat = unquote(cmd);
-  for (const [key, value] of Object.entries(execRegistry)) {
-    if (cmd.includes(key) || flat.includes(key)) return value;
-  }
-  throw new Error(`Unexpected exec call: ${cmd}`);
-}
-
-mock.module('child_process', () => ({
-  execSync: (cmd: string, _opts?: unknown) => mockExec(cmd),
-}));
+installChildProcessMock();
 
 // Import AFTER the mock is registered
 const { default: prFilesHandler, parseDiffStats } = await import('../handlers/pr_files.ts');
@@ -38,9 +30,7 @@ function parseResult(content: Array<{ type: string; text: string }>) {
 }
 
 beforeEach(() => {
-  execRegistry = {};
-  execError = null;
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('pr_files handler — shape', () => {
@@ -118,10 +108,10 @@ describe('parseDiffStats helper', () => {
 
 describe('pr_files handler — GitHub', () => {
   test('added_only_pr — single added file maps correctly', async () => {
-    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
-    execRegistry['gh pr view 10'] = JSON.stringify({
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
+    onExec('gh pr view 10', JSON.stringify({
       files: [{ path: 'src/new.ts', additions: 12, deletions: 0, changeType: 'ADDED' }],
-    });
+    }));
 
     const result = await prFilesHandler.execute({ number: 10 });
     const data = parseResult(result.content);
@@ -139,15 +129,15 @@ describe('pr_files handler — GitHub', () => {
   });
 
   test('mixed_changes_pr — mixture of added/modified/removed/renamed', async () => {
-    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
-    execRegistry['gh pr view 42'] = JSON.stringify({
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
+    onExec('gh pr view 42', JSON.stringify({
       files: [
         { path: 'a.ts', additions: 5, deletions: 0, changeType: 'ADDED' },
         { path: 'b.ts', additions: 3, deletions: 2, changeType: 'MODIFIED' },
         { path: 'c.ts', additions: 0, deletions: 7, changeType: 'REMOVED' },
         { path: 'd2.ts', additions: 1, deletions: 1, changeType: 'RENAMED' },
       ],
-    });
+    }));
 
     const result = await prFilesHandler.execute({ number: 42 });
     const data = parseResult(result.content);
@@ -161,10 +151,10 @@ describe('pr_files handler — GitHub', () => {
   });
 
   test('rename_only_pr — renamed file reports stats from GitHub', async () => {
-    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
-    execRegistry['gh pr view 7'] = JSON.stringify({
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
+    onExec('gh pr view 7', JSON.stringify({
       files: [{ path: 'renamed.ts', additions: 0, deletions: 0, changeType: 'RENAMED' }],
-    });
+    }));
 
     const result = await prFilesHandler.execute({ number: 7 });
     const data = parseResult(result.content);
@@ -177,8 +167,8 @@ describe('pr_files handler — GitHub', () => {
   });
 
   test('empty_files_list — no files returns empty array and zero totals', async () => {
-    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
-    execRegistry['gh pr view 99'] = JSON.stringify({ files: [] });
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
+    onExec('gh pr view 99', JSON.stringify({ files: [] }));
 
     const result = await prFilesHandler.execute({ number: 99 });
     const data = parseResult(result.content);
@@ -190,8 +180,10 @@ describe('pr_files handler — GitHub', () => {
   });
 
   test('gh_error — exec failure returns structured error', async () => {
-    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
-    execError = new Error('gh: not found');
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
+    setExecMock(() => {
+      throw new Error('gh: not found');
+    });
 
     const result = await prFilesHandler.execute({ number: 1 });
     const data = parseResult(result.content);
@@ -203,8 +195,8 @@ describe('pr_files handler — GitHub', () => {
 
 describe('pr_files handler — GitLab', () => {
   test('added_only_mr — new file computes additions from diff hunks', async () => {
-    execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
-    execRegistry['glab api projects/org%2Frepo/merge_requests/3'] = JSON.stringify({
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests/3', JSON.stringify({
       changes: [
         {
           new_path: 'src/brand-new.ts',
@@ -215,7 +207,7 @@ describe('pr_files handler — GitLab', () => {
           diff: '--- /dev/null\n+++ b/src/brand-new.ts\n@@ -0,0 +1,3 @@\n+line one\n+line two\n+line three\n',
         },
       ],
-    });
+    }));
 
     const result = await prFilesHandler.execute({ number: 3 });
     const data = parseResult(result.content);
@@ -233,8 +225,8 @@ describe('pr_files handler — GitLab', () => {
   });
 
   test('mixed_changes_mr — added/modified/removed/renamed with computed stats', async () => {
-    execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
-    execRegistry['glab api projects/org%2Frepo/merge_requests/11'] = JSON.stringify({
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests/11', JSON.stringify({
       changes: [
         {
           new_path: 'added.ts',
@@ -269,7 +261,7 @@ describe('pr_files handler — GitLab', () => {
           diff: '',
         },
       ],
-    });
+    }));
 
     const result = await prFilesHandler.execute({ number: 11 });
     const data = parseResult(result.content);
@@ -308,8 +300,8 @@ describe('pr_files handler — GitLab', () => {
   });
 
   test('rename_with_modifications_mr — renamed file with diff still counts stats', async () => {
-    execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
-    execRegistry['glab api projects/org%2Frepo/merge_requests/15'] = JSON.stringify({
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests/15', JSON.stringify({
       changes: [
         {
           new_path: 'b.ts',
@@ -320,7 +312,7 @@ describe('pr_files handler — GitLab', () => {
           diff: '--- a/a.ts\n+++ b/b.ts\n@@ -1,2 +1,3 @@\n existing\n-old\n+new\n+extra\n',
         },
       ],
-    });
+    }));
 
     const result = await prFilesHandler.execute({ number: 15 });
     const data = parseResult(result.content);
@@ -334,8 +326,8 @@ describe('pr_files handler — GitLab', () => {
   });
 
   test('empty_changes_mr — missing changes field returns empty list', async () => {
-    execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
-    execRegistry['glab api projects/org%2Frepo/merge_requests/50'] = JSON.stringify({});
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests/50', JSON.stringify({}));
 
     const result = await prFilesHandler.execute({ number: 50 });
     const data = parseResult(result.content);
@@ -350,10 +342,10 @@ describe('pr_files handler — GitLab', () => {
 describe('pr_files handler — cross-repo routing', () => {
   test('route_with_repo — github threads --repo into gh pr view --json files', async () => {
     // cwd origin differs from target.
-    execRegistry['git remote get-url origin'] = 'https://github.com/cwd-org/cwd-repo.git';
-    execRegistry['gh pr view 42'] = JSON.stringify({
+    onExec('git remote get-url origin', 'https://github.com/cwd-org/cwd-repo.git');
+    onExec('gh pr view 42', JSON.stringify({
       files: [{ path: 'src/new.ts', additions: 5, deletions: 0, changeType: 'ADDED' }],
-    });
+    }));
 
     const result = await prFilesHandler.execute({
       number: 42,
@@ -362,15 +354,15 @@ describe('pr_files handler — cross-repo routing', () => {
     const data = parseResult(result.content);
     expect(data.ok).toBe(true);
 
-    const ghCall = execCalls.find((c) => unquote(c).startsWith('gh pr view 42')) ?? '';
+    const ghCall = execCalls().find((c) => unquote(c).startsWith('gh pr view 42')) ?? '';
     expect(unquote(ghCall)).toContain('--repo Wave-Engineering/mcp-server-sdlc');
   });
 
   test('route_with_repo — gitlab forwards owner/repo slug into glab api path', async () => {
-    execRegistry['git remote get-url origin'] = 'https://gitlab.com/cwd-org/cwd-repo.git';
-    execRegistry['glab api projects/target-org%2Ftarget-repo/merge_requests/7'] = JSON.stringify({
+    onExec('git remote get-url origin', 'https://gitlab.com/cwd-org/cwd-repo.git');
+    onExec('glab api projects/target-org%2Ftarget-repo/merge_requests/7', JSON.stringify({
       changes: [],
-    });
+    }));
 
     const result = await prFilesHandler.execute({
       number: 7,
@@ -379,18 +371,18 @@ describe('pr_files handler — cross-repo routing', () => {
     const data = parseResult(result.content);
     expect(data.ok).toBe(true);
 
-    const glabCall = execCalls.find((c) => c.includes('glab api projects/')) ?? '';
+    const glabCall = execCalls().find((c) => c.includes('glab api projects/')) ?? '';
     expect(glabCall).toContain('target-org%2Ftarget-repo');
     expect(glabCall).not.toContain('cwd-org%2Fcwd-repo');
   });
 
   test('regression_without_repo — github call does not contain --repo', async () => {
-    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
-    execRegistry['gh pr view 10'] = JSON.stringify({ files: [] });
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
+    onExec('gh pr view 10', JSON.stringify({ files: [] }));
 
     await prFilesHandler.execute({ number: 10 });
 
-    const ghCall = execCalls.find((c) => unquote(c).startsWith('gh pr view 10')) ?? '';
+    const ghCall = execCalls().find((c) => unquote(c).startsWith('gh pr view 10')) ?? '';
     expect(unquote(ghCall)).not.toContain('--repo');
   });
 
@@ -400,6 +392,6 @@ describe('pr_files handler — cross-repo routing', () => {
 
     expect(data.ok).toBe(false);
     expect(typeof data.error).toBe('string');
-    expect(execCalls).toHaveLength(0);
+    expect(execCalls()).toHaveLength(0);
   });
 });

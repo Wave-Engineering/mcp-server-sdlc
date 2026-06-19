@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../test-support/mock-child-process.ts';
 import type {
   AdapterResult,
   ResolveBranchShaResponse,
@@ -15,34 +21,13 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
 function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { resolveBranchShaGitlab } = await import('./resolve-branch-sha-gitlab.ts');
-
-function on(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
 
 function expectOk(
   r: AdapterResult<ResolveBranchShaResponse | null>,
@@ -53,18 +38,17 @@ function expectOk(
 }
 
 function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
+  return execCalls().find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('resolveBranchShaGitlab — subprocess boundary', () => {
   test('argv: glab api projects/<encoded>/repository/branches/<branch>', async () => {
     const sha = 'a'.repeat(40);
-    on(
+    onExec(
       'glab api projects/org%2Frepo/repository/branches/main',
       JSON.stringify({ commit: { id: sha } }),
     );
@@ -78,7 +62,7 @@ describe('resolveBranchShaGitlab — subprocess boundary', () => {
   });
 
   test('soft-fails to null when glab errors (mirrors GitHub contract)', async () => {
-    on('glab api', () => {
+    onExec('glab api', () => {
       const err = new Error('glab: 404') as ThrowableError;
       err.stderr = 'glab: not found';
       err.status = 1;
@@ -91,7 +75,7 @@ describe('resolveBranchShaGitlab — subprocess boundary', () => {
   });
 
   test('returns null when commit.id is missing or invalid', async () => {
-    on('glab api', JSON.stringify({ commit: { id: 'not-a-sha' } }));
+    onExec('glab api', JSON.stringify({ commit: { id: 'not-a-sha' } }));
 
     const result = await resolveBranchShaGitlab({ branch: 'main', repo: 'org/repo' });
     expectOk(result);
@@ -99,7 +83,7 @@ describe('resolveBranchShaGitlab — subprocess boundary', () => {
   });
 
   test('returns null when stdout is not valid JSON', async () => {
-    on('glab api', 'not-json');
+    onExec('glab api', 'not-json');
 
     const result = await resolveBranchShaGitlab({ branch: 'main', repo: 'org/repo' });
     expectOk(result);
@@ -110,7 +94,7 @@ describe('resolveBranchShaGitlab — subprocess boundary', () => {
     const result = await resolveBranchShaGitlab({ branch: 'main' });
     expectOk(result);
     expect(result.data).toBeNull();
-    expect(execCalls.length).toBe(0);
+    expect(execCalls().length).toBe(0);
   });
 
   test('rejects invalid branch characters', async () => {
@@ -133,7 +117,7 @@ describe('resolveBranchShaGitlab — subprocess boundary', () => {
 
   test('URL-encodes branch names with slashes (feature/1-demo → feature%2F1-demo)', async () => {
     const sha = 'b'.repeat(40);
-    on(
+    onExec(
       'glab api projects/org%2Frepo/repository/branches/feature%2F1-demo',
       JSON.stringify({ commit: { id: sha } }),
     );
@@ -152,7 +136,7 @@ describe('resolveBranchShaGitlab — subprocess boundary', () => {
 
   test('URL-encodes multi-segment branches (release/0.0.1)', async () => {
     const sha = 'd'.repeat(40);
-    on(
+    onExec(
       'glab api projects/team%2Fproject%2Fsub%2Frepo/repository/branches/release%2F0.0.1',
       JSON.stringify({ commit: { id: sha } }),
     );
@@ -170,7 +154,7 @@ describe('resolveBranchShaGitlab — subprocess boundary', () => {
 
   test('supports nested group slugs (org/sub/repo → org%2Fsub%2Frepo)', async () => {
     const sha = 'c'.repeat(40);
-    on(
+    onExec(
       'glab api projects/org%2Fsub%2Frepo/repository/branches/main',
       JSON.stringify({ commit: { id: sha } }),
     );

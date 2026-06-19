@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../test-support/mock-child-process.ts';
 import type {
   AdapterResult,
   ResolveBranchShaResponse,
@@ -12,36 +18,15 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
 function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { resolveBranchShaGithub } = await import(
   './resolve-branch-sha-github.ts'
 );
-
-function on(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
 
 function expectOk(
   r: AdapterResult<ResolveBranchShaResponse | null>,
@@ -52,18 +37,17 @@ function expectOk(
 }
 
 function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
+  return execCalls().find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('resolveBranchShaGithub — subprocess boundary', () => {
   test('argv: gh api repos/<slug>/git/refs/heads/<branch> --jq .object.sha', async () => {
     const sha = 'a'.repeat(40);
-    on('gh api repos/org/repo/git/refs/heads/main', sha);
+    onExec('gh api repos/org/repo/git/refs/heads/main', sha);
 
     const result = await resolveBranchShaGithub({ branch: 'main', repo: 'org/repo' });
     expectOk(result);
@@ -76,7 +60,7 @@ describe('resolveBranchShaGithub — subprocess boundary', () => {
   });
 
   test('soft-fails to null when gh errors (preserves pre-migration contract)', async () => {
-    on('gh api', () => {
+    onExec('gh api', () => {
       const err = new Error('gh: 404') as ThrowableError;
       err.stderr = 'gh: not found';
       err.status = 1;
@@ -89,7 +73,7 @@ describe('resolveBranchShaGithub — subprocess boundary', () => {
   });
 
   test('returns null when stdout is not a valid 40-char SHA', async () => {
-    on('gh api', 'not-a-sha');
+    onExec('gh api', 'not-a-sha');
 
     const result = await resolveBranchShaGithub({ branch: 'main', repo: 'org/repo' });
     expectOk(result);
@@ -101,7 +85,7 @@ describe('resolveBranchShaGithub — subprocess boundary', () => {
     expectOk(result);
     expect(result.data).toBeNull();
     // Must not have shelled out at all.
-    expect(execCalls.length).toBe(0);
+    expect(execCalls().length).toBe(0);
   });
 
   test('rejects invalid branch characters', async () => {
@@ -124,7 +108,7 @@ describe('resolveBranchShaGithub — subprocess boundary', () => {
 
   test('passes branch names with slashes (feature/1-demo) unharmed', async () => {
     const sha = 'b'.repeat(40);
-    on('gh api repos/org/repo/git/refs/heads/feature/1-demo', sha);
+    onExec('gh api repos/org/repo/git/refs/heads/feature/1-demo', sha);
 
     const result = await resolveBranchShaGithub({
       branch: 'feature/1-demo',

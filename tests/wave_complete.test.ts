@@ -1,21 +1,18 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  setExecMock,
+  resetExecMock,
+  execCalls,
+} from '../lib/test-support/mock-child-process.ts';
 
-let lastExecCall = '';
-let execMockFn: (cmd: string) => string = () => 'wave complete\n';
-
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  lastExecCall = cmd;
-  return execMockFn(cmd);
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { default: handler } = await import('../handlers/wave_complete.ts');
 
 function resetMocks() {
-  lastExecCall = '';
-  execMockFn = () => 'wave complete\n';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => 'wave complete\n');
 }
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
@@ -33,16 +30,16 @@ describe('wave_complete handler', () => {
 
   test('happy_path — invokes wave-status complete', async () => {
     const result = await handler.execute({});
-    expect(lastExecCall).toBe('wave-status complete');
+    expect(execCalls().at(-1)).toBe('wave-status complete');
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
     expect(parsed.data).toBe('wave complete');
   });
 
   test('cli_error — returns ok:false on non-zero exit', async () => {
-    execMockFn = () => {
+    setExecMock(() => {
       throw new Error('wave-status: no current wave is set');
-    };
+    });
     const result = await handler.execute({});
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);

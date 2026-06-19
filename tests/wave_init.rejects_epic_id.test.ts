@@ -5,11 +5,16 @@
 // — either path yields ok:false.
 
 import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  setExecMock,
+  resetExecMock,
+  mockExecSync,
+} from '../lib/test-support/mock-child-process.ts';
 
-const mockExecSync = mock((_cmd: string, _opts?: unknown) => 'wave plan initialized\n');
 const mockWriteFileSync = mock((_path: unknown, _data: unknown) => undefined);
 
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 mock.module('fs', () => ({
   writeFileSync: mockWriteFileSync,
   appendFileSync: () => undefined,
@@ -35,7 +40,8 @@ function clearEnv() {
 
 describe('wave_init — legacy { epic_id, slug } shape is rejected (Story 2.1 / #362)', () => {
   beforeEach(() => {
-    mockExecSync.mockClear();
+    resetExecMock();
+    setExecMock(() => 'wave plan initialized\n');
     mockWriteFileSync.mockClear();
   });
   afterEach(clearEnv);

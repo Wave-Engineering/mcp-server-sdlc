@@ -1,21 +1,17 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import { installChildProcessMock, setExecMock, resetExecMock, execCalls } from '../lib/test-support/mock-child-process.ts';
 
-let lastExecCall = '';
-let execMockFn: (cmd: string) => string = () => 'deferral recorded\n';
-
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  lastExecCall = cmd;
-  return execMockFn(cmd);
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { default: handler } = await import('../handlers/wave_defer.ts');
 
 function resetMocks() {
-  lastExecCall = '';
-  execMockFn = () => 'deferral recorded\n';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => 'deferral recorded\n');
+}
+
+function lastExec(): string {
+  return execCalls().at(-1) ?? '';
 }
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
@@ -36,9 +32,9 @@ describe('wave_defer handler', () => {
       description: 'flaky test',
       risk: 'low',
     });
-    expect(lastExecCall).toContain('wave-status defer');
-    expect(lastExecCall).toContain("'flaky test'");
-    expect(lastExecCall).toContain(' low');
+    expect(lastExec()).toContain('wave-status defer');
+    expect(lastExec()).toContain("'flaky test'");
+    expect(lastExec()).toContain(' low');
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
     expect(parsed.data).toBe('deferral recorded');
@@ -46,15 +42,15 @@ describe('wave_defer handler', () => {
 
   test('happy_path — accepts medium and high risk', async () => {
     await handler.execute({ description: 'a', risk: 'medium' });
-    expect(lastExecCall).toContain(' medium');
+    expect(lastExec()).toContain(' medium');
     await handler.execute({ description: 'b', risk: 'high' });
-    expect(lastExecCall).toContain(' high');
+    expect(lastExec()).toContain(' high');
   });
 
   test('cli_error — returns ok:false on non-zero exit', async () => {
-    execMockFn = () => {
+    setExecMock(() => {
       throw new Error('wave-status: invalid risk');
-    };
+    });
     const result = await handler.execute({ description: 'x', risk: 'low' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);

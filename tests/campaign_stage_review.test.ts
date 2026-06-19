@@ -1,24 +1,18 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  setExecMock,
+  resetExecMock,
+  execCallsDetailed,
+} from '../lib/test-support/mock-child-process.ts';
 
-interface ExecCall {
-  cmd: string;
-  opts: { cwd?: string; encoding?: string } | undefined;
-}
-
-let execCalls: ExecCall[] = [];
-let execMockFn: (cmd: string, opts?: { cwd?: string }) => string = () => '';
-const mockExecSync = mock((cmd: string, opts?: { cwd?: string; encoding?: string }) => {
-  execCalls.push({ cmd, opts });
-  return execMockFn(cmd, opts);
-});
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { default: handler } = await import('../handlers/campaign_stage_review.ts');
 
 function resetMocks() {
-  execCalls = [];
-  execMockFn = () => '';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => '');
 }
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
@@ -35,7 +29,7 @@ describe('campaign_stage_review handler', () => {
   });
 
   test('marks concept for review', async () => {
-    execMockFn = () => "Stage 'concept' is now in review.\n";
+    setExecMock(() => "Stage 'concept' is now in review.\n");
     const result = await handler.execute({ stage: 'concept', root: '/tmp/repo' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -43,7 +37,7 @@ describe('campaign_stage_review handler', () => {
   });
 
   test('marks prd for review', async () => {
-    execMockFn = () => "Stage 'prd' is now in review.\n";
+    setExecMock(() => "Stage 'prd' is now in review.\n");
     const result = await handler.execute({ stage: 'prd', root: '/tmp/repo' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -51,7 +45,7 @@ describe('campaign_stage_review handler', () => {
   });
 
   test('marks dod for review', async () => {
-    execMockFn = () => "Stage 'dod' is now in review.\n";
+    setExecMock(() => "Stage 'dod' is now in review.\n");
     const result = await handler.execute({ stage: 'dod', root: '/tmp/repo' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -77,17 +71,17 @@ describe('campaign_stage_review handler', () => {
   });
 
   test('passes stage to CLI with correct cwd', async () => {
-    execMockFn = () => "Stage 'concept' is now in review.\n";
+    setExecMock(() => "Stage 'concept' is now in review.\n");
     await handler.execute({ stage: 'concept', root: '/tmp/myrepo' });
-    const call = execCalls[0];
+    const call = execCallsDetailed()[0];
     expect(call.cmd).toBe(`campaign-status stage-review 'concept'`);
-    expect(call.opts?.cwd).toBe('/tmp/myrepo');
+    expect((call.opts as { cwd?: string }).cwd).toBe('/tmp/myrepo');
   });
 
   test('errors when CLI fails (stage not active)', async () => {
-    execMockFn = () => {
+    setExecMock(() => {
       throw new Error('Error: stage prd is not currently active');
-    };
+    });
     const result = await handler.execute({ stage: 'prd', root: '/tmp/repo' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);
@@ -97,10 +91,10 @@ describe('campaign_stage_review handler', () => {
   test('uses CLAUDE_PROJECT_DIR when root not provided', async () => {
     const oldEnv = process.env.CLAUDE_PROJECT_DIR;
     process.env.CLAUDE_PROJECT_DIR = '/tmp/from-env';
-    execMockFn = () => "Stage 'concept' is now in review.\n";
+    setExecMock(() => "Stage 'concept' is now in review.\n");
     try {
       await handler.execute({ stage: 'concept' });
-      expect(execCalls[0].opts?.cwd).toBe('/tmp/from-env');
+      expect((execCallsDetailed()[0].opts as { cwd?: string }).cwd).toBe('/tmp/from-env');
     } finally {
       if (oldEnv === undefined) {
         delete process.env.CLAUDE_PROJECT_DIR;

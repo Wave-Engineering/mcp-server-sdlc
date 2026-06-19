@@ -1,26 +1,20 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  setExecMock,
+  resetExecMock,
+  execCallsDetailed,
+} from '../lib/test-support/mock-child-process.ts';
 
-interface ExecCall {
-  cmd: string;
-  opts: { cwd?: string; encoding?: string } | undefined;
-}
-
-let execCalls: ExecCall[] = [];
-let execMockFn: (cmd: string, opts?: { cwd?: string }) => string = () => '';
-const mockExecSync = mock((cmd: string, opts?: { cwd?: string; encoding?: string }) => {
-  execCalls.push({ cmd, opts });
-  return execMockFn(cmd, opts);
-});
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { default: handler } = await import('../handlers/devspec_locate.ts');
 
 const ORIGINAL_ENV = process.env.CLAUDE_PROJECT_DIR;
 
 function resetMocks() {
-  execCalls = [];
-  execMockFn = () => '';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => '');
 }
 
 function restoreEnv() {
@@ -104,11 +98,11 @@ describe('devspec_locate handler', () => {
   });
 
   test('finds single devspec file in lowercase docs/', async () => {
-    execMockFn = buildExec({
+    setExecMock(buildExec({
       rootExists: true,
       docsExists: true,
       findOutputs: { docs: 'docs/alpha-devspec.md\n' },
-    });
+    }));
     const result = await handler.execute({ root: '/tmp/proj' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -117,12 +111,12 @@ describe('devspec_locate handler', () => {
   });
 
   test('finds and sorts multiple devspec files in lowercase docs/', async () => {
-    execMockFn = buildExec({
+    setExecMock(buildExec({
       rootExists: true,
       docsExists: true,
       // Deliberately unsorted to prove the handler sorts.
       findOutputs: { docs: 'docs/charlie-devspec.md\ndocs/alpha-devspec.md\ndocs/bravo-devspec.md\n' },
-    });
+    }));
     const result = await handler.execute({ root: '/tmp/proj' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -135,11 +129,11 @@ describe('devspec_locate handler', () => {
   });
 
   test('finds devspec file in capital Docs/', async () => {
-    execMockFn = buildExec({
+    setExecMock(buildExec({
       rootExists: true,
       DocsExists: true,
       findOutputs: { Docs: 'Docs/init-devspec.md\n' },
-    });
+    }));
     const result = await handler.execute({ root: '/tmp/proj' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -148,11 +142,11 @@ describe('devspec_locate handler', () => {
   });
 
   test('finds devspec file in docs/devspecs/ subdirectory', async () => {
-    execMockFn = buildExec({
+    setExecMock(buildExec({
       rootExists: true,
       docsDevspecsExists: true,
       findOutputs: { 'docs/devspecs': 'docs/devspecs/feature-devspec.md\n' },
-    });
+    }));
     const result = await handler.execute({ root: '/tmp/proj' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -161,11 +155,11 @@ describe('devspec_locate handler', () => {
   });
 
   test('finds devspec file in Docs/devspecs/ subdirectory', async () => {
-    execMockFn = buildExec({
+    setExecMock(buildExec({
       rootExists: true,
       DocsDevspecsExists: true,
       findOutputs: { 'Docs/devspecs': 'Docs/devspecs/init-devspec.md\n' },
-    });
+    }));
     const result = await handler.execute({ root: '/tmp/proj' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -174,7 +168,7 @@ describe('devspec_locate handler', () => {
   });
 
   test('returns union of files from multiple conventional locations', async () => {
-    execMockFn = buildExec({
+    setExecMock(buildExec({
       rootExists: true,
       docsExists: true,
       DocsExists: true,
@@ -186,7 +180,7 @@ describe('devspec_locate handler', () => {
         'docs/devspecs': 'docs/devspecs/feature-devspec.md\n',
         'Docs/devspecs': 'Docs/devspecs/init-devspec.md\n',
       },
-    });
+    }));
     const result = await handler.execute({ root: '/tmp/proj' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -200,11 +194,11 @@ describe('devspec_locate handler', () => {
   });
 
   test('returns empty list when none exist', async () => {
-    execMockFn = buildExec({
+    setExecMock(buildExec({
       rootExists: true,
       docsExists: true,
       findOutputs: { docs: '' },
-    });
+    }));
     const result = await handler.execute({ root: '/tmp/proj' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -213,28 +207,28 @@ describe('devspec_locate handler', () => {
   });
 
   test('handles missing docs/ directory — not an error', async () => {
-    execMockFn = buildExec({
+    setExecMock(buildExec({
       rootExists: true,
       // None of the conventional directories exist
       docsExists: false,
       DocsExists: false,
       docsDevspecsExists: false,
       DocsDevspecsExists: false,
-    });
+    }));
     const result = await handler.execute({ root: '/tmp/proj' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
     expect(parsed.files).toEqual([]);
     expect(parsed.count).toBe(0);
     // find should NOT have been called when no directories exist.
-    const findCalls = execCalls.filter(c => c.cmd.startsWith('find '));
+    const findCalls = execCallsDetailed().filter(c => c.cmd.startsWith('find '));
     expect(findCalls.length).toBe(0);
   });
 
   test('errors on nonexistent root', async () => {
-    execMockFn = buildExec({
+    setExecMock(buildExec({
       rootExists: false,
-    });
+    }));
     const result = await handler.execute({ root: '/tmp/nonexistent' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);
@@ -243,50 +237,50 @@ describe('devspec_locate handler', () => {
 
   test('uses CLAUDE_PROJECT_DIR when root param omitted', async () => {
     process.env.CLAUDE_PROJECT_DIR = '/tmp/env-root';
-    execMockFn = buildExec({
+    setExecMock(buildExec({
       rootExists: true,
       docsExists: true,
       findOutputs: { docs: 'docs/env-devspec.md\n' },
-    });
+    }));
     const result = await handler.execute({});
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
     expect(parsed.files).toEqual(['docs/env-devspec.md']);
     // find should have been invoked with cwd=/tmp/env-root
-    const findCall = execCalls.find(c => c.cmd.startsWith('find '));
-    expect(findCall?.opts?.cwd).toBe('/tmp/env-root');
+    const findCall = execCallsDetailed().find(c => c.cmd.startsWith('find '));
+    expect((findCall?.opts as { cwd?: string } | undefined)?.cwd).toBe('/tmp/env-root');
   });
 
   test('explicit root param takes precedence over CLAUDE_PROJECT_DIR', async () => {
     process.env.CLAUDE_PROJECT_DIR = '/tmp/env-root';
-    execMockFn = buildExec({
+    setExecMock(buildExec({
       rootExists: true,
       docsExists: true,
       findOutputs: { docs: 'docs/explicit-devspec.md\n' },
-    });
+    }));
     await handler.execute({ root: '/tmp/explicit' });
-    const findCall = execCalls.find(c => c.cmd.startsWith('find '));
-    expect(findCall?.opts?.cwd).toBe('/tmp/explicit');
+    const findCall = execCallsDetailed().find(c => c.cmd.startsWith('find '));
+    expect((findCall?.opts as { cwd?: string } | undefined)?.cwd).toBe('/tmp/explicit');
   });
 
   test('find is invoked with correct glob pattern', async () => {
-    execMockFn = buildExec({
+    setExecMock(buildExec({
       rootExists: true,
       docsExists: true,
       findOutputs: { docs: '' },
-    });
+    }));
     await handler.execute({ root: '/tmp/proj' });
-    const findCall = execCalls.find(c => c.cmd.startsWith('find '));
+    const findCall = execCallsDetailed().find(c => c.cmd.startsWith('find '));
     expect(findCall?.cmd).toContain('-maxdepth 1');
     expect(findCall?.cmd).toContain(`-name '*-devspec.md'`);
   });
 
   test('backward compatibility — legacy lowercase docs/ flat layout still works', async () => {
-    execMockFn = buildExec({
+    setExecMock(buildExec({
       rootExists: true,
       docsExists: true,
       findOutputs: { docs: 'docs/init-devspec.md\ndocs/feature-devspec.md\n' },
-    });
+    }));
     const result = await handler.execute({ root: '/tmp/proj' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);

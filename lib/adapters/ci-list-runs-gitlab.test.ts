@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../test-support/mock-child-process.ts';
 import type { AdapterResult, CiListRunsResponse } from './types.ts';
 
 // Subprocess-boundary tests for the GitLab ciListRuns adapter (R-15).
@@ -6,9 +12,11 @@ import type { AdapterResult, CiListRunsResponse } from './types.ts';
 // owns the argv-shape and normalization assertions.
 //
 // The adapter routes its subprocess through `gitlabApiCiList` in
-// `lib/gitlab-api.ts`. So we mock `child_process.execSync` directly AND stub
-// `parseRepoSlug` so `gitlabApiCiList`'s `git remote` peek doesn't need a
-// real repo.
+// `lib/gitlab-api.ts`. We mock `child_process.execSync` via the shared helper
+// and stub the `git remote get-url origin` peek so `parseRepoSlug` resolves to
+// org/repo without a real repo. (We do NOT mock the parse-repo-slug module —
+// mock.module is process-global and would leak into parse-repo-slug's own
+// tests, #455.)
 
 interface ThrowableError extends Error {
   stderr?: string;
@@ -16,37 +24,13 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
 function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
-mock.module('../shared/parse-repo-slug.js', () => ({
-  parseRepoSlug: () => 'org/repo',
-}));
+installChildProcessMock();
 
 const { ciListRunsGitlab } = await import('./ci-list-runs-gitlab.ts');
-
-function on(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
 
 function expectOk(
   r: AdapterResult<CiListRunsResponse>,
@@ -65,7 +49,9 @@ function expectErr(
 }
 
 function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
+  return (
+    execCalls().find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? ''
+  );
 }
 
 function glPipeline(overrides: Record<string, unknown> = {}) {
@@ -82,13 +68,14 @@ function glPipeline(overrides: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
+  // parseRepoSlug's `git remote` peek → org/repo, without mocking the module.
+  onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
 });
 
 describe('ciListRunsGitlab — subprocess boundary', () => {
   test('argv: calls glab api pipelines with ref query; normalizes with event=null', async () => {
-    on('glab api projects/org%2Frepo/pipelines', JSON.stringify([glPipeline()]));
+    onExec('glab api projects/org%2Frepo/pipelines', JSON.stringify([glPipeline()]));
 
     const result = await ciListRunsGitlab({ ref: 'feature/1-demo', limit: 20 });
     expectOk(result);
@@ -109,7 +96,7 @@ describe('ciListRunsGitlab — subprocess boundary', () => {
   });
 
   test('argv: explicit repo slug is URL-encoded into projects path', async () => {
-    on(
+    onExec(
       'glab api projects/other-org%2Fother-repo/pipelines',
       JSON.stringify([glPipeline()]),
     );
@@ -129,7 +116,7 @@ describe('ciListRunsGitlab — subprocess boundary', () => {
   test('expected_sha threads through as sha= query param and filters defensively', async () => {
     const target = 'a'.repeat(40);
     const other = 'b'.repeat(40);
-    on(
+    onExec(
       'glab api projects/org%2Frepo/pipelines',
       JSON.stringify([
         glPipeline({ id: 1, sha: other }),
@@ -152,7 +139,7 @@ describe('ciListRunsGitlab — subprocess boundary', () => {
   });
 
   test('workflow_name filters client-side against the source field', async () => {
-    on(
+    onExec(
       'glab api projects/org%2Frepo/pipelines',
       JSON.stringify([
         glPipeline({ id: 1, source: 'push' }),
@@ -172,7 +159,7 @@ describe('ciListRunsGitlab — subprocess boundary', () => {
   });
 
   test('empty pipelines list returns ok with empty data', async () => {
-    on('glab api projects/org%2Frepo/pipelines', JSON.stringify([]));
+    onExec('glab api projects/org%2Frepo/pipelines', JSON.stringify([]));
 
     const result = await ciListRunsGitlab({ ref: 'main', limit: 20 });
     expectOk(result);
@@ -180,7 +167,7 @@ describe('ciListRunsGitlab — subprocess boundary', () => {
   });
 
   test('returns AdapterResult.error on glab failure (not thrown)', async () => {
-    on('glab api', () => {
+    onExec('glab api', () => {
       const err = new Error('glab: not authenticated') as ThrowableError;
       err.stderr = 'glab: not authenticated';
       err.status = 1;

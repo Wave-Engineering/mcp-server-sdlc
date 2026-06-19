@@ -2,30 +2,21 @@
  * Tests for `handlers/plan_load_dod.ts` — Plan DoD extraction handler.
  */
 
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../lib/test-support/mock-child-process.ts';
 
 // Mock child_process registry — matched by substring so individual tests can
 // install exec fixtures for `git remote`, `gh issue view`, `glab api projects/...`.
 // The handler dispatches through getAdapter().fetchIssue(...), which under
 // the hood execs `gh issue view` (GitHub) / `glab api projects/...` (GitLab).
-let execRegistry: Record<string, string> = {};
-
-function mockExec(cmd: string): string {
-  for (const [key, value] of Object.entries(execRegistry)) {
-    if (cmd.includes(key)) return value;
-  }
-  throw new Error(`Unexpected exec call: ${cmd}`);
-}
-
-const mockExecSync = mock((cmd: string, _opts?: unknown) => mockExec(cmd));
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { default: handler } = await import('../handlers/plan_load_dod.ts');
-
-function resetMocks() {
-  execRegistry = {};
-  mockExecSync.mockClear();
-}
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
   return JSON.parse(result.content[0].text);
@@ -75,8 +66,8 @@ Content without required headings.
 `;
 
 describe('plan_load_dod handler', () => {
-  beforeEach(resetMocks);
-  afterEach(resetMocks);
+  beforeEach(resetExecMock);
+  afterEach(resetExecMock);
 
   test('handler exports valid HandlerDef shape', () => {
     expect(handler.name).toBe('plan_load_dod');
@@ -84,14 +75,14 @@ describe('plan_load_dod handler', () => {
   });
 
   test('parses canonical Plan body (golden path) — GitHub', async () => {
-    execRegistry['git remote get-url origin'] = 'git@github.com:Wave-Engineering/mcp-server-sdlc.git';
-    execRegistry['gh issue view 123'] = JSON.stringify({
+    onExec('git remote get-url origin', 'git@github.com:Wave-Engineering/mcp-server-sdlc.git');
+    onExec('gh issue view 123', JSON.stringify({
       number: 123,
       title: 'Plan: Payment System',
       state: 'OPEN',
       body: CANONICAL_PLAN_BODY,
       labels: [],
-    });
+    }));
 
     const result = await handler.execute({ plan_id: 123 });
     const parsed = parseResult(result);
@@ -127,15 +118,15 @@ describe('plan_load_dod handler', () => {
   });
 
   test('parses canonical Plan body (golden path) — GitLab', async () => {
-    execRegistry['git remote get-url origin'] = 'git@gitlab.com:wave-eng/mcp-server-sdlc.git';
-    execRegistry['glab api projects/wave-eng%2Fmcp-server-sdlc/issues/456'] = JSON.stringify({
+    onExec('git remote get-url origin', 'git@gitlab.com:wave-eng/mcp-server-sdlc.git');
+    onExec('glab api projects/wave-eng%2Fmcp-server-sdlc/issues/456', JSON.stringify({
       iid: 456,
       title: 'Plan: Payment System',
       state: 'opened',
       web_url: 'https://gitlab.com/wave-eng/mcp-server-sdlc/-/issues/456',
       description: CANONICAL_PLAN_BODY,
       labels: [],
-    });
+    }));
 
     const result = await handler.execute({ plan_id: 456 });
     const parsed = parseResult(result);
@@ -172,14 +163,14 @@ describe('plan_load_dod handler', () => {
 None
 `;
 
-    execRegistry['git remote get-url origin'] ='origin\tgit@github.com:test/repo.git (fetch)';
-    execRegistry['gh issue view 100'] = JSON.stringify({
+    onExec('git remote get-url origin', 'origin\tgit@github.com:test/repo.git (fetch)');
+    onExec('gh issue view 100', JSON.stringify({
       number: 100,
       title: 'Plan',
       state: 'OPEN',
       body: bodyWithChecks,
       labels: [],
-    });
+    }));
 
     const result = await handler.execute({ plan_id: 100 });
     const parsed = parseResult(result);
@@ -212,14 +203,14 @@ None
 None
 `;
 
-    execRegistry['git remote get-url origin'] ='origin\tgit@github.com:test/repo.git (fetch)';
-    execRegistry['gh issue view 100'] = JSON.stringify({
+    onExec('git remote get-url origin', 'origin\tgit@github.com:test/repo.git (fetch)');
+    onExec('gh issue view 100', JSON.stringify({
       number: 100,
       title: 'Plan',
       state: 'OPEN',
       body: bodyWithRefs,
       labels: [],
-    });
+    }));
 
     const result = await handler.execute({ plan_id: 100 });
     const parsed = parseResult(result);
@@ -251,14 +242,14 @@ Dev Spec: \`path/to/devspec.md\`
 Other: \`other.md\`
 `;
 
-    execRegistry['git remote get-url origin'] ='origin\tgit@github.com:test/repo.git (fetch)';
-    execRegistry['gh issue view 100'] = JSON.stringify({
+    onExec('git remote get-url origin', 'origin\tgit@github.com:test/repo.git (fetch)');
+    onExec('gh issue view 100', JSON.stringify({
       number: 100,
       title: 'Plan',
       state: 'OPEN',
       body: bodyWithDevSpec,
       labels: [],
-    });
+    }));
 
     const result = await handler.execute({ plan_id: 100 });
     const parsed = parseResult(result);
@@ -269,14 +260,14 @@ Other: \`other.md\`
   });
 
   test('body missing required headings → plan_body_invalid', async () => {
-    execRegistry['git remote get-url origin'] ='origin\tgit@github.com:test/repo.git (fetch)';
-    execRegistry['gh issue view 999'] = JSON.stringify({
+    onExec('git remote get-url origin', 'origin\tgit@github.com:test/repo.git (fetch)');
+    onExec('gh issue view 999', JSON.stringify({
       number: 999,
       title: 'Broken Plan',
       state: 'OPEN',
       body: INVALID_PLAN_BODY,
       labels: [],
-    });
+    }));
 
     const result = await handler.execute({ plan_id: 999 });
     const parsed = parseResult(result);
@@ -288,9 +279,9 @@ Other: \`other.md\`
   });
 
   test('nonexistent plan_id → plan_not_found (via adapter)', async () => {
-    execRegistry['git remote get-url origin'] ='origin\tgit@github.com:test/repo.git (fetch)';
+    onExec('git remote get-url origin', 'origin\tgit@github.com:test/repo.git (fetch)');
     // Simulate gh issue view returning error (nonzero exit caught by adapter)
-    execRegistry['gh issue view 404'] = ''; // Empty response will fail parse
+    onExec('gh issue view 404', ''); // Empty response will fail parse
 
     const result = await handler.execute({ plan_id: 404 });
     const parsed = parseResult(result);
@@ -301,38 +292,38 @@ Other: \`other.md\`
   });
 
   test('handler dispatches to GitHub on github cwd', async () => {
-    execRegistry['git remote get-url origin'] ='origin\tgit@github.com:test/repo.git (fetch)';
-    execRegistry['gh issue view 123'] = JSON.stringify({
+    onExec('git remote get-url origin', 'origin\tgit@github.com:test/repo.git (fetch)');
+    onExec('gh issue view 123', JSON.stringify({
       number: 123,
       title: 'Plan',
       state: 'OPEN',
       body: CANONICAL_PLAN_BODY,
       labels: [],
-    });
+    }));
 
     await handler.execute({ plan_id: 123 });
 
     // Verify gh was called (not glab)
-    const calls = mockExecSync.mock.calls.map(c => c[0] as string);
+    const calls = execCalls();
     expect(calls.some(c => c.includes('gh issue view'))).toBe(true);
     expect(calls.some(c => c.includes('glab api'))).toBe(false);
   });
 
   test('handler dispatches to GitLab on gitlab cwd, no -F flag', async () => {
-    execRegistry['git remote get-url origin'] ='origin\tgit@gitlab.com:wave-eng/mcp-server-sdlc.git (fetch)';
-    execRegistry['glab api projects/wave-eng%2Fmcp-server-sdlc/issues/456'] = JSON.stringify({
+    onExec('git remote get-url origin', 'origin\tgit@gitlab.com:wave-eng/mcp-server-sdlc.git (fetch)');
+    onExec('glab api projects/wave-eng%2Fmcp-server-sdlc/issues/456', JSON.stringify({
       iid: 456,
       title: 'Plan',
       state: 'opened',
       web_url: 'https://gitlab.com/wave-eng/mcp-server-sdlc/-/issues/456',
       description: CANONICAL_PLAN_BODY,
       labels: [],
-    });
+    }));
 
     await handler.execute({ plan_id: 456 });
 
     // Verify glab was called (not gh), and no -F flag
-    const calls = mockExecSync.mock.calls.map(c => c[0] as string);
+    const calls = execCalls();
     expect(calls.some(c => c.includes('glab api'))).toBe(true);
     expect(calls.some(c => c.includes('gh issue view'))).toBe(false);
     expect(calls.some(c => c.includes(' -F '))).toBe(false);

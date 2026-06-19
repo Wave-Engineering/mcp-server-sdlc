@@ -1,5 +1,11 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
 import type { AdapterResult } from './types.ts';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../test-support/mock-child-process.ts';
 
 // Subprocess-boundary tests for the GitHub createBranch adapter (R-15).
 
@@ -9,34 +15,13 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
 function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { createBranchGithub } = await import('./create-branch-github.ts');
-
-function on(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
 
 function expectOk(r: AdapterResult<void>): asserts r is { ok: true; data: void } {
   if (!('ok' in r) || !r.ok) {
@@ -45,19 +30,18 @@ function expectOk(r: AdapterResult<void>): asserts r is { ok: true; data: void }
 }
 
 function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
+  return execCalls().find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
 
 const VALID_SHA = 'a'.repeat(40);
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('createBranchGithub — subprocess boundary', () => {
   test('argv: gh api repos/<slug>/git/refs -X POST -f ref=refs/heads/<branch> -f sha=<sha>', async () => {
-    on('gh api repos/org/repo/git/refs', '');
+    onExec('gh api repos/org/repo/git/refs', '');
 
     const result = await createBranchGithub({
       branch: 'kahuna/42-wave-status-cli',
@@ -78,7 +62,7 @@ describe('createBranchGithub — subprocess boundary', () => {
   });
 
   test('void return on success', async () => {
-    on('gh api', '');
+    onExec('gh api', '');
     const result = await createBranchGithub({
       branch: 'feature/1-demo',
       sha: VALID_SHA,
@@ -89,7 +73,7 @@ describe('createBranchGithub — subprocess boundary', () => {
   });
 
   test('returns ok:false when gh exits non-zero', async () => {
-    on('gh api', () => {
+    onExec('gh api', () => {
       const err = new Error('gh: Reference already exists') as ThrowableError;
       err.stderr = 'Reference already exists';
       err.status = 1;
@@ -107,7 +91,7 @@ describe('createBranchGithub — subprocess boundary', () => {
   });
 
   test('does NOT pass --repo flag (gh api is path-resolved)', async () => {
-    on('gh api', '');
+    onExec('gh api', '');
     await createBranchGithub({
       branch: 'kahuna/1-foo',
       sha: VALID_SHA,
@@ -125,7 +109,7 @@ describe('createBranchGithub — subprocess boundary', () => {
     });
     expect('ok' in result && result.ok).toBe(false);
     expect((result as { code: string }).code).toBe('invalid_branch');
-    expect(execCalls.length).toBe(0);
+    expect(execCalls().length).toBe(0);
   });
 
   test('rejects invalid sha', async () => {
@@ -136,7 +120,7 @@ describe('createBranchGithub — subprocess boundary', () => {
     });
     expect('ok' in result && result.ok).toBe(false);
     expect((result as { code: string }).code).toBe('invalid_sha');
-    expect(execCalls.length).toBe(0);
+    expect(execCalls().length).toBe(0);
   });
 
   test('rejects invalid repo slug', async () => {
@@ -147,6 +131,6 @@ describe('createBranchGithub — subprocess boundary', () => {
     });
     expect('ok' in result && result.ok).toBe(false);
     expect((result as { code: string }).code).toBe('invalid_repo');
-    expect(execCalls.length).toBe(0);
+    expect(execCalls().length).toBe(0);
   });
 });

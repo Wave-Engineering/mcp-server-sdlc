@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  setExecMock,
+  resetExecMock,
+  execCalls,
+} from '../test-support/mock-child-process.ts';
 import type { AdapterResult, PrStateInfo } from './types.ts';
 
 // Subprocess-boundary tests for the GitLab fetchPrState adapter (Story 1.11,
@@ -21,27 +27,20 @@ function expectErr(
   }
 }
 
-let execCalls: string[] = [];
-let execMockFn: (cmd: string) => string = () => '';
-const mockExecSync = mock((cmd: string) => {
-  execCalls.push(cmd);
-  return execMockFn(cmd);
-});
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { fetchPrStateGitlab, fetchPrStateGitlabSync } = await import(
   './fetch-pr-state-gitlab.ts'
 );
 
 beforeEach(() => {
-  execCalls = [];
-  execMockFn = () => '';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => '');
 });
 
 describe('fetchPrStateGitlabSync — subprocess boundary', () => {
   test('parses merged state via glab api', () => {
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.includes('git remote get-url')) {
         return 'https://gitlab.com/org/repo.git\n';
       }
@@ -50,7 +49,7 @@ describe('fetchPrStateGitlabSync — subprocess boundary', () => {
         web_url: 'https://gitlab.com/org/repo/-/merge_requests/7',
         merge_commit_sha: 'cafebabe',
       });
-    };
+    });
     const info = fetchPrStateGitlabSync(7);
     expect(info.state).toBe('merged');
     expect(info.url).toBe('https://gitlab.com/org/repo/-/merge_requests/7');
@@ -58,7 +57,7 @@ describe('fetchPrStateGitlabSync — subprocess boundary', () => {
   });
 
   test('parses opened state', () => {
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.includes('git remote get-url')) {
         return 'https://gitlab.com/org/repo.git\n';
       }
@@ -66,29 +65,29 @@ describe('fetchPrStateGitlabSync — subprocess boundary', () => {
         state: 'opened',
         web_url: 'https://gitlab.com/org/repo/-/merge_requests/7',
       });
-    };
+    });
     const info = fetchPrStateGitlabSync(7);
     expect(info.state).toBe('open');
     expect(info.mergeCommitSha).toBeUndefined();
   });
 
   test('uses explicit owner/repo when provided', () => {
-    execMockFn = () =>
-      JSON.stringify({ state: 'opened', web_url: '' });
+    setExecMock(() =>
+      JSON.stringify({ state: 'opened', web_url: '' }));
     fetchPrStateGitlabSync(11, 'foo/bar');
-    const apiCall = execCalls.find((c) => c.includes('glab api')) ?? '';
+    const apiCall = execCalls().find((c) => c.includes('glab api')) ?? '';
     expect(apiCall).toContain('foo%2Fbar');
   });
 });
 
 describe('fetchPrStateGitlab — AdapterResult wrapper', () => {
   test('returns ok:true wrapping PrStateInfo on success', async () => {
-    execMockFn = () =>
+    setExecMock(() =>
       JSON.stringify({
         state: 'merged',
         web_url: 'https://gitlab.com/org/repo/-/merge_requests/1',
         merge_commit_sha: 'abc',
-      });
+      }));
     const result = await fetchPrStateGitlab({ number: 1, repo: 'org/repo' });
     expectOk(result);
     expect(result.data.state).toBe('merged');
@@ -96,9 +95,9 @@ describe('fetchPrStateGitlab — AdapterResult wrapper', () => {
   });
 
   test('returns ok:false with code on subprocess failure', async () => {
-    execMockFn = () => {
+    setExecMock(() => {
       throw new Error('glab: 404 not found');
-    };
+    });
     const result = await fetchPrStateGitlab({ number: 999, repo: 'org/repo' });
     expectErr(result);
     expect(result.code).toBe('glab_api_mr_failed');

@@ -1,24 +1,19 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  setExecMock,
+  resetExecMock,
+  execCalls,
+  execCallsDetailed,
+} from '../lib/test-support/mock-child-process.ts';
 
-interface ExecCall {
-  cmd: string;
-  opts: { cwd?: string; encoding?: string } | undefined;
-}
-
-let execCalls: ExecCall[] = [];
-let execMockFn: (cmd: string, opts?: { cwd?: string }) => string = () => '';
-const mockExecSync = mock((cmd: string, opts?: { cwd?: string; encoding?: string }) => {
-  execCalls.push({ cmd, opts });
-  return execMockFn(cmd, opts);
-});
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { default: handler } = await import('../handlers/campaign_show.ts');
 
 function resetMocks() {
-  execCalls = [];
-  execMockFn = () => '';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => '');
 }
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
@@ -86,7 +81,7 @@ describe('campaign_show handler', () => {
   });
 
   test('returns state for a fresh campaign', async () => {
-    execMockFn = () => FRESH_OUTPUT;
+    setExecMock(() => FRESH_OUTPUT);
     const result = await handler.execute({ root: '/tmp/repo' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -103,7 +98,7 @@ describe('campaign_show handler', () => {
   });
 
   test('returns active_stage when set', async () => {
-    execMockFn = () => ACTIVE_OUTPUT;
+    setExecMock(() => ACTIVE_OUTPUT);
     const result = await handler.execute({ root: '/tmp/repo' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -114,7 +109,7 @@ describe('campaign_show handler', () => {
   });
 
   test('returns deferrals when present', async () => {
-    execMockFn = () => WITH_DEFERRALS;
+    setExecMock(() => WITH_DEFERRALS);
     const result = await handler.execute({ root: '/tmp/repo' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -132,7 +127,7 @@ describe('campaign_show handler', () => {
   });
 
   test('parses deferrals whose items contain colons (splits on last ": ")', async () => {
-    execMockFn = () => WITH_COLON_ITEMS;
+    setExecMock(() => WITH_COLON_ITEMS);
     const result = await handler.execute({ root: '/tmp/repo' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -150,9 +145,9 @@ describe('campaign_show handler', () => {
   });
 
   test('errors when CLI fails (.sdlc missing)', async () => {
-    execMockFn = () => {
+    setExecMock(() => {
       throw new Error('Error: not a campaign-status project');
-    };
+    });
     const result = await handler.execute({ root: '/tmp/no-sdlc' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);
@@ -160,19 +155,19 @@ describe('campaign_show handler', () => {
   });
 
   test('passes correct cwd to CLI', async () => {
-    execMockFn = () => FRESH_OUTPUT;
+    setExecMock(() => FRESH_OUTPUT);
     await handler.execute({ root: '/tmp/some-repo' });
-    expect(execCalls[0].cmd).toBe('campaign-status show');
-    expect(execCalls[0].opts?.cwd).toBe('/tmp/some-repo');
+    expect(execCalls()[0]).toBe('campaign-status show');
+    expect((execCallsDetailed()[0].opts as { cwd?: string }).cwd).toBe('/tmp/some-repo');
   });
 
   test('uses CLAUDE_PROJECT_DIR when root not provided', async () => {
     const oldEnv = process.env.CLAUDE_PROJECT_DIR;
     process.env.CLAUDE_PROJECT_DIR = '/tmp/from-env';
-    execMockFn = () => FRESH_OUTPUT;
+    setExecMock(() => FRESH_OUTPUT);
     try {
       await handler.execute({});
-      expect(execCalls[0].opts?.cwd).toBe('/tmp/from-env');
+      expect((execCallsDetailed()[0].opts as { cwd?: string }).cwd).toBe('/tmp/from-env');
     } finally {
       if (oldEnv === undefined) {
         delete process.env.CLAUDE_PROJECT_DIR;
