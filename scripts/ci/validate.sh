@@ -28,7 +28,12 @@ else
 fi
 
 echo "--- unit tests ---"
-bun test
+# Exclude tests/integration/ from the mixed unit run: those tests exec REAL gh/glab
+# and MUST NOT share a process with the adapter tests' `mock.module('child_process')`
+# (the mock leaks across bun's shared module space; cli-flag-shapes.test.ts documents
+# this). They run isolated in their own process below. (Broader 129-file mock-isolation
+# is tracked separately.)
+bun test --path-ignore-patterns='**/integration/**'
 
 echo "--- integration tests ---"
 # Real-CLI integration tests — verify flag shapes our handlers depend on.
