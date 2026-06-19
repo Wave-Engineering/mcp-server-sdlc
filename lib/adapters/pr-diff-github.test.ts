@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../test-support/mock-child-process.ts';
 import type { AdapterResult, PrDiffResponse } from './types.ts';
 
 // Subprocess-boundary tests for the GitHub pr_diff adapter (R-15).
@@ -13,34 +19,13 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
 function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { prDiffGithub } = await import('./pr-diff-github.ts');
-
-function on(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
 
 // Narrow AdapterResult into the success branch — throws if it's an error or
 // platform_unsupported variant. Lets test bodies access `.data` directly
@@ -62,12 +47,11 @@ function expectErr(
 }
 
 function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
+  return execCalls().find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 const TWO_FILE_DIFF = `diff --git a/foo.txt b/foo.txt
@@ -100,8 +84,8 @@ function buildHugeDiff(lineCount: number): string {
 
 describe('prDiffGithub — subprocess boundary', () => {
   test('gh CLI invocation matches expected argv shape (happy path)', async () => {
-    on('gh pr diff', TWO_FILE_DIFF);
-    on(
+    onExec('gh pr diff', TWO_FILE_DIFF);
+    onExec(
       'gh pr view',
       JSON.stringify({ url: 'https://github.com/org/repo/pull/42' }),
     );
@@ -123,8 +107,8 @@ describe('prDiffGithub — subprocess boundary', () => {
   });
 
   test('parses unified diff response into PrDiffResponse', async () => {
-    on('gh pr diff', TWO_FILE_DIFF);
-    on(
+    onExec('gh pr diff', TWO_FILE_DIFF);
+    onExec(
       'gh pr view',
       JSON.stringify({ url: 'https://github.com/org/repo/pull/42' }),
     );
@@ -142,7 +126,7 @@ describe('prDiffGithub — subprocess boundary', () => {
   });
 
   test('returns AdapterResult{ok:false, code} on gh pr diff failure (not thrown)', async () => {
-    on('gh pr diff', () => {
+    onExec('gh pr diff', () => {
       const err = new Error('gh: auth required') as ThrowableError;
       err.stderr = 'gh: auth required';
       err.status = 4;
@@ -156,8 +140,8 @@ describe('prDiffGithub — subprocess boundary', () => {
   });
 
   test('returns AdapterResult{ok:false, code} on gh pr view failure (not thrown)', async () => {
-    on('gh pr diff', TWO_FILE_DIFF);
-    on('gh pr view', () => {
+    onExec('gh pr diff', TWO_FILE_DIFF);
+    onExec('gh pr view', () => {
       const err = new Error('gh: not found') as ThrowableError;
       err.stderr = 'gh: not found';
       err.status = 1;
@@ -172,8 +156,8 @@ describe('prDiffGithub — subprocess boundary', () => {
 
   test('handles 10000-line truncation safety valve', async () => {
     const huge = buildHugeDiff(20000);
-    on('gh pr diff', huge);
-    on(
+    onExec('gh pr diff', huge);
+    onExec(
       'gh pr view',
       JSON.stringify({ url: 'https://github.com/org/repo/pull/500' }),
     );
@@ -194,8 +178,8 @@ describe('prDiffGithub — subprocess boundary', () => {
 
   test('exactly 10000 lines is NOT truncated (at-threshold regression)', async () => {
     const atLimit = buildHugeDiff(10000);
-    on('gh pr diff', atLimit);
-    on(
+    onExec('gh pr diff', atLimit);
+    onExec(
       'gh pr view',
       JSON.stringify({ url: 'https://github.com/org/repo/pull/123' }),
     );
@@ -207,8 +191,8 @@ describe('prDiffGithub — subprocess boundary', () => {
   });
 
   test('empty diff returns zero counts', async () => {
-    on('gh pr diff', '');
-    on(
+    onExec('gh pr diff', '');
+    onExec(
       'gh pr view',
       JSON.stringify({ url: 'https://github.com/org/repo/pull/99' }),
     );
@@ -222,8 +206,8 @@ describe('prDiffGithub — subprocess boundary', () => {
   });
 
   test('--repo flag forwarded when args.repo provided', async () => {
-    on('gh pr diff', TWO_FILE_DIFF);
-    on(
+    onExec('gh pr diff', TWO_FILE_DIFF);
+    onExec(
       'gh pr view',
       JSON.stringify({ url: 'https://github.com/Org/Other/pull/12' }),
     );

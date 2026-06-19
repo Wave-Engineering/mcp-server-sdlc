@@ -1,16 +1,15 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  setExecMock,
+  resetExecMock,
+} from '../lib/test-support/mock-child-process.ts';
 
 // Mock only execSync (so this test can intercept gh calls without
 // disturbing fs). Other tests that mock child_process use the same
 // pattern, so the mock contracts are compatible.
 
-let execMockFn: (cmd: string) => string = () => '';
-
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  return execMockFn(cmd);
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 // Helper to build a GraphQL response matching what `gh api graphql` returns
 // for the wave_previous_merged closure query. `merged` controls whether the
@@ -58,8 +57,8 @@ async function setupFixture(plan: object, state: object) {
 }
 
 function resetMocks() {
-  execMockFn = () => '';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => '');
   fixtureDir = '';
 }
 
@@ -99,10 +98,10 @@ describe('wave_previous_merged handler', () => {
       },
     };
     await setupFixture(plan, state);
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
       return ghClosureResponse({ state: 'CLOSED', mergedPRs: [true], closerIsPR: true });
-    };
+    });
     const result = await handler.execute({});
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -124,12 +123,12 @@ describe('wave_previous_merged handler', () => {
       waves: { w1: { status: 'completed' }, w2: { status: 'in_progress' } },
     };
     await setupFixture(plan, state);
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/bakeb7j0/beget.git\n';
       // Classic body-keyword shape: timelineItems.closer is PullRequest AND
       // closedByPullRequestsReferences lists the merged PR.
       return ghClosureResponse({ state: 'CLOSED', mergedPRs: [true], closerIsPR: true });
-    };
+    });
     const result = await handler.execute({});
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -148,10 +147,10 @@ describe('wave_previous_merged handler', () => {
       waves: { w1: { status: 'completed' }, w2: { status: 'in_progress' } },
     };
     await setupFixture(plan, state);
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
       return ghClosureResponse({ state: 'CLOSED', mergedPRs: [], closerIsPR: false });
-    };
+    });
     const result = await handler.execute({});
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -178,14 +177,14 @@ describe('wave_previous_merged handler', () => {
       },
     };
     await setupFixture(plan, state);
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
       if (cmd.includes('num=1'))
         return ghClosureResponse({ state: 'CLOSED', mergedPRs: [true] });
       if (cmd.includes('num=2')) return ghClosureResponse({ state: 'OPEN' });
       if (cmd.includes('num=3')) return ghClosureResponse({ state: 'OPEN' });
       return ghClosureResponse({ state: 'CLOSED', mergedPRs: [true] });
-    };
+    });
     const result = await handler.execute({});
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -206,10 +205,10 @@ describe('wave_previous_merged handler', () => {
       waves: { w1: { status: 'completed' }, w2: { status: 'in_progress' } },
     };
     await setupFixture(plan, state);
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
       return ghClosureResponse({ state: 'CLOSED', mergedPRs: [true], closerIsPR: false });
-    };
+    });
     const result = await handler.execute({});
     const parsed = parseResult(result);
     expect(parsed.all_merged).toBe(true);
@@ -227,10 +226,10 @@ describe('wave_previous_merged handler', () => {
       waves: { w1: { status: 'completed' }, w2: { status: 'in_progress' } },
     };
     await setupFixture(plan, state);
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
       throw new Error('gh: not authenticated');
-    };
+    });
     const result = await handler.execute({});
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -293,10 +292,10 @@ describe('wave_previous_merged handler', () => {
       ],
     };
     await setupFixture(plan, state);
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
       return ghClosureResponse({ state: 'OPEN' });
-    };
+    });
     const result = await handler.execute({});
     const parsed = parseResult(result);
     expect(parsed.all_merged).toBe(false);
@@ -335,14 +334,14 @@ describe('wave_previous_merged handler', () => {
       ],
     };
     await setupFixture(plan, state);
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
       if (cmd.includes('num=420')) {
         throw new Error('Stub rejection: gh should NOT be called for accepted-deferred issue #420');
       }
       // Issue 100 closes cleanly via merged PR.
       return ghClosureResponse({ state: 'CLOSED', mergedPRs: [true] });
-    };
+    });
     const result = await handler.execute({});
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -375,10 +374,10 @@ describe('wave_previous_merged handler', () => {
       ],
     };
     await setupFixture(plan, state);
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
       return ghClosureResponse({ state: 'OPEN' }); // still open
-    };
+    });
     const result = await handler.execute({});
     const parsed = parseResult(result);
     expect(parsed.all_merged).toBe(false);
@@ -411,10 +410,10 @@ describe('wave_previous_merged handler', () => {
       ],
     };
     await setupFixture(plan, state);
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
       return ghClosureResponse({ state: 'OPEN' });
-    };
+    });
     const result = await handler.execute({});
     const parsed = parseResult(result);
     expect(parsed.all_merged).toBe(false);
@@ -447,13 +446,13 @@ describe('wave_previous_merged handler', () => {
       ],
     };
     await setupFixture(plan, state);
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
       if (cmd.includes('num=420') || cmd.includes('num=421')) {
         throw new Error('Stub rejection: deferred issues should not be queried');
       }
       return ghClosureResponse({ state: 'CLOSED', mergedPRs: [true] });
-    };
+    });
     const result = await handler.execute({});
     const parsed = parseResult(result);
     expect(parsed.all_merged).toBe(true);
@@ -485,10 +484,10 @@ describe('wave_previous_merged handler', () => {
       ],
     };
     await setupFixture(plan, state);
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
       return ghClosureResponse({ state: 'OPEN' });
-    };
+    });
     const result = await handler.execute({});
     const parsed = parseResult(result);
     expect(parsed.all_merged).toBe(false);
@@ -515,7 +514,7 @@ describe('wave_previous_merged handler', () => {
       ],
     };
     await setupFixture(plan, state);
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
       if (cmd.includes('num=420')) {
         throw new Error('Stub rejection: deferred #420 should not be queried');
@@ -523,7 +522,7 @@ describe('wave_previous_merged handler', () => {
       if (cmd.includes('num=1')) return ghClosureResponse({ state: 'CLOSED', mergedPRs: [true] });
       if (cmd.includes('num=2')) return ghClosureResponse({ state: 'OPEN' });
       return ghClosureResponse({ state: 'OPEN' });
-    };
+    });
     const result = await handler.execute({});
     const parsed = parseResult(result);
     expect(parsed.all_merged).toBe(false);

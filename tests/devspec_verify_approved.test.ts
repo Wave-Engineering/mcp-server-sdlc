@@ -1,17 +1,20 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  setExecMock,
+  resetExecMock,
+} from '../lib/test-support/mock-child-process.ts';
 
 // Mock child_process BEFORE importing the handler. The handler uses
 // execSync('cat ...') to read the Dev Spec file, keeping with the
 // codebase's child_process.execSync convention.
-let execMockFn: (cmd: string) => string = () => '';
-const mockExecSync = mock((cmd: string, _opts?: unknown) => execMockFn(cmd));
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { default: handler } = await import('../handlers/devspec_verify_approved.ts');
 
 function resetMocks() {
-  execMockFn = () => '';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => '');
 }
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
@@ -127,7 +130,7 @@ describe('devspec_verify_approved handler', () => {
   });
 
   test('returns approved:true for a properly approved file', async () => {
-    execMockFn = catReturning(APPROVED_SPEC);
+    setExecMock(catReturning(APPROVED_SPEC));
     const result = await handler.execute({ path: 'docs/my-devspec.md' });
     const parsed = parseResult(result);
 
@@ -140,7 +143,7 @@ describe('devspec_verify_approved handler', () => {
   });
 
   test('returns approved:true with only required field (other metadata optional)', async () => {
-    execMockFn = catReturning(APPROVED_SPEC_MINIMAL);
+    setExecMock(catReturning(APPROVED_SPEC_MINIMAL));
     const result = await handler.execute({ path: 'docs/minimal-devspec.md' });
     const parsed = parseResult(result);
 
@@ -152,7 +155,7 @@ describe('devspec_verify_approved handler', () => {
   });
 
   test('returns approved:false for an unapproved file (no block)', async () => {
-    execMockFn = catReturning(UNAPPROVED_SPEC_NO_BLOCK);
+    setExecMock(catReturning(UNAPPROVED_SPEC_NO_BLOCK));
     const result = await handler.execute({ path: 'docs/draft-devspec.md' });
     const parsed = parseResult(result);
 
@@ -165,7 +168,7 @@ describe('devspec_verify_approved handler', () => {
   });
 
   test('returns approved:false when block has approved:false (metadata still populated)', async () => {
-    execMockFn = catReturning(UNAPPROVED_SPEC_FALSE);
+    setExecMock(catReturning(UNAPPROVED_SPEC_FALSE));
     const result = await handler.execute({ path: 'docs/rejected-devspec.md' });
     const parsed = parseResult(result);
 
@@ -177,7 +180,7 @@ describe('devspec_verify_approved handler', () => {
   });
 
   test('handles malformed block — unterminated comment', async () => {
-    execMockFn = catReturning(MALFORMED_UNTERMINATED);
+    setExecMock(catReturning(MALFORMED_UNTERMINATED));
     const result = await handler.execute({ path: 'docs/bad-devspec.md' });
     const parsed = parseResult(result);
 
@@ -187,7 +190,7 @@ describe('devspec_verify_approved handler', () => {
   });
 
   test('handles malformed block — line without colon', async () => {
-    execMockFn = catReturning(MALFORMED_BAD_LINE);
+    setExecMock(catReturning(MALFORMED_BAD_LINE));
     const result = await handler.execute({ path: 'docs/bad-devspec.md' });
     const parsed = parseResult(result);
 
@@ -197,7 +200,7 @@ describe('devspec_verify_approved handler', () => {
   });
 
   test('handles malformed block — missing approved field', async () => {
-    execMockFn = catReturning(MALFORMED_MISSING_APPROVED);
+    setExecMock(catReturning(MALFORMED_MISSING_APPROVED));
     const result = await handler.execute({ path: 'docs/bad-devspec.md' });
     const parsed = parseResult(result);
 
@@ -206,7 +209,7 @@ describe('devspec_verify_approved handler', () => {
   });
 
   test('handles malformed block — approved is not a boolean', async () => {
-    execMockFn = catReturning(MALFORMED_APPROVED_NON_BOOL);
+    setExecMock(catReturning(MALFORMED_APPROVED_NON_BOOL));
     const result = await handler.execute({ path: 'docs/bad-devspec.md' });
     const parsed = parseResult(result);
 
@@ -216,7 +219,7 @@ describe('devspec_verify_approved handler', () => {
   });
 
   test('handles malformed block — empty block body', async () => {
-    execMockFn = catReturning(MALFORMED_EMPTY_BLOCK);
+    setExecMock(catReturning(MALFORMED_EMPTY_BLOCK));
     const result = await handler.execute({ path: 'docs/bad-devspec.md' });
     const parsed = parseResult(result);
 
@@ -225,7 +228,7 @@ describe('devspec_verify_approved handler', () => {
   });
 
   test('handles missing file with structured error', async () => {
-    execMockFn = catThrowing('cat: nonexistent: No such file or directory');
+    setExecMock(catThrowing('cat: nonexistent: No such file or directory'));
     const result = await handler.execute({ path: '/tmp/nonexistent-devspec.md' });
     const parsed = parseResult(result);
 
@@ -247,10 +250,10 @@ describe('devspec_verify_approved handler', () => {
   });
 
   test('is case-insensitive for approved: true/TRUE', async () => {
-    execMockFn = catReturning(`<!-- DEV-SPEC-APPROVAL
+    setExecMock(catReturning(`<!-- DEV-SPEC-APPROVAL
 approved: TRUE
 -->
-`);
+`));
     const result = await handler.execute({ path: 'docs/caps-devspec.md' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);

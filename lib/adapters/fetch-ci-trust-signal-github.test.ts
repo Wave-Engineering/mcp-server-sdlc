@@ -1,5 +1,11 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
 import type { AdapterResult, CiTrustSignal } from './types.ts';
+import {
+  installChildProcessMock,
+  setExecMock,
+  resetExecMock,
+  execCalls,
+} from '../test-support/mock-child-process.ts';
 
 // Subprocess-boundary tests for the GitHub fetchCiTrustSignal adapter
 // (Story 2.24, #318 — FINAL Phase 2 migration hybrid sub-call). Follows the
@@ -21,27 +27,20 @@ function expectErr(
   }
 }
 
-let execCalls: string[] = [];
-let execMockFn: (cmd: string) => string = () => '';
-const mockExecSync = mock((cmd: string) => {
-  execCalls.push(cmd);
-  return execMockFn(cmd);
-});
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { fetchCiTrustSignalGithub, fetchCiTrustSignalGithubSync } = await import(
   './fetch-ci-trust-signal-github.ts'
 );
 
 beforeEach(() => {
-  execCalls = [];
-  execMockFn = () => '';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => '');
 });
 
 describe('fetchCiTrustSignalGithubSync — subprocess boundary', () => {
   test('merge_queue ruleset → pre_merge_authoritative', () => {
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.includes('/rulesets') && !cmd.match(/rulesets\/\d+/)) {
         return JSON.stringify([{ id: 7, enforcement: 'active' }]);
       }
@@ -49,14 +48,14 @@ describe('fetchCiTrustSignalGithubSync — subprocess boundary', () => {
         return JSON.stringify({ rules: [{ type: 'merge_queue' }] });
       }
       return '{}';
-    };
+    });
     const signal = fetchCiTrustSignalGithubSync('org/repo');
     expect(signal.level).toBe('pre_merge_authoritative');
     expect(signal.reason).toContain('merge queue');
   });
 
   test('falls through to branch protection when no merge_queue rule', () => {
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.includes('/rulesets') && !cmd.match(/rulesets\/\d+/)) {
         return JSON.stringify([{ id: 1, enforcement: 'active' }]);
       }
@@ -67,14 +66,14 @@ describe('fetchCiTrustSignalGithubSync — subprocess boundary', () => {
         return JSON.stringify({ required_status_checks: { strict: true } });
       }
       return '{}';
-    };
+    });
     const signal = fetchCiTrustSignalGithubSync('org/repo');
     expect(signal.level).toBe('pre_merge_authoritative');
     expect(signal.reason).toContain('strict');
   });
 
   test('branch protection without strict → post_merge_required', () => {
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.includes('/rulesets') && !cmd.match(/rulesets\/\d+/)) {
         return JSON.stringify([]);
       }
@@ -82,13 +81,13 @@ describe('fetchCiTrustSignalGithubSync — subprocess boundary', () => {
         return JSON.stringify({ required_status_checks: { strict: false } });
       }
       return '{}';
-    };
+    });
     const signal = fetchCiTrustSignalGithubSync('org/repo');
     expect(signal.level).toBe('post_merge_required');
   });
 
   test('missing required_status_checks → post_merge_required', () => {
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.includes('/rulesets') && !cmd.match(/rulesets\/\d+/)) {
         return JSON.stringify([]);
       }
@@ -96,13 +95,13 @@ describe('fetchCiTrustSignalGithubSync — subprocess boundary', () => {
         return JSON.stringify({});
       }
       return '{}';
-    };
+    });
     const signal = fetchCiTrustSignalGithubSync('org/repo');
     expect(signal.level).toBe('post_merge_required');
   });
 
   test('rulesets fetch fails → falls through to branch protection', () => {
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.includes('/rulesets') && !cmd.match(/rulesets\/\d+/)) {
         throw new Error('gh api: 403');
       }
@@ -110,13 +109,13 @@ describe('fetchCiTrustSignalGithubSync — subprocess boundary', () => {
         return JSON.stringify({ required_status_checks: { strict: true } });
       }
       return '{}';
-    };
+    });
     const signal = fetchCiTrustSignalGithubSync('org/repo');
     expect(signal.level).toBe('pre_merge_authoritative');
   });
 
   test('individual ruleset detail fetch failure does not abort scan', () => {
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.includes('/rulesets') && !cmd.match(/rulesets\/\d+/)) {
         return JSON.stringify([
           { id: 1, enforcement: 'active' },
@@ -128,7 +127,7 @@ describe('fetchCiTrustSignalGithubSync — subprocess boundary', () => {
         return JSON.stringify({ rules: [{ type: 'merge_queue' }] });
       }
       return '{}';
-    };
+    });
     const signal = fetchCiTrustSignalGithubSync('org/repo');
     expect(signal.level).toBe('pre_merge_authoritative');
   });
@@ -137,20 +136,20 @@ describe('fetchCiTrustSignalGithubSync — subprocess boundary', () => {
     expect(() => fetchCiTrustSignalGithubSync(undefined)).toThrow(
       /repo slug is required/,
     );
-    expect(execCalls.length).toBe(0);
+    expect(execCalls().length).toBe(0);
   });
 
   test('rejects malicious repo slug at adapter boundary (no exec)', () => {
     expect(() =>
       fetchCiTrustSignalGithubSync('org/repo; rm -rf /'),
     ).toThrow(/invalid repo slug/);
-    expect(execCalls.length).toBe(0);
+    expect(execCalls().length).toBe(0);
   });
 });
 
 describe('fetchCiTrustSignalGithub — AdapterResult wrapper', () => {
   test('returns ok:true wrapping CiTrustSignal on success', async () => {
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.includes('/rulesets') && !cmd.match(/rulesets\/\d+/)) {
         return JSON.stringify([]);
       }
@@ -158,19 +157,19 @@ describe('fetchCiTrustSignalGithub — AdapterResult wrapper', () => {
         return JSON.stringify({ required_status_checks: { strict: true } });
       }
       return '{}';
-    };
+    });
     const result = await fetchCiTrustSignalGithub({ repo: 'org/repo' });
     expectOk(result);
     expect(result.data.level).toBe('pre_merge_authoritative');
   });
 
   test('returns ok:false with code on branch-protection subprocess failure', async () => {
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.includes('/rulesets') && !cmd.match(/rulesets\/\d+/)) {
         return JSON.stringify([]);
       }
       throw new Error('gh api: not authenticated');
-    };
+    });
     const result = await fetchCiTrustSignalGithub({ repo: 'org/repo' });
     expectErr(result);
     expect(result.code).toBe('gh_ci_trust_failed');
@@ -181,7 +180,7 @@ describe('fetchCiTrustSignalGithub — AdapterResult wrapper', () => {
     const result = await fetchCiTrustSignalGithub({ repo: 'bad; rm' });
     expectErr(result);
     expect(result.error).toMatch(/invalid repo slug/);
-    expect(execCalls.length).toBe(0);
+    expect(execCalls().length).toBe(0);
   });
 
   test('returns ok:false when repo slug omitted', async () => {

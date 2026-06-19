@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  setExecMock,
+  resetExecMock,
+  execCalls,
+} from '../test-support/mock-child-process.ts';
 import type { AdapterIssue, AdapterResult } from './types.ts';
 
 // Subprocess-boundary tests for the GitHub fetchIssue adapter (Story 2.1,
@@ -21,27 +27,20 @@ function expectErr(
   }
 }
 
-let execCalls: string[] = [];
-let execMockFn: (cmd: string) => string = () => '';
-const mockExecSync = mock((cmd: string) => {
-  execCalls.push(cmd);
-  return execMockFn(cmd);
-});
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { fetchIssueGithub, fetchIssueGithubSync } = await import(
   './fetch-issue-github.ts'
 );
 
 beforeEach(() => {
-  execCalls = [];
-  execMockFn = () => '';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => '');
 });
 
 describe('fetchIssueGithub — argv shape: gh issue view --json ... <number>', () => {
   test('invokes gh issue view with the required --json fields and number', () => {
-    execMockFn = () =>
+    setExecMock(() =>
       JSON.stringify({
         number: 42,
         title: 't',
@@ -49,17 +48,17 @@ describe('fetchIssueGithub — argv shape: gh issue view --json ... <number>', (
         url: 'https://github.com/org/repo/issues/42',
         body: 'b',
         labels: [],
-      });
+      }));
     fetchIssueGithubSync(42);
-    expect(execCalls.length).toBe(1);
-    expect(execCalls[0]).toContain('gh issue view 42');
-    expect(execCalls[0]).toContain(
+    expect(execCalls().length).toBe(1);
+    expect(execCalls()[0]).toContain('gh issue view 42');
+    expect(execCalls()[0]).toContain(
       '--json number,title,state,url,body,labels',
     );
   });
 
   test('passes --repo when supplied', () => {
-    execMockFn = () =>
+    setExecMock(() =>
       JSON.stringify({
         number: 1,
         title: '',
@@ -67,13 +66,13 @@ describe('fetchIssueGithub — argv shape: gh issue view --json ... <number>', (
         url: '',
         body: '',
         labels: [],
-      });
+      }));
     fetchIssueGithubSync(1, 'org/other-repo');
-    expect(execCalls[0]).toContain('--repo org/other-repo');
+    expect(execCalls()[0]).toContain('--repo org/other-repo');
   });
 
   test('omits --repo when not supplied (uses cwd)', () => {
-    execMockFn = () =>
+    setExecMock(() =>
       JSON.stringify({
         number: 1,
         title: '',
@@ -81,22 +80,22 @@ describe('fetchIssueGithub — argv shape: gh issue view --json ... <number>', (
         url: '',
         body: '',
         labels: [],
-      });
+      }));
     fetchIssueGithubSync(1);
-    expect(execCalls[0]).not.toContain('--repo');
+    expect(execCalls()[0]).not.toContain('--repo');
   });
 
   test('rejects malicious repo slug at adapter boundary (no exec)', () => {
     expect(() => fetchIssueGithubSync(1, 'org/repo; rm -rf /')).toThrow(
       /invalid repo slug/,
     );
-    expect(execCalls.length).toBe(0);
+    expect(execCalls().length).toBe(0);
   });
 });
 
 describe('fetchIssueGithub — normalizes state + labels array', () => {
   test('parses OPEN state and extracts label names', () => {
-    execMockFn = () =>
+    setExecMock(() =>
       JSON.stringify({
         number: 7,
         title: 'demo',
@@ -107,7 +106,7 @@ describe('fetchIssueGithub — normalizes state + labels array', () => {
           { name: 'priority::high' },
           { name: 'size::S' },
         ],
-      });
+      }));
     const issue = fetchIssueGithubSync(7);
     expect(issue.number).toBe(7);
     expect(issue.title).toBe('demo');
@@ -118,7 +117,7 @@ describe('fetchIssueGithub — normalizes state + labels array', () => {
   });
 
   test('parses CLOSED state', () => {
-    execMockFn = () =>
+    setExecMock(() =>
       JSON.stringify({
         number: 7,
         title: 't',
@@ -126,12 +125,12 @@ describe('fetchIssueGithub — normalizes state + labels array', () => {
         url: '',
         body: '',
         labels: [],
-      });
+      }));
     expect(fetchIssueGithubSync(7).state).toBe('CLOSED');
   });
 
   test('unknown state defaults to OPEN', () => {
-    execMockFn = () =>
+    setExecMock(() =>
       JSON.stringify({
         number: 7,
         title: 't',
@@ -139,24 +138,24 @@ describe('fetchIssueGithub — normalizes state + labels array', () => {
         url: '',
         body: '',
         labels: [],
-      });
+      }));
     expect(fetchIssueGithubSync(7).state).toBe('OPEN');
   });
 
   test('missing labels yields empty array', () => {
-    execMockFn = () =>
+    setExecMock(() =>
       JSON.stringify({
         number: 7,
         title: 't',
         state: 'OPEN',
         url: '',
         body: '',
-      });
+      }));
     expect(fetchIssueGithubSync(7).labels).toEqual([]);
   });
 
   test('filters out malformed label entries (non-string name)', () => {
-    execMockFn = () =>
+    setExecMock(() =>
       JSON.stringify({
         number: 7,
         title: 't',
@@ -164,14 +163,14 @@ describe('fetchIssueGithub — normalizes state + labels array', () => {
         url: '',
         body: '',
         labels: [{ name: 'real' }, { notName: 'x' }, null, { name: '' }],
-      });
+      }));
     expect(fetchIssueGithubSync(7).labels).toEqual(['real']);
   });
 });
 
 describe('fetchIssueGithub — AdapterResult wrapper', () => {
   test('returns ok:true wrapping AdapterIssue on success', async () => {
-    execMockFn = () =>
+    setExecMock(() =>
       JSON.stringify({
         number: 1,
         title: 't',
@@ -179,7 +178,7 @@ describe('fetchIssueGithub — AdapterResult wrapper', () => {
         url: 'https://github.com/org/repo/issues/1',
         body: 'b',
         labels: [{ name: 'bug' }],
-      });
+      }));
     const result = await fetchIssueGithub({ number: 1 });
     expectOk(result);
     expect(result.data.number).toBe(1);
@@ -188,9 +187,9 @@ describe('fetchIssueGithub — AdapterResult wrapper', () => {
   });
 
   test('returns AdapterResult.error on gh failure', async () => {
-    execMockFn = () => {
+    setExecMock(() => {
       throw new Error('gh: issue not found');
-    };
+    });
     const result = await fetchIssueGithub({ number: 999 });
     expectErr(result);
     expect(result.code).toBe('gh_issue_view_failed');
@@ -201,6 +200,6 @@ describe('fetchIssueGithub — AdapterResult wrapper', () => {
     const result = await fetchIssueGithub({ number: 1, repo: 'bad; rm' });
     expectErr(result);
     expect(result.error).toMatch(/invalid repo slug/);
-    expect(execCalls.length).toBe(0);
+    expect(execCalls().length).toBe(0);
   });
 });

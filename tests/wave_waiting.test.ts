@@ -1,21 +1,18 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  setExecMock,
+  resetExecMock,
+  execCalls,
+} from '../lib/test-support/mock-child-process.ts';
 
-let lastExecCall = '';
-let execMockFn: (cmd: string) => string = () => 'waiting\n';
-
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  lastExecCall = cmd;
-  return execMockFn(cmd);
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { default: handler } = await import('../handlers/wave_waiting.ts');
 
 function resetMocks() {
-  lastExecCall = '';
-  execMockFn = () => 'waiting\n';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => 'waiting\n');
 }
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
@@ -33,8 +30,8 @@ describe('wave_waiting handler', () => {
 
   test('happy_path — invokes wave-status waiting with shell-quoted reason', async () => {
     const result = await handler.execute({ reason: 'need human review' });
-    expect(lastExecCall).toContain('wave-status waiting');
-    expect(lastExecCall).toContain("'need human review'");
+    expect(execCalls().at(-1) ?? '').toContain('wave-status waiting');
+    expect(execCalls().at(-1) ?? '').toContain("'need human review'");
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
     expect(parsed.data).toBe('waiting');
@@ -42,13 +39,13 @@ describe('wave_waiting handler', () => {
 
   test('happy_path — escapes single quotes in reason', async () => {
     await handler.execute({ reason: "BJ's approval" });
-    expect(lastExecCall).toContain("'BJ'\\''s approval'");
+    expect(execCalls().at(-1) ?? '').toContain("'BJ'\\''s approval'");
   });
 
   test('cli_error — returns ok:false on non-zero exit', async () => {
-    execMockFn = () => {
+    setExecMock(() => {
       throw new Error('wave-status: cannot transition');
-    };
+    });
     const result = await handler.execute({ reason: 'test' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);

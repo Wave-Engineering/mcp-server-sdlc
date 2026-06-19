@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../lib/test-support/mock-child-process.ts';
 
 // dod_run_test_suite now uses child_process.execSync for the actual command
 // execution (story #253). Discovery still uses Bun.file (not subprocess) so it
@@ -10,36 +16,12 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-type Responder = string | (() => string);
-
-let execRegistry: Array<{ match: string; respond: Responder }> = [];
-let execCalls: string[] = [];
-
-function mockExec(cmd: string): string {
-  execCalls.push(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec call: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec call: ${cmd}`;
-  err.status = 127;
-  throw err;
-}
-
-mock.module('child_process', () => ({
-  execSync: (cmd: string, _opts?: unknown) => mockExec(cmd),
-}));
+installChildProcessMock();
 
 const { default: handler } = await import('../handlers/dod_run_test_suite.ts');
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
   return JSON.parse(result.content[0].text);
-}
-
-function onExec(match: string, respond: Responder) {
-  execRegistry.push({ match, respond });
 }
 
 function failExec(match: string, stdout: string, status: number = 1): void {
@@ -74,14 +56,12 @@ async function makeFixture(files: Record<string, string>): Promise<string> {
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
   fixtureDir = '';
 });
 
 afterEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
   fixtureDir = '';
   restoreEnv();
 });
@@ -108,7 +88,7 @@ describe('dod_run_test_suite handler', () => {
     expect(parsed.failed).toBe(0);
 
     // The override path means discovery never reached package.json's script.
-    expect(execCalls.some((c) => c.includes('should-not-run'))).toBe(false);
+    expect(execCalls().some((c) => c.includes('should-not-run'))).toBe(false);
   });
 
   test('discovers_scripts_ci_test — prefers scripts/ci/test.sh when present', async () => {
@@ -127,7 +107,7 @@ describe('dod_run_test_suite handler', () => {
     expect(parsed.passed).toBe(5);
     expect(parsed.failed).toBe(0);
     // Discovery picked scripts/ci/test.sh, not the package.json fallback.
-    expect(execCalls.some((c) => c.includes('npm test'))).toBe(false);
+    expect(execCalls().some((c) => c.includes('npm test'))).toBe(false);
   });
 
   test('discovers_npm_test — falls back to npm test when only package.json present', async () => {
@@ -210,7 +190,7 @@ describe('dod_run_test_suite handler', () => {
     expect(parsed.ok).toBe(false);
     expect(parsed.error).toContain('no test command found');
     // No subprocess should be invoked when discovery returns null.
-    expect(execCalls.length).toBe(0);
+    expect(execCalls().length).toBe(0);
   });
 
   // --- boundary test (per #253 / Story 1.1 test-procedure ledger) ---
@@ -222,8 +202,8 @@ describe('dod_run_test_suite handler', () => {
 
     await handler.execute({ command: 'shape-check-cmd' });
 
-    expect(execCalls.length).toBe(1);
+    expect(execCalls().length).toBe(1);
     // The literal command + the 2>&1 redirect for merged-stream capture.
-    expect(execCalls[0]).toBe('shape-check-cmd 2>&1');
+    expect(execCalls()[0]).toBe('shape-check-cmd 2>&1');
   });
 });

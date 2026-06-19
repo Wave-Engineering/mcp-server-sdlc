@@ -1,27 +1,22 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  mockExecSync,
+} from '../lib/test-support/mock-child-process.ts';
 
 // Mock child_process registry — matched by substring so individual tests can
 // install exec fixtures for `git remote`, `gh issue view`, `glab api projects/...`.
 // The handler now dispatches through getAdapter().fetchIssue(...), which under
 // the hood still execs `gh issue view` (GitHub) / `glab api projects/...`
 // (GitLab); tests exercise the real adapter stack with only subprocess mocked.
-let execRegistry: Record<string, string> = {};
-
-function mockExec(cmd: string): string {
-  for (const [key, value] of Object.entries(execRegistry)) {
-    if (cmd.includes(key)) return value;
-  }
-  throw new Error(`Unexpected exec call: ${cmd}`);
-}
-
-const mockExecSync = mock((cmd: string, _opts?: unknown) => mockExec(cmd));
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { default: handler } = await import('../handlers/dod_load_manifest.ts');
 
 function resetMocks() {
-  execRegistry = {};
-  mockExecSync.mockClear();
+  resetExecMock();
 }
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
@@ -84,15 +79,15 @@ describe('dod_load_manifest handler', () => {
   });
 
   test('reads_from_gh_issue — #N format shells out via adapter', async () => {
-    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git\n';
-    execRegistry['gh issue view 42'] = JSON.stringify({
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git\n');
+    onExec('gh issue view 42', JSON.stringify({
       number: 42,
       title: 'PRD',
       state: 'OPEN',
       url: 'https://github.com/org/repo/issues/42',
       body: SAMPLE_PRD,
       labels: [],
-    });
+    }));
     const result = await handler.execute({ path: '#42' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -100,15 +95,15 @@ describe('dod_load_manifest handler', () => {
   });
 
   test('reads_from_gh_issue — org/repo#N format uses --repo flag (GitHub)', async () => {
-    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git\n';
-    execRegistry['gh issue view 7 --json'] = JSON.stringify({
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git\n');
+    onExec('gh issue view 7 --json', JSON.stringify({
       number: 7,
       title: 'PRD',
       state: 'OPEN',
       url: 'https://github.com/acme/widgets/issues/7',
       body: SAMPLE_PRD,
       labels: [],
-    });
+    }));
     const result = await handler.execute({ path: 'acme/widgets#7' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -124,15 +119,15 @@ describe('dod_load_manifest handler', () => {
   // before Story 2.7. The migration moves dispatch to getAdapter().fetchIssue
   // so the `org/project#N` branch resolves on BOTH platforms.
   test('reads_from_gitlab_issue — org/repo#N resolves on GitLab (regression for #283)', async () => {
-    execRegistry['git remote get-url origin'] = 'https://gitlab.com/mygroup/myrepo.git\n';
-    execRegistry['glab api projects/acme%2Fwidgets/issues/7'] = JSON.stringify({
+    onExec('git remote get-url origin', 'https://gitlab.com/mygroup/myrepo.git\n');
+    onExec('glab api projects/acme%2Fwidgets/issues/7', JSON.stringify({
       iid: 7,
       title: 'PRD',
       state: 'opened',
       web_url: 'https://gitlab.com/acme/widgets/-/issues/7',
       description: SAMPLE_PRD,
       labels: [],
-    });
+    }));
     const result = await handler.execute({ path: 'acme/widgets#7' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -147,15 +142,15 @@ describe('dod_load_manifest handler', () => {
   });
 
   test('reads_from_gitlab_issue — bare #N uses cwd project path', async () => {
-    execRegistry['git remote get-url origin'] = 'https://gitlab.com/mygroup/myrepo.git\n';
-    execRegistry['glab api projects/mygroup%2Fmyrepo/issues/42'] = JSON.stringify({
+    onExec('git remote get-url origin', 'https://gitlab.com/mygroup/myrepo.git\n');
+    onExec('glab api projects/mygroup%2Fmyrepo/issues/42', JSON.stringify({
       iid: 42,
       title: 'PRD',
       state: 'opened',
       web_url: 'https://gitlab.com/mygroup/myrepo/-/issues/42',
       description: SAMPLE_PRD,
       labels: [],
-    });
+    }));
     const result = await handler.execute({ path: '#42' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);

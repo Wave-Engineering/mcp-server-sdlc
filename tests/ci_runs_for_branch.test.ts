@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../lib/test-support/mock-child-process.ts';
 
 // --- Mock child_process.execSync at module level ---
 //
@@ -11,25 +17,11 @@ import { describe, test, expect, mock, beforeEach } from 'bun:test';
 // `gh run list --branch …` strings — same pattern adopted by
 // tests/ci_run_status.test.ts.
 
-let execRegistry: Record<string, string> = {};
-const execCalls: string[] = [];
-
 function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-function mockExec(cmd: string): string {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  for (const [key, value] of Object.entries(execRegistry)) {
-    if (cmd.includes(key) || flat.includes(key)) return value;
-  }
-  throw new Error(`Unexpected exec call: ${cmd}`);
-}
-
-mock.module('child_process', () => ({
-  execSync: (cmd: string, _opts?: unknown) => mockExec(cmd),
-}));
+installChildProcessMock();
 
 // Import AFTER the mock is registered
 const { default: handler } = await import('../handlers/ci_runs_for_branch.ts');
@@ -39,12 +31,11 @@ function parseResult(result: { content: Array<{ type: string; text: string }> })
 }
 
 function findCall(needle: string): string | undefined {
-  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle));
+  return execCalls().find((c) => c.includes(needle) || unquote(c).includes(needle));
 }
 
 beforeEach(() => {
-  execRegistry = {};
-  execCalls.length = 0;
+  resetExecMock();
 });
 
 describe('ci_runs_for_branch handler', () => {
@@ -74,8 +65,8 @@ describe('ci_runs_for_branch handler', () => {
   // ---------- GITHUB ----------
 
   test('github_default_limit — uses limit=10 and no --status when status is all', async () => {
-    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
-    execRegistry['gh run list'] = JSON.stringify([
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
+    onExec('gh run list', JSON.stringify([
       {
         databaseId: 111,
         name: 'ci',
@@ -94,7 +85,7 @@ describe('ci_runs_for_branch handler', () => {
         url: 'https://github.com/org/repo/actions/runs/110',
         createdAt: '2026-04-07T11:00:00Z',
       },
-    ]);
+    ]));
 
     const result = await handler.execute({ branch: 'feature/88-ci' });
     const data = parseResult(result);
@@ -123,8 +114,8 @@ describe('ci_runs_for_branch handler', () => {
   });
 
   test('github_status_filter — success maps to --status success', async () => {
-    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
-    execRegistry['gh run list'] = JSON.stringify([
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
+    onExec('gh run list', JSON.stringify([
       {
         databaseId: 200,
         name: 'lint',
@@ -134,7 +125,7 @@ describe('ci_runs_for_branch handler', () => {
         url: 'https://github.com/org/repo/actions/runs/200',
         createdAt: '2026-04-07T10:00:00Z',
       },
-    ]);
+    ]));
 
     const result = await handler.execute({
       branch: 'feature/88-ci',
@@ -150,8 +141,8 @@ describe('ci_runs_for_branch handler', () => {
   });
 
   test('github_status_filter — failure maps to --status failure', async () => {
-    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
-    execRegistry['gh run list'] = '[]';
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
+    onExec('gh run list', '[]');
 
     await handler.execute({ branch: 'feature/88-ci', status: 'failure' });
 
@@ -160,8 +151,8 @@ describe('ci_runs_for_branch handler', () => {
   });
 
   test('github_status_filter — in_progress maps to --status in_progress', async () => {
-    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
-    execRegistry['gh run list'] = '[]';
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
+    onExec('gh run list', '[]');
 
     await handler.execute({ branch: 'feature/88-ci', status: 'in_progress' });
 
@@ -170,8 +161,8 @@ describe('ci_runs_for_branch handler', () => {
   });
 
   test('github_empty_branch — empty result array returns ok with runs=[]', async () => {
-    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
-    execRegistry['gh run list'] = '[]';
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
+    onExec('gh run list', '[]');
 
     const result = await handler.execute({ branch: 'feature/99-never-ran' });
     const data = parseResult(result);
@@ -181,7 +172,7 @@ describe('ci_runs_for_branch handler', () => {
   });
 
   test('github_error — surfaces exec failure as ok:false', async () => {
-    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
     // No 'gh run list' registered — mockExec throws, handler should catch it.
 
     const result = await handler.execute({ branch: 'feature/88-ci' });
@@ -194,8 +185,8 @@ describe('ci_runs_for_branch handler', () => {
   // ---------- GITLAB ----------
 
   test('gitlab_default_limit — uses per-page=10 and no --status when status is all', async () => {
-    execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
-    execRegistry['glab api projects/org%2Frepo/pipelines?ref='] = JSON.stringify([
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/pipelines?ref=', JSON.stringify([
       {
         id: 5001,
         name: 'pipeline',
@@ -214,7 +205,7 @@ describe('ci_runs_for_branch handler', () => {
         created_at: '2026-04-07T11:00:00Z',
         source: 'push',
       },
-    ]);
+    ]));
 
     const result = await handler.execute({ branch: 'feature/88-ci' });
     const data = parseResult(result);
@@ -241,8 +232,8 @@ describe('ci_runs_for_branch handler', () => {
   });
 
   test('gitlab_status_filter — failure translates to --status failed', async () => {
-    execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
-    execRegistry['glab api projects/org%2Frepo/pipelines?ref='] = JSON.stringify([
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/pipelines?ref=', JSON.stringify([
       {
         id: 6000,
         name: 'pipeline',
@@ -251,7 +242,7 @@ describe('ci_runs_for_branch handler', () => {
         web_url: 'https://gitlab.com/org/repo/-/pipelines/6000',
         created_at: '2026-04-07T09:00:00Z',
       },
-    ]);
+    ]));
 
     const result = await handler.execute({
       branch: 'feature/88-ci',
@@ -267,16 +258,16 @@ describe('ci_runs_for_branch handler', () => {
   });
 
   test('gitlab_status_filter — in_progress translates to --status running', async () => {
-    execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
-    execRegistry['glab api projects/org%2Frepo/pipelines?ref='] = '[]';
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/pipelines?ref=', '[]');
 
     await handler.execute({ branch: 'feature/88-ci', status: 'in_progress' });
 
   });
 
   test('gitlab_status_filter — success stays as --status success', async () => {
-    execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
-    execRegistry['glab api projects/org%2Frepo/pipelines?ref='] = '[]';
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/pipelines?ref=', '[]');
 
     await handler.execute({ branch: 'feature/88-ci', status: 'success' });
 
@@ -285,8 +276,8 @@ describe('ci_runs_for_branch handler', () => {
   // --- Issue #197: cross-repo orchestration via explicit `repo` ---
 
   test('github_explicit_repo — appends --repo flag to gh run list', async () => {
-    execRegistry['git remote get-url origin'] = 'https://github.com/cwd-org/cwd-repo.git';
-    execRegistry['gh run list'] = JSON.stringify([
+    onExec('git remote get-url origin', 'https://github.com/cwd-org/cwd-repo.git');
+    onExec('gh run list', JSON.stringify([
       {
         databaseId: 8001,
         name: 'ci',
@@ -296,7 +287,7 @@ describe('ci_runs_for_branch handler', () => {
         url: 'https://github.com/other-org/other-repo/actions/runs/8001',
         createdAt: '2026-04-07T12:00:00Z',
       },
-    ]);
+    ]));
 
     const result = await handler.execute({
       branch: 'feature/88-ci',
@@ -311,8 +302,8 @@ describe('ci_runs_for_branch handler', () => {
   });
 
   test('gitlab_explicit_repo — routes to encoded explicit slug', async () => {
-    execRegistry['git remote get-url origin'] = 'https://gitlab.com/cwd-org/cwd-repo.git';
-    execRegistry['glab api projects/other-org%2Fother-repo/pipelines?ref='] = JSON.stringify([
+    onExec('git remote get-url origin', 'https://gitlab.com/cwd-org/cwd-repo.git');
+    onExec('glab api projects/other-org%2Fother-repo/pipelines?ref=', JSON.stringify([
       {
         id: 8100,
         status: 'success',
@@ -321,7 +312,7 @@ describe('ci_runs_for_branch handler', () => {
         created_at: '2026-04-07T12:00:00Z',
         source: 'push',
       },
-    ]);
+    ]));
 
     const result = await handler.execute({
       branch: 'feature/88-ci',
@@ -330,14 +321,14 @@ describe('ci_runs_for_branch handler', () => {
     const data = parseResult(result);
     expect(data.ok).toBe(true);
 
-    const glabCall = execCalls.find((c) => c.startsWith('glab api')) ?? '';
+    const glabCall = execCalls().find((c) => c.startsWith('glab api')) ?? '';
     expect(glabCall).toContain('projects/other-org%2Fother-repo/pipelines');
     expect(glabCall).not.toContain('projects/cwd-org%2Fcwd-repo/pipelines');
   });
 
   test('regression_no_repo — omits --repo flag when repo not provided', async () => {
-    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
-    execRegistry['gh run list'] = '[]';
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
+    onExec('gh run list', '[]');
 
     await handler.execute({ branch: 'feature/88-ci' });
 
@@ -346,8 +337,8 @@ describe('ci_runs_for_branch handler', () => {
   });
 
   test('gitlab_empty_branch — empty pipeline list returns ok with runs=[]', async () => {
-    execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
-    execRegistry['glab api projects/org%2Frepo/pipelines?ref='] = '[]';
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/pipelines?ref=', '[]');
 
     const result = await handler.execute({ branch: 'feature/99-never-ran' });
     const data = parseResult(result);

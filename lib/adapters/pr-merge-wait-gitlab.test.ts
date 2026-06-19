@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../test-support/mock-child-process.ts';
 import type { AdapterResult, PrMergeWaitResponse } from './types.ts';
 
 // Cross-platform parity tests for the GitLab pr_merge_wait adapter (Story 1.11).
@@ -15,37 +21,10 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-type Responder = string | (() => string);
-
-let execRegistry: Array<{ match: string; respond: Responder }> = [];
-let execCalls: string[] = [];
-
-function unquote(cmd: string): string {
-  return cmd.replace(/'([^']*)'/g, '$1');
-}
-
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { prMergeWaitGitlab } = await import('./pr-merge-wait-gitlab.ts');
 const { executeMergeWaitForTest } = await import('./pr-merge-wait-github.ts');
-
-function on(match: string, respond: Responder) {
-  execRegistry.push({ match, respond });
-}
 
 function fakeClock(startMs: number = 0) {
   let nowMs = startMs;
@@ -77,20 +56,18 @@ function expectErr(
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
   // GitLab origin so detectPlatform() routes to gitlabAdapter.
-  on('git remote get-url origin', 'https://gitlab.com/org/repo.git\n');
+  onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git\n');
 });
 
 afterEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('prMergeWaitGitlab — adapter orchestration (parity)', () => {
   test('detect-and-skip: MR already merged → no merge call', async () => {
-    on(
+    onExec(
       'glab api projects/org%2Frepo/merge_requests/50',
       JSON.stringify({
         iid: 50,
@@ -111,12 +88,12 @@ describe('prMergeWaitGitlab — adapter orchestration (parity)', () => {
     expect(result.data.merge_commit_sha).toBe('preexisting');
     expect(result.data.warnings.length).toBe(1);
     expect(result.data.warnings[0]).toContain('already merged');
-    expect(execCalls.find((c) => c.includes('glab mr merge'))).toBeUndefined();
+    expect(execCalls().find((c) => c.includes('glab mr merge'))).toBeUndefined();
   });
 
   test('direct merge path → returns synchronously, no polling', async () => {
     let viewCalls = 0;
-    on('glab api projects/org%2Frepo/merge_requests/51', () => {
+    onExec('glab api projects/org%2Frepo/merge_requests/51', () => {
       viewCalls += 1;
       const merged = viewCalls >= 2;
       return JSON.stringify({
@@ -129,7 +106,7 @@ describe('prMergeWaitGitlab — adapter orchestration (parity)', () => {
         merge_commit_sha: merged ? 'direct51' : null,
       });
     });
-    on('glab mr merge 51 --squash --remove-source-branch --yes', '');
+    onExec('glab mr merge 51 --squash --remove-source-branch --yes', '');
 
     const clock = fakeClock();
     const result = await executeMergeWaitForTest(
@@ -146,7 +123,7 @@ describe('prMergeWaitGitlab — adapter orchestration (parity)', () => {
 
   test('skip_train is silently dropped — merge proceeds with warning (#423)', async () => {
     let viewCalls = 0;
-    on('glab api projects/org%2Frepo/merge_requests/55', () => {
+    onExec('glab api projects/org%2Frepo/merge_requests/55', () => {
       viewCalls += 1;
       const merged = viewCalls >= 2;
       return JSON.stringify({
@@ -159,7 +136,7 @@ describe('prMergeWaitGitlab — adapter orchestration (parity)', () => {
         merge_commit_sha: merged ? 'skip55abc' : null,
       });
     });
-    on('glab mr merge 55 --squash --remove-source-branch --yes', '');
+    onExec('glab mr merge 55 --squash --remove-source-branch --yes', '');
 
     const result = await prMergeWaitGitlab({
       number: 55,
@@ -175,7 +152,7 @@ describe('prMergeWaitGitlab — adapter orchestration (parity)', () => {
   });
 
   test('pr_merge failure propagates unchanged', async () => {
-    on(
+    onExec(
       'glab api projects/org%2Frepo/merge_requests/80',
       JSON.stringify({
         iid: 80,
@@ -186,7 +163,7 @@ describe('prMergeWaitGitlab — adapter orchestration (parity)', () => {
         labels: [],
       }),
     );
-    on('glab mr merge 80 --squash --remove-source-branch --yes', () => {
+    onExec('glab mr merge 80 --squash --remove-source-branch --yes', () => {
       const err = new Error('!! conflicts') as ThrowableError;
       err.stderr = 'cannot merge\n';
       throw err;
@@ -202,7 +179,7 @@ describe('prMergeWaitGitlab — adapter orchestration (parity)', () => {
   });
 
   test('initial state-fetch failure surfaces a clear error', async () => {
-    on('glab api projects/org%2Frepo/merge_requests/90', () => {
+    onExec('glab api projects/org%2Frepo/merge_requests/90', () => {
       throw new Error('MR not found');
     });
 

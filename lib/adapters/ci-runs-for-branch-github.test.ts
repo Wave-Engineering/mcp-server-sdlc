@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../test-support/mock-child-process.ts';
 import type { AdapterResult, CiRunsForBranchResponse } from './types.ts';
 
 // Subprocess-boundary tests for the GitHub ci_runs_for_branch adapter (R-15).
@@ -13,36 +19,11 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
-function unquote(cmd: string): string {
-  return cmd.replace(/'([^']*)'/g, '$1');
-}
-
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { ciRunsForBranchGithub, githubStatusFlag } = await import(
   './ci-runs-for-branch-github.ts'
 );
-
-function on(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
 
 function expectOk(
   r: AdapterResult<CiRunsForBranchResponse>,
@@ -61,12 +42,12 @@ function expectErr(
 }
 
 function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
+  const unquote = (cmd: string) => cmd.replace(/'([^']*)'/g, '$1');
+  return execCalls().find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('ciRunsForBranchGithub — subprocess boundary', () => {
@@ -82,7 +63,7 @@ describe('ciRunsForBranchGithub — subprocess boundary', () => {
   // --- argv composition for each status flag ---
 
   test('argv: status=all omits --status', async () => {
-    on('gh run list', JSON.stringify([]));
+    onExec('gh run list', JSON.stringify([]));
 
     await ciRunsForBranchGithub({
       branch: 'feature/88-ci',
@@ -99,7 +80,7 @@ describe('ciRunsForBranchGithub — subprocess boundary', () => {
   });
 
   test('argv: status=success → --status success', async () => {
-    on('gh run list', JSON.stringify([]));
+    onExec('gh run list', JSON.stringify([]));
 
     await ciRunsForBranchGithub({
       branch: 'feature/88-ci',
@@ -113,7 +94,7 @@ describe('ciRunsForBranchGithub — subprocess boundary', () => {
   });
 
   test('argv: status=failure → --status failure', async () => {
-    on('gh run list', JSON.stringify([]));
+    onExec('gh run list', JSON.stringify([]));
 
     await ciRunsForBranchGithub({
       branch: 'main',
@@ -127,7 +108,7 @@ describe('ciRunsForBranchGithub — subprocess boundary', () => {
   });
 
   test('argv: status=in_progress → --status in_progress', async () => {
-    on('gh run list', JSON.stringify([]));
+    onExec('gh run list', JSON.stringify([]));
 
     await ciRunsForBranchGithub({
       branch: 'main',
@@ -141,7 +122,7 @@ describe('ciRunsForBranchGithub — subprocess boundary', () => {
   });
 
   test('argv: --repo flag forwarded for cross-repo lookup', async () => {
-    on('gh run list', JSON.stringify([]));
+    onExec('gh run list', JSON.stringify([]));
 
     await ciRunsForBranchGithub({
       branch: 'main',
@@ -156,7 +137,7 @@ describe('ciRunsForBranchGithub — subprocess boundary', () => {
   });
 
   test('argv: --json field list includes all expected fields', async () => {
-    on('gh run list', JSON.stringify([]));
+    onExec('gh run list', JSON.stringify([]));
 
     await ciRunsForBranchGithub({
       branch: 'main',
@@ -182,7 +163,7 @@ describe('ciRunsForBranchGithub — subprocess boundary', () => {
   // --- normalizes response ---
 
   test('ci-runs-for-branch-github — normalizes response', async () => {
-    on(
+    onExec(
       'gh run list',
       JSON.stringify([
         {
@@ -230,7 +211,7 @@ describe('ciRunsForBranchGithub — subprocess boundary', () => {
   });
 
   test('empty result — returns ok with empty runs array', async () => {
-    on('gh run list', '[]');
+    onExec('gh run list', '[]');
 
     const result = await ciRunsForBranchGithub({
       branch: 'feature/99-never-ran',
@@ -243,7 +224,7 @@ describe('ciRunsForBranchGithub — subprocess boundary', () => {
   });
 
   test('empty stdout — returns ok with empty runs array', async () => {
-    on('gh run list', '');
+    onExec('gh run list', '');
 
     const result = await ciRunsForBranchGithub({
       branch: 'feature/99-never-ran',
@@ -258,7 +239,7 @@ describe('ciRunsForBranchGithub — subprocess boundary', () => {
   // --- error surface ---
 
   test('returns AdapterResult.error on gh failure (not thrown)', async () => {
-    on('gh run list', () => {
+    onExec('gh run list', () => {
       const err = new Error('gh: not authenticated') as ThrowableError;
       err.stderr = 'gh: not authenticated';
       err.status = 1;

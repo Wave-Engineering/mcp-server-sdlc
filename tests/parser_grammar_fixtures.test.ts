@@ -11,21 +11,24 @@
  * dedicated test asserting clean extraction. See docs/issue-body-grammar.md.
  */
 
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import {
+  installChildProcessMock,
+  setExecMock,
+  resetExecMock,
+} from '../lib/test-support/mock-child-process.ts';
 
-let execMockFn: (cmd: string) => string = () => '';
-const mockExecSync = mock((cmd: string, _opts?: unknown) => execMockFn(cmd));
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { default: validateHandler } = await import('../handlers/spec_validate_structure.ts');
 const { default: epicHandler } = await import('../handlers/epic_sub_issues.ts');
 const { default: depsHandler } = await import('../handlers/spec_dependencies.ts');
 
 function resetMocks() {
-  execMockFn = () => '';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => '');
 }
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
@@ -37,11 +40,11 @@ function fixture(name: string): string {
 }
 
 function mockBody(body: string, origin = 'https://github.com/blueshift/cue.git') {
-  execMockFn = (cmd: string) => {
+  setExecMock((cmd: string) => {
     if (cmd.startsWith('git remote')) return origin + '\n';
     if (cmd.includes('gh issue view')) return JSON.stringify({ body });
     return '';
-  };
+  });
 }
 
 describe('parser grammar fixtures — /devspec upshift', () => {

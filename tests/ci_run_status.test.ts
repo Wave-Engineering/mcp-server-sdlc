@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../lib/test-support/mock-child-process.ts';
 
 // --- Mock child_process.execSync at module level ---
 //
@@ -16,27 +22,11 @@ import { describe, test, expect, mock, beforeEach } from 'bun:test';
 // argv assertions and full enum coverage live in the colocated adapter tests
 // (lib/adapters/ci-run-status-{github,gitlab}.test.ts).
 
-let execRegistry: Record<string, string> = {};
-let execCalls: string[] = [];
-let execError: Error | null = null;
-
 function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-function mockExec(cmd: string): string {
-  execCalls.push(cmd);
-  if (execError) throw execError;
-  const flat = unquote(cmd);
-  for (const [key, value] of Object.entries(execRegistry)) {
-    if (cmd.includes(key) || flat.includes(key)) return value;
-  }
-  throw new Error(`Unexpected exec call: ${cmd}`);
-}
-
-mock.module('child_process', () => ({
-  execSync: (cmd: string, _opts?: unknown) => mockExec(cmd),
-}));
+installChildProcessMock();
 
 // Import AFTER mock registration.
 const { default: ciRunStatusHandler } = await import(
@@ -48,9 +38,7 @@ function parseResult(content: Array<{ type: string; text: string }>) {
 }
 
 beforeEach(() => {
-  execRegistry = {};
-  execCalls = [];
-  execError = null;
+  resetExecMock();
 });
 
 describe('ci_run_status handler', () => {
@@ -62,9 +50,9 @@ describe('ci_run_status handler', () => {
 
   // --- GitHub end-to-end: branch ref ---
   test('github_branch_ref — returns normalized run for branch lookup', async () => {
-    execRegistry['git remote get-url origin'] =
-      'https://github.com/org/repo.git';
-    execRegistry['gh run list --branch'] = JSON.stringify([
+    onExec('git remote get-url origin', 
+      'https://github.com/org/repo.git');
+    onExec('gh run list --branch', JSON.stringify([
       {
         databaseId: 12345,
         name: 'CI',
@@ -76,7 +64,7 @@ describe('ci_run_status handler', () => {
         createdAt: '2025-01-01T00:00:00Z',
         updatedAt: '2025-01-01T00:05:00Z',
       },
-    ]);
+    ]));
 
     const result = await ciRunStatusHandler.execute({
       ref: 'feature/42-thing',
@@ -99,9 +87,9 @@ describe('ci_run_status handler', () => {
   // --- GitHub: SHA ref ---
   test('github_sha_ref — 40-char hex ref returns normalized run', async () => {
     const sha = '0123456789abcdef0123456789abcdef01234567';
-    execRegistry['git remote get-url origin'] =
-      'https://github.com/org/repo.git';
-    execRegistry['gh run list --commit'] = JSON.stringify([
+    onExec('git remote get-url origin', 
+      'https://github.com/org/repo.git');
+    onExec('gh run list --commit', JSON.stringify([
       {
         databaseId: 7777,
         name: 'Build',
@@ -113,7 +101,7 @@ describe('ci_run_status handler', () => {
         createdAt: '2025-02-02T10:00:00Z',
         updatedAt: '2025-02-02T10:03:00Z',
       },
-    ]);
+    ]));
 
     const result = await ciRunStatusHandler.execute({ ref: sha });
     const data = parseResult(result.content);
@@ -129,9 +117,9 @@ describe('ci_run_status handler', () => {
 
   // --- No runs found: structured error with code ---
   test('no_runs_found — returns structured error when list is empty', async () => {
-    execRegistry['git remote get-url origin'] =
-      'https://github.com/org/repo.git';
-    execRegistry['gh run list --branch'] = JSON.stringify([]);
+    onExec('git remote get-url origin', 
+      'https://github.com/org/repo.git');
+    onExec('gh run list --branch', JSON.stringify([]));
 
     const result = await ciRunStatusHandler.execute({ ref: 'branch-no-runs' });
     const data = parseResult(result.content);
@@ -144,9 +132,9 @@ describe('ci_run_status handler', () => {
 
   // --- No runs found with workflow filter mentions the filter ---
   test('no_runs_found_with_filter — error message includes workflow filter', async () => {
-    execRegistry['git remote get-url origin'] =
-      'https://github.com/org/repo.git';
-    execRegistry['gh run list --branch'] = JSON.stringify([]);
+    onExec('git remote get-url origin', 
+      'https://github.com/org/repo.git');
+    onExec('gh run list --branch', JSON.stringify([]));
 
     const result = await ciRunStatusHandler.execute({
       ref: 'main',
@@ -161,9 +149,9 @@ describe('ci_run_status handler', () => {
 
   // --- GitLab end-to-end: branch ref ---
   test('gitlab_branch_ref — queries pipelines by ref and normalizes status', async () => {
-    execRegistry['git remote get-url origin'] =
-      'https://gitlab.com/org/repo.git';
-    execRegistry['glab api projects/org%2Frepo/pipelines?ref='] = JSON.stringify([
+    onExec('git remote get-url origin', 
+      'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/pipelines?ref=', JSON.stringify([
       {
         id: 555,
         status: 'success',
@@ -175,7 +163,7 @@ describe('ci_run_status handler', () => {
         finished_at: '2025-04-04T12:05:00Z',
         source: 'push',
       },
-    ]);
+    ]));
 
     const result = await ciRunStatusHandler.execute({ ref: 'feature/5-gl' });
     const data = parseResult(result.content);
@@ -192,9 +180,9 @@ describe('ci_run_status handler', () => {
   // --- GitLab: SHA ref ---
   test('gitlab_sha_ref — 40-char hex returns failure → failure', async () => {
     const sha = '11223344556677889900aabbccddeeff00112233';
-    execRegistry['git remote get-url origin'] =
-      'https://gitlab.com/org/repo.git';
-    execRegistry['glab api projects/org%2Frepo/pipelines?ref='] = JSON.stringify([
+    onExec('git remote get-url origin', 
+      'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/pipelines?ref=', JSON.stringify([
       {
         id: 42,
         status: 'failed',
@@ -207,7 +195,7 @@ describe('ci_run_status handler', () => {
         name: null,
         source: 'merge_request_event',
       },
-    ]);
+    ]));
 
     const result = await ciRunStatusHandler.execute({ ref: sha });
     const data = parseResult(result.content);
@@ -222,10 +210,10 @@ describe('ci_run_status handler', () => {
 
   // --- GitLab: workflow_name filters client-side ---
   test('gitlab_workflow_filter — filters pipelines by name client-side', async () => {
-    execRegistry['git remote get-url origin'] =
-      'https://gitlab.com/org/repo.git';
+    onExec('git remote get-url origin', 
+      'https://gitlab.com/org/repo.git');
     // When workflow_name is provided, handler requests more records (per_page=20)
-    execRegistry['glab api projects/org%2Frepo/pipelines?ref=main&per_page=20'] =
+    onExec('glab api projects/org%2Frepo/pipelines?ref=main&per_page=20', 
       JSON.stringify([
         {
           id: 1,
@@ -249,7 +237,7 @@ describe('ci_run_status handler', () => {
           finished_at: '2025-06-06T00:03:00Z',
           source: 'schedule',
         },
-      ]);
+      ]));
 
     const result = await ciRunStatusHandler.execute({
       ref: 'main',
@@ -265,9 +253,9 @@ describe('ci_run_status handler', () => {
 
   // --- GitLab: no runs matching filter yields structured error ---
   test('gitlab_no_runs — no matching pipeline returns no_runs_found error', async () => {
-    execRegistry['git remote get-url origin'] =
-      'https://gitlab.com/org/repo.git';
-    execRegistry['glab api projects/org%2Frepo/pipelines?ref=main&per_page=20'] =
+    onExec('git remote get-url origin', 
+      'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/pipelines?ref=main&per_page=20', 
       JSON.stringify([
         {
           id: 10,
@@ -279,7 +267,7 @@ describe('ci_run_status handler', () => {
           updated_at: '2025-07-07T00:01:00Z',
           source: 'push',
         },
-      ]);
+      ]));
 
     const result = await ciRunStatusHandler.execute({
       ref: 'main',
@@ -310,9 +298,9 @@ describe('ci_run_status handler', () => {
   // --- Issue #197: cross-repo orchestration via explicit `repo` ---
 
   test('github_explicit_repo — appends --repo flag to gh run list', async () => {
-    execRegistry['git remote get-url origin'] =
-      'https://github.com/cwd-org/cwd-repo.git';
-    execRegistry['gh run list --branch'] = JSON.stringify([
+    onExec('git remote get-url origin', 
+      'https://github.com/cwd-org/cwd-repo.git');
+    onExec('gh run list --branch', JSON.stringify([
       {
         databaseId: 9001,
         name: 'CI',
@@ -324,7 +312,7 @@ describe('ci_run_status handler', () => {
         createdAt: '2026-04-07T12:00:00Z',
         updatedAt: '2026-04-07T12:05:00Z',
       },
-    ]);
+    ]));
 
     const result = await ciRunStatusHandler.execute({
       ref: 'main',
@@ -333,15 +321,15 @@ describe('ci_run_status handler', () => {
     const data = parseResult(result.content);
     expect(data.ok).toBe(true);
     const runListCall =
-      execCalls.find((c) => unquote(c).includes('gh run list')) ?? '';
+      execCalls().find((c) => unquote(c).includes('gh run list')) ?? '';
     expect(unquote(runListCall)).toContain('--repo');
     expect(unquote(runListCall)).toContain('other-org/other-repo');
   });
 
   test('gitlab_explicit_repo — targets encoded explicit slug', async () => {
-    execRegistry['git remote get-url origin'] =
-      'https://gitlab.com/cwd-org/cwd-repo.git';
-    execRegistry['glab api projects/other-org%2Fother-repo/pipelines?ref='] =
+    onExec('git remote get-url origin', 
+      'https://gitlab.com/cwd-org/cwd-repo.git');
+    onExec('glab api projects/other-org%2Fother-repo/pipelines?ref=', 
       JSON.stringify([
         {
           id: 9002,
@@ -354,7 +342,7 @@ describe('ci_run_status handler', () => {
           finished_at: '2026-04-07T12:05:00Z',
           source: 'push',
         },
-      ]);
+      ]));
 
     const result = await ciRunStatusHandler.execute({
       ref: 'main',
@@ -362,15 +350,15 @@ describe('ci_run_status handler', () => {
     });
     const data = parseResult(result.content);
     expect(data.ok).toBe(true);
-    const glabCall = execCalls.find((c) => c.startsWith('glab api')) ?? '';
+    const glabCall = execCalls().find((c) => c.startsWith('glab api')) ?? '';
     expect(glabCall).toContain('projects/other-org%2Fother-repo/pipelines');
     expect(glabCall).not.toContain('projects/cwd-org%2Fcwd-repo/pipelines');
   });
 
   test('regression_no_repo — omits --repo and uses cwd slug when repo not set', async () => {
-    execRegistry['git remote get-url origin'] =
-      'https://github.com/org/repo.git';
-    execRegistry['gh run list --branch'] = JSON.stringify([
+    onExec('git remote get-url origin', 
+      'https://github.com/org/repo.git');
+    onExec('gh run list --branch', JSON.stringify([
       {
         databaseId: 4242,
         name: 'CI',
@@ -382,13 +370,13 @@ describe('ci_run_status handler', () => {
         createdAt: '2026-04-07T12:00:00Z',
         updatedAt: '2026-04-07T12:05:00Z',
       },
-    ]);
+    ]));
 
     const result = await ciRunStatusHandler.execute({ ref: 'main' });
     const data = parseResult(result.content);
     expect(data.ok).toBe(true);
     const runListCall =
-      execCalls.find((c) => unquote(c).includes('gh run list')) ?? '';
+      execCalls().find((c) => unquote(c).includes('gh run list')) ?? '';
     expect(unquote(runListCall)).not.toContain('--repo');
   });
 });

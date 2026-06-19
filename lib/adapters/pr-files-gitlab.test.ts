@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../test-support/mock-child-process.ts';
 import type { AdapterResult, PrFilesResponse } from './types.ts';
 
 // Subprocess-boundary tests for the GitLab pr_files adapter (R-15).
@@ -12,34 +18,13 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
 function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { prFilesGitlab, parseDiffStats } = await import('./pr-files-gitlab.ts');
-
-function on(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
 
 function expectOk(
   r: AdapterResult<PrFilesResponse>,
@@ -58,18 +43,17 @@ function expectErr(
 }
 
 function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
+  return execCalls().find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('prFilesGitlab — subprocess boundary', () => {
   test('glab CLI invocation matches expected argv shape (happy path)', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on(
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec(
       'glab api projects/org%2Frepo/merge_requests/3',
       JSON.stringify({
         changes: [
@@ -96,8 +80,8 @@ describe('prFilesGitlab — subprocess boundary', () => {
   });
 
   test('parses MR diffs response into PrFilesResponse with derived stats', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on(
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec(
       'glab api projects/org%2Frepo/merge_requests/11',
       JSON.stringify({
         changes: [
@@ -150,8 +134,8 @@ describe('prFilesGitlab — subprocess boundary', () => {
   });
 
   test('renamed file with diff still counts hunk stats', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on(
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec(
       'glab api projects/org%2Frepo/merge_requests/15',
       JSON.stringify({
         changes: [
@@ -178,8 +162,8 @@ describe('prFilesGitlab — subprocess boundary', () => {
   });
 
   test('falls back to old_path when new_path absent (deleted file)', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on(
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec(
       'glab api projects/org%2Frepo/merge_requests/4',
       JSON.stringify({
         changes: [
@@ -201,8 +185,8 @@ describe('prFilesGitlab — subprocess boundary', () => {
   });
 
   test('missing changes field returns empty list and zero totals', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on('glab api projects/org%2Frepo/merge_requests/50', JSON.stringify({}));
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests/50', JSON.stringify({}));
 
     const result = await prFilesGitlab({ number: 50 });
     expectOk(result);
@@ -212,8 +196,8 @@ describe('prFilesGitlab — subprocess boundary', () => {
   });
 
   test('returns AdapterResult{ok:false, code} on glab failure (not thrown)', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on('glab api projects/org%2Frepo/merge_requests/77', () => {
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests/77', () => {
       const err = new Error('glab: not authenticated') as ThrowableError;
       err.stderr = 'glab: not authenticated';
       err.status = 1;
@@ -227,8 +211,8 @@ describe('prFilesGitlab — subprocess boundary', () => {
   });
 
   test('args.repo slug routed into glab api path (URL-encoded), overriding cwd remote', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/cwd-org/cwd-repo.git');
-    on(
+    onExec('git remote get-url origin', 'https://gitlab.com/cwd-org/cwd-repo.git');
+    onExec(
       'glab api projects/target-org%2Ftarget-repo/merge_requests/8',
       JSON.stringify({ changes: [] }),
     );

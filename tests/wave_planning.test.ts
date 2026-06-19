@@ -1,21 +1,19 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  setExecMock,
+  resetExecMock,
+  execCalls,
+  mockExecSync,
+} from '../lib/test-support/mock-child-process.ts';
 
-let lastExecCall = '';
-let execMockFn: (cmd: string) => string = () => 'planning ok\n';
-
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  lastExecCall = cmd;
-  return execMockFn(cmd);
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { default: handler } = await import('../handlers/wave_planning.ts');
 
 function resetMocks() {
-  lastExecCall = '';
-  execMockFn = () => 'planning ok\n';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => 'planning ok\n');
 }
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
@@ -36,16 +34,16 @@ describe('wave_planning handler', () => {
   test('happy_path — invokes wave-status planning', async () => {
     const result = await handler.execute({});
     expect(mockExecSync.mock.calls.length).toBe(1);
-    expect(lastExecCall).toBe('wave-status planning');
+    expect(execCalls()[0]).toBe('wave-status planning');
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
     expect(parsed.data).toBe('planning ok');
   });
 
   test('cli_error — returns ok:false on non-zero exit, does not throw', async () => {
-    execMockFn = () => {
+    setExecMock(() => {
       throw new Error('wave-status: cannot enter planning');
-    };
+    });
     const result = await handler.execute({});
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);

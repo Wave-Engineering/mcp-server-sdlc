@@ -1,4 +1,11 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+  mockExecSync,
+} from '../test-support/mock-child-process.ts';
 import type { AdapterResult, NormalizedPr } from './types.ts';
 
 // Subprocess-boundary tests for the GitLab findExistingPr adapter
@@ -11,41 +18,21 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-let execOpts: Array<{ cwd?: string } | undefined> = [];
-
-const mockExecSync = mock((cmd: string, opts?: { cwd?: string }) => {
-  execCalls.push(cmd);
-  execOpts.push(opts);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { findExistingPrGitlab, findExistingPrGitlabSync } = await import(
   './find-existing-pr-gitlab.ts'
 );
 
-function on(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
-
 function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle)) ?? '';
+  return execCalls().find((c) => c.includes(needle)) ?? '';
 }
 
 function optsForCall(needle: string): { cwd?: string } | undefined {
-  const idx = execCalls.findIndex((c) => c.includes(needle));
-  return idx >= 0 ? execOpts[idx] : undefined;
+  const idx = execCalls().findIndex((c) => c.includes(needle));
+  return idx >= 0
+    ? (mockExecSync.mock.calls[idx]?.[1] as { cwd?: string } | undefined)
+    : undefined;
 }
 
 function expectOk(
@@ -65,15 +52,13 @@ function expectErr(
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
-  execOpts = [];
+  resetExecMock();
 });
 
 describe('find-existing-pr-gitlab — argv + state translation', () => {
   test('passes source_branch, target_branch, state=opened, per_page=1', () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on(
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec(
       'glab api projects/org%2Frepo/merge_requests',
       JSON.stringify([
         {
@@ -97,23 +82,23 @@ describe('find-existing-pr-gitlab — argv + state translation', () => {
   });
 
   test('state=merged translates to state=merged query', () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
     findExistingPrGitlabSync('kahuna/42-foo', 'main', 'merged');
     const call = findCall('glab api projects/');
     expect(call).toContain('state=merged');
   });
 
   test('state=closed translates to state=closed query', () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
     findExistingPrGitlabSync('kahuna/42-foo', 'main', 'closed');
     const call = findCall('glab api projects/');
     expect(call).toContain('state=closed');
   });
 
   test('args.repo overrides cwd slug (URL-encoded)', () => {
-    on(
+    onExec(
       'glab api projects/target-org%2Ftarget-repo/merge_requests',
       JSON.stringify([]),
     );
@@ -123,23 +108,23 @@ describe('find-existing-pr-gitlab — argv + state translation', () => {
   });
 
   test('runs slug resolution AND glab api in args.cwd when supplied (#453)', () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
     findExistingPrGitlabSync('kahuna/42-foo', 'main', 'open', undefined, '/work/tree');
     expect(optsForCall('git remote get-url origin')?.cwd).toBe('/work/tree');
     expect(optsForCall('glab api projects/')?.cwd).toBe('/work/tree');
   });
 
   test('leaves cwd undefined when not supplied (env default unchanged)', () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
     findExistingPrGitlabSync('kahuna/42-foo', 'main', 'open');
     expect(optsForCall('glab api projects/')?.cwd).toBeUndefined();
   });
 
   test('async wrapper threads args.cwd through to glab', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
     await findExistingPrGitlab({
       head: 'kahuna/42-foo',
       base: 'main',
@@ -152,8 +137,8 @@ describe('find-existing-pr-gitlab — argv + state translation', () => {
 
 describe('find-existing-pr-gitlab — normalization', () => {
   test('returns NormalizedPr with raw platform state on non-empty list', () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on(
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec(
       'glab api projects/org%2Frepo/merge_requests',
       JSON.stringify([
         {
@@ -180,16 +165,16 @@ describe('find-existing-pr-gitlab — normalization', () => {
   });
 
   test('returns null on empty list', () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
     expect(findExistingPrGitlabSync('kahuna/42-foo', 'main', 'open')).toBeNull();
   });
 });
 
 describe('find-existing-pr-gitlab — AdapterResult wrapper', () => {
   test('returns ok:true wrapping pr on success', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on(
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec(
       'glab api projects/org%2Frepo/merge_requests',
       JSON.stringify([
         {
@@ -214,8 +199,8 @@ describe('find-existing-pr-gitlab — AdapterResult wrapper', () => {
   });
 
   test('returns ok:true + data:null when no match', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
     const result = await findExistingPrGitlab({
       head: 'kahuna/42-foo',
       base: 'main',
@@ -226,8 +211,8 @@ describe('find-existing-pr-gitlab — AdapterResult wrapper', () => {
   });
 
   test('returns ok:false with code on subprocess failure', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on('glab api projects/org%2Frepo/merge_requests', () => {
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests', () => {
       const err = new Error('glab: not authenticated') as ThrowableError;
       err.stderr = 'glab: not authenticated';
       err.status = 1;

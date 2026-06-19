@@ -1,9 +1,15 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../lib/test-support/mock-child-process.ts';
 
-// Intercept execSync via a registry keyed by command substring.
-// Each value may be a plain string (returned as stdout) or a function that
-// throws an Error (simulating a non-zero exit). Tests can attach `stderr` to
-// the thrown error to mimic real execSync behavior.
+// Intercept execSync via the shared child_process mock helper, keyed by command
+// substring. Each registered value may be a plain string (returned as stdout)
+// or a function that throws an Error (simulating a non-zero exit). Tests can
+// attach `stderr` to the thrown error to mimic real execSync behavior.
 
 interface ThrowableError extends Error {
   stderr?: string;
@@ -11,34 +17,13 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-type Responder = string | (() => string);
-
-let execRegistry: Array<{ match: string; respond: Responder }> = [];
-let execCalls: string[] = [];
-
-function mockExec(cmd: string): string {
-  execCalls.push(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  throw new Error(`Unexpected exec call: ${cmd}`);
-}
-
-mock.module('child_process', () => ({
-  execSync: (cmd: string, _opts?: unknown) => mockExec(cmd),
-}));
+installChildProcessMock();
 
 const { default: prMergeHandler } = await import('../handlers/pr_merge.ts');
 const { clearMergeQueueCache } = await import('../lib/merge_queue_detect.ts');
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
   return JSON.parse(result.content[0].text) as Record<string, unknown>;
-}
-
-function onExec(match: string, respond: Responder) {
-  execRegistry.push({ match, respond });
 }
 
 function mergeQueueError(): ThrowableError {
@@ -76,14 +61,12 @@ function stubEnforcedQueue() {
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
   clearMergeQueueCache();
 });
 
 afterEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
   clearMergeQueueCache();
 });
 
@@ -205,7 +188,7 @@ describe('pr_merge handler — aggregate response (#225)', () => {
     expect(data.queue).toEqual({ enabled: false, position: null, enforced: false });
     expect(data.warnings).toEqual([]);
     // No `gh api graphql` call should have been made on the GitLab path.
-    expect(execCalls.find(c => c.includes('gh api graphql'))).toBeUndefined();
+    expect(execCalls().find(c => c.includes('gh api graphql'))).toBeUndefined();
   });
 
   // ===========================================================================
@@ -249,7 +232,7 @@ describe('pr_merge handler — aggregate response (#225)', () => {
     expect(data.queue).toEqual({ enabled: true, position: null, enforced: true });
     expect(directCalled).toBe(true);
     expect(autoCalled).toBe(true);
-    const autoCall = execCalls.find(
+    const autoCall = execCalls().find(
       c => c.includes('gh pr merge 55') && c.includes('--auto'),
     );
     expect(autoCall).toBeDefined();
@@ -280,7 +263,7 @@ describe('pr_merge handler — aggregate response (#225)', () => {
     expect(data.merged).toBe(false);
     expect(data.merge_method).toBe('merge_queue');
     // Direct (non-auto) path must not have been invoked.
-    const directOnly = execCalls.find(
+    const directOnly = execCalls().find(
       c =>
         c.startsWith('gh pr merge 99 --squash --delete-branch') && !c.includes('--auto'),
     );
@@ -314,7 +297,7 @@ describe('pr_merge handler — aggregate response (#225)', () => {
     expect(queue.enforced).toBe(true);
     // Critical: NO failed direct merge call before --auto. The whole point of
     // upfront detection is to skip the wasted exec.
-    const directOnly = execCalls.find(
+    const directOnly = execCalls().find(
       c =>
         c.startsWith('gh pr merge 100 --squash --delete-branch') && !c.includes('--auto'),
     );
@@ -370,7 +353,7 @@ describe('pr_merge handler — aggregate response (#225)', () => {
     expect(data.merge_commit_sha).toBe('skip201');
     expect(data.warnings).toEqual([]);
     // No --auto call.
-    const autoCall = execCalls.find(
+    const autoCall = execCalls().find(
       c => c.includes('gh pr merge 201') && c.includes('--auto'),
     );
     expect(autoCall).toBeUndefined();
@@ -403,7 +386,7 @@ describe('pr_merge handler — aggregate response (#225)', () => {
     expect(warnings[0]).toContain('skip_train ignored');
     expect(warnings[0]).toContain('use_merge_queue');
     // Direct path must not have been attempted.
-    const directOnly = execCalls.find(
+    const directOnly = execCalls().find(
       c => c.startsWith('gh pr merge 250 --squash --delete-branch') && !c.includes('--auto'),
     );
     expect(directOnly).toBeUndefined();
@@ -443,7 +426,7 @@ describe('pr_merge handler — aggregate response (#225)', () => {
     const warnings = data.warnings as string[];
     expect(warnings.length).toBe(1);
     expect(warnings[0]).toContain('skip_train ignored');
-    const autoCall = execCalls.find(
+    const autoCall = execCalls().find(
       c => c.includes('gh pr merge 202') && c.includes('--auto'),
     );
     expect(autoCall).toBeDefined();
@@ -549,7 +532,7 @@ describe('pr_merge handler — aggregate response (#225)', () => {
 
     expect(data.ok).toBe(true);
     expect(data.merge_method).toBe('direct_squash');
-    const mergeCall = execCalls.find(c => c.startsWith('gh pr merge 21'));
+    const mergeCall = execCalls().find(c => c.startsWith('gh pr merge 21'));
     expect(mergeCall).toBeDefined();
     expect(mergeCall!).toContain('--body-file');
     expect(mergeCall!).not.toMatch(/--body\s+'feat:/);
@@ -575,7 +558,7 @@ describe('pr_merge handler — aggregate response (#225)', () => {
     const data = parseResult(result);
 
     expect(data.ok).toBe(true);
-    const mergeCall = execCalls.find(c => c.startsWith('gh pr merge 33'));
+    const mergeCall = execCalls().find(c => c.startsWith('gh pr merge 33'));
     expect(mergeCall!).toContain("--body 'chore: small tweak'");
     expect(mergeCall!).not.toContain('--body-file');
   });
@@ -603,7 +586,7 @@ describe('pr_merge handler — aggregate response (#225)', () => {
     const data = parseResult(result);
 
     expect(data.ok).toBe(true);
-    const mergeCall = execCalls.find(c => c.startsWith('glab mr merge 14'));
+    const mergeCall = execCalls().find(c => c.startsWith('glab mr merge 14'));
     expect(mergeCall!).toContain("--squash-message 'fix: patch'");
   });
 
@@ -631,14 +614,14 @@ describe('pr_merge handler — aggregate response (#225)', () => {
     const data = parseResult(result);
     expect(data.ok).toBe(true);
 
-    const mergeCall = execCalls.find((c) => c.startsWith('gh pr merge 42')) ?? '';
+    const mergeCall = execCalls().find((c) => c.startsWith('gh pr merge 42')) ?? '';
     // shellEscape wraps the repo arg in single quotes; strip them for the
     // contains check.
     expect(mergeCall.replace(/'/g, '')).toContain('--repo Wave-Engineering/mcp-server-sdlc');
-    const viewCall = execCalls.find((c) => c.startsWith('gh pr view 42')) ?? '';
+    const viewCall = execCalls().find((c) => c.startsWith('gh pr view 42')) ?? '';
     expect(viewCall.replace(/'/g, '')).toContain('--repo Wave-Engineering/mcp-server-sdlc');
     // Queue detection should also use the explicit repo, not the cwd remote.
-    const graphqlCall = execCalls.find((c) => c.includes('gh api graphql')) ?? '';
+    const graphqlCall = execCalls().find((c) => c.includes('gh api graphql')) ?? '';
     expect(graphqlCall).toContain('-F owner=Wave-Engineering');
     expect(graphqlCall).toContain('-F name=mcp-server-sdlc');
   });
@@ -666,9 +649,9 @@ describe('pr_merge handler — aggregate response (#225)', () => {
     const data = parseResult(result);
     expect(data.ok).toBe(true);
 
-    const mergeCall = execCalls.find((c) => c.startsWith('glab mr merge 17')) ?? '';
+    const mergeCall = execCalls().find((c) => c.startsWith('glab mr merge 17')) ?? '';
     expect(mergeCall).toContain('-R target-org/target-repo');
-    const apiCall = execCalls.find((c) => c.includes('glab api projects/')) ?? '';
+    const apiCall = execCalls().find((c) => c.includes('glab api projects/')) ?? '';
     expect(apiCall).toContain('target-org%2Ftarget-repo');
     expect(apiCall).not.toContain('cwd-org%2Fcwd-repo');
   });
@@ -688,9 +671,9 @@ describe('pr_merge handler — aggregate response (#225)', () => {
 
     await prMergeHandler.execute({ number: 42 });
 
-    const mergeCall = execCalls.find((c) => c.startsWith('gh pr merge 42')) ?? '';
+    const mergeCall = execCalls().find((c) => c.startsWith('gh pr merge 42')) ?? '';
     expect(mergeCall).not.toContain('--repo');
-    const viewCall = execCalls.find((c) => c.startsWith('gh pr view 42')) ?? '';
+    const viewCall = execCalls().find((c) => c.startsWith('gh pr view 42')) ?? '';
     expect(viewCall).not.toContain('--repo');
   });
 
@@ -700,7 +683,7 @@ describe('pr_merge handler — aggregate response (#225)', () => {
 
     expect(data.ok).toBe(false);
     expect(typeof data.error).toBe('string');
-    expect(execCalls).toHaveLength(0);
+    expect(execCalls()).toHaveLength(0);
   });
 
   // ===========================================================================
@@ -723,7 +706,7 @@ describe('pr_merge handler — aggregate response (#225)', () => {
     await prMergeHandler.execute({ number: 301 });
     await prMergeHandler.execute({ number: 302 });
 
-    const graphqlCalls = execCalls.filter(c => c.includes('gh api graphql'));
+    const graphqlCalls = execCalls().filter(c => c.includes('gh api graphql'));
     expect(graphqlCalls.length).toBe(1);
   });
 });

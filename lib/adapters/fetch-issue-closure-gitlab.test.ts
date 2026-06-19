@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  setExecMock,
+  resetExecMock,
+  execCalls,
+} from '../test-support/mock-child-process.ts';
 import type { AdapterResult, IssueClosureInfo } from './types.ts';
 
 // Subprocess-boundary tests for the GitLab fetchIssueClosure adapter
@@ -21,27 +27,20 @@ function expectErr(
   }
 }
 
-let execCalls: string[] = [];
-let execMockFn: (cmd: string) => string = () => '';
-const mockExecSync = mock((cmd: string) => {
-  execCalls.push(cmd);
-  return execMockFn(cmd);
-});
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { fetchIssueClosureGitlab, fetchIssueClosureGitlabSync } = await import(
   './fetch-issue-closure-gitlab.ts'
 );
 
 beforeEach(() => {
-  execCalls = [];
-  execMockFn = () => '';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => '');
 });
 
 describe('fetchIssueClosureGitlabSync — state-only semantics', () => {
   test('opened -> {OPEN, closedByMergedPR:false}', () => {
-    execMockFn = () =>
+    setExecMock(() =>
       JSON.stringify({
         iid: 11,
         state: 'opened',
@@ -49,14 +48,15 @@ describe('fetchIssueClosureGitlabSync — state-only semantics', () => {
         description: '',
         labels: [],
         web_url: '',
-      });
+      }),
+    );
     const info = fetchIssueClosureGitlabSync(11, 'org/repo');
     expect(info.state).toBe('OPEN');
     expect(info.closedByMergedPR).toBe(false);
   });
 
   test('closed -> {CLOSED, closedByMergedPR:true} (state-only)', () => {
-    execMockFn = () =>
+    setExecMock(() =>
       JSON.stringify({
         iid: 11,
         state: 'closed',
@@ -64,14 +64,15 @@ describe('fetchIssueClosureGitlabSync — state-only semantics', () => {
         description: '',
         labels: [],
         web_url: '',
-      });
+      }),
+    );
     const info = fetchIssueClosureGitlabSync(11, 'org/repo');
     expect(info.state).toBe('CLOSED');
     expect(info.closedByMergedPR).toBe(true);
   });
 
   test('invokes glab api projects/:id/issues/:iid with explicit owner/repo', () => {
-    execMockFn = () =>
+    setExecMock(() =>
       JSON.stringify({
         iid: 42,
         state: 'opened',
@@ -79,16 +80,17 @@ describe('fetchIssueClosureGitlabSync — state-only semantics', () => {
         description: '',
         labels: [],
         web_url: '',
-      });
+      }),
+    );
     fetchIssueClosureGitlabSync(42, 'foo/bar');
-    const apiCall = execCalls.find((c) => c.includes('glab api')) ?? '';
+    const apiCall = execCalls().find((c) => c.includes('glab api')) ?? '';
     expect(apiCall).toContain('projects/foo%2Fbar/issues/42');
   });
 });
 
 describe('fetchIssueClosureGitlab — AdapterResult wrapper', () => {
   test('returns ok:true on success', async () => {
-    execMockFn = () =>
+    setExecMock(() =>
       JSON.stringify({
         iid: 1,
         state: 'closed',
@@ -96,7 +98,8 @@ describe('fetchIssueClosureGitlab — AdapterResult wrapper', () => {
         description: '',
         labels: [],
         web_url: '',
-      });
+      }),
+    );
     const result = await fetchIssueClosureGitlab({ number: 1, repo: 'org/repo' });
     expectOk(result);
     expect(result.data.state).toBe('CLOSED');
@@ -104,9 +107,9 @@ describe('fetchIssueClosureGitlab — AdapterResult wrapper', () => {
   });
 
   test('returns ok:false on glab failure', async () => {
-    execMockFn = () => {
+    setExecMock(() => {
       throw new Error('glab: 404 not found');
-    };
+    });
     const result = await fetchIssueClosureGitlab({ number: 999, repo: 'org/repo' });
     expectErr(result);
     expect(result.code).toBe('glab_issue_closure_failed');

@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  onExec,
+  execCalls,
+  resetExecMock,
+  installChildProcessMock,
+} from '../test-support/mock-child-process.ts';
 import type { AdapterResult, PrListResponse } from './types.ts';
 
 // Subprocess-boundary tests for the GitLab pr_list adapter (R-15).
@@ -12,34 +18,13 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
 function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { prListGitlab } = await import('./pr-list-gitlab.ts');
-
-function on(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
 
 function expectOk(
   r: AdapterResult<PrListResponse>,
@@ -58,18 +43,17 @@ function expectErr(
 }
 
 function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
+  return execCalls().find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('prListGitlab — subprocess boundary', () => {
   test('glab API call matches expected URL shape (happy path with cwd slug)', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on(
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec(
       'glab api projects/org%2Frepo/merge_requests?state=opened&source_branch=feature%2F5-thing&per_page=20',
       JSON.stringify([
         {
@@ -99,8 +83,8 @@ describe('prListGitlab — subprocess boundary', () => {
   });
 
   test('parses MR list response with normalized field names (iid→number, source/target_branch→head/base)', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on(
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec(
       'glab api projects/org%2Frepo/merge_requests',
       JSON.stringify([
         {
@@ -147,8 +131,8 @@ describe('prListGitlab — subprocess boundary', () => {
   });
 
   test('state argv translation: open→opened, merged→merged, all→omitted', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
 
     // open → opened
     await prListGitlab({ state: 'open', limit: 20 });
@@ -156,35 +140,35 @@ describe('prListGitlab — subprocess boundary', () => {
     expect(call).toContain('state=opened');
 
     // merged → merged
-    execCalls = [];
+    execCalls().length = 0;
     await prListGitlab({ state: 'merged', limit: 20 });
     call = findCall('glab api projects/');
     expect(call).toContain('state=merged');
 
     // all → no state= param at all
-    execCalls = [];
+    execCalls().length = 0;
     await prListGitlab({ state: 'all', limit: 20 });
     call = findCall('glab api projects/');
     expect(call).not.toContain('state=');
   });
 
   test('--author flag forwarded as author_username only when provided', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
 
     await prListGitlab({ author: 'alice', state: 'open', limit: 20 });
     let call = findCall('glab api projects/');
     expect(call).toContain('author_username=alice');
 
-    execCalls = [];
+    execCalls().length = 0;
     await prListGitlab({ state: 'open', limit: 20 });
     call = findCall('glab api projects/');
     expect(call).not.toContain('author_username');
   });
 
   test('limit rendered as per_page query param', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
 
     await prListGitlab({ state: 'open', limit: 5 });
     const call = findCall('glab api projects/');
@@ -193,7 +177,7 @@ describe('prListGitlab — subprocess boundary', () => {
 
   test('args.repo slug routed into glab api path (URL-encoded), overriding cwd remote', async () => {
     // No `git remote get-url origin` mock — explicit slug should bypass it.
-    on(
+    onExec(
       'glab api projects/target-org%2Ftarget-repo/merge_requests',
       JSON.stringify([]),
     );
@@ -210,8 +194,8 @@ describe('prListGitlab — subprocess boundary', () => {
   });
 
   test('empty result returns {prs: []} (not an error)', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
 
     const result = await prListGitlab({
       head: 'feature/99-none',
@@ -223,8 +207,8 @@ describe('prListGitlab — subprocess boundary', () => {
   });
 
   test('returns AdapterResult{ok:false, code} on glab failure (not thrown)', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on('glab api projects/org%2Frepo/merge_requests', () => {
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests', () => {
       const err = new Error('glab: not authenticated') as ThrowableError;
       err.stderr = 'glab: not authenticated';
       err.status = 1;
@@ -238,8 +222,8 @@ describe('prListGitlab — subprocess boundary', () => {
   });
 
   test('base/target_branch flag forwarded only when provided', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
 
     await prListGitlab({ base: 'main', state: 'open', limit: 20 });
     const call = findCall('glab api projects/');

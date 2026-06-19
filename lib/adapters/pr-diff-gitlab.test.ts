@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  onExec,
+  execCalls,
+  resetExecMock,
+  installChildProcessMock,
+} from '../test-support/mock-child-process.ts';
 import type { AdapterResult, PrDiffResponse } from './types.ts';
 
 // Subprocess-boundary tests for the GitLab pr_diff adapter (R-15).
@@ -10,34 +16,13 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
 function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { prDiffGitlab } = await import('./pr-diff-gitlab.ts');
-
-function on(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
 
 function expectOk(
   r: AdapterResult<PrDiffResponse>,
@@ -56,12 +41,11 @@ function expectErr(
 }
 
 function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
+  return execCalls().find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 const TWO_FILE_DIFF = `diff --git a/foo.txt b/foo.txt
@@ -94,9 +78,9 @@ function buildHugeDiff(lineCount: number): string {
 
 describe('prDiffGitlab — subprocess boundary', () => {
   test('glab CLI invocation matches expected argv shape (happy path)', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on('glab mr diff', TWO_FILE_DIFF);
-    on(
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab mr diff', TWO_FILE_DIFF);
+    onExec(
       'glab api projects/org%2Frepo/merge_requests/11',
       JSON.stringify({
         iid: 11,
@@ -121,9 +105,9 @@ describe('prDiffGitlab — subprocess boundary', () => {
   });
 
   test('parses unified diff response into PrDiffResponse', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on('glab mr diff', TWO_FILE_DIFF);
-    on(
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab mr diff', TWO_FILE_DIFF);
+    onExec(
       'glab api projects/org%2Frepo/merge_requests/11',
       JSON.stringify({
         iid: 11,
@@ -150,7 +134,7 @@ describe('prDiffGitlab — subprocess boundary', () => {
   });
 
   test('returns AdapterResult{ok:false, code} on glab mr diff failure (not thrown)', async () => {
-    on('glab mr diff', () => {
+    onExec('glab mr diff', () => {
       const err = new Error('glab: not authenticated') as ThrowableError;
       err.stderr = 'glab: not authenticated';
       err.status = 1;
@@ -165,9 +149,9 @@ describe('prDiffGitlab — subprocess boundary', () => {
 
   test('handles 10000-line truncation safety valve', async () => {
     const huge = buildHugeDiff(20000);
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on('glab mr diff', huge);
-    on(
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab mr diff', huge);
+    onExec(
       'glab api projects/org%2Frepo/merge_requests/500',
       JSON.stringify({
         iid: 500,
@@ -192,9 +176,9 @@ describe('prDiffGitlab — subprocess boundary', () => {
   });
 
   test('empty diff returns zero counts', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on('glab mr diff', '');
-    on(
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab mr diff', '');
+    onExec(
       'glab api projects/org%2Frepo/merge_requests/22',
       JSON.stringify({
         iid: 22,
@@ -216,9 +200,9 @@ describe('prDiffGitlab — subprocess boundary', () => {
   });
 
   test('--repo flag forwarded into glab mr diff and slug routed into glab api path', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/cwd-org/cwd-repo.git');
-    on('glab mr diff', TWO_FILE_DIFF);
-    on(
+    onExec('git remote get-url origin', 'https://gitlab.com/cwd-org/cwd-repo.git');
+    onExec('glab mr diff', TWO_FILE_DIFF);
+    onExec(
       'glab api projects/target-org%2Ftarget-repo/merge_requests/11',
       JSON.stringify({
         iid: 11,

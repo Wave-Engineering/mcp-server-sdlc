@@ -1,5 +1,11 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
 import type { AdapterResult, LabelListResponse } from './types.ts';
+import {
+  installChildProcessMock,
+  onExec as on,
+  resetExecMock,
+  execCalls,
+} from '../test-support/mock-child-process.ts';
 
 // Subprocess-boundary tests for the GitLab label_list adapter (R-15).
 // Integration-level coverage (schema validation, handler envelope, cross-platform
@@ -16,42 +22,13 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
 function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  // Argv strictness — gh-style flags on the glab path means we regressed.
-  if (flat.includes('glab label list') && (/--limit/.test(flat) || /--repo\s/.test(flat))) {
-    const err = new Error(
-      `FAIL: glab label list invoked with gh-style flags — glab uses --per-page/-R`,
-    ) as ThrowableError;
-    err.status = 127;
-    throw err;
-  }
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { labelListGitlab } = await import('./label-list-gitlab.ts');
-
-function on(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
 
 function expectOk(
   r: AdapterResult<LabelListResponse>,
@@ -70,12 +47,11 @@ function expectErr(
 }
 
 function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
+  return execCalls().find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('labelListGitlab — subprocess boundary', () => {

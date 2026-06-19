@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  onExec,
+  execCalls,
+  resetExecMock,
+  installChildProcessMock,
+} from '../test-support/mock-child-process.ts';
 import type { AdapterResult, PrFilesResponse } from './types.ts';
 
 // Subprocess-boundary tests for the GitHub pr_files adapter (R-15).
@@ -13,34 +19,13 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
 function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { prFilesGithub } = await import('./pr-files-github.ts');
-
-function on(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
 
 // Narrow AdapterResult into the success branch — throws if it's an error or
 // platform_unsupported variant. Lets test bodies access `.data` directly
@@ -62,17 +47,16 @@ function expectErr(
 }
 
 function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
+  return execCalls().find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('prFilesGithub — subprocess boundary', () => {
   test('gh CLI invocation matches expected argv shape (happy path)', async () => {
-    on(
+    onExec(
       'gh pr view',
       JSON.stringify({
         files: [{ path: 'src/new.ts', additions: 12, deletions: 0, changeType: 'ADDED' }],
@@ -91,7 +75,7 @@ describe('prFilesGithub — subprocess boundary', () => {
   });
 
   test('parses files-changed JSON response into PrFilesResponse', async () => {
-    on(
+    onExec(
       'gh pr view',
       JSON.stringify({
         files: [
@@ -119,7 +103,7 @@ describe('prFilesGithub — subprocess boundary', () => {
   });
 
   test('changeType mapping covers DELETED → removed and CHANGED → modified', async () => {
-    on(
+    onExec(
       'gh pr view',
       JSON.stringify({
         files: [
@@ -140,7 +124,7 @@ describe('prFilesGithub — subprocess boundary', () => {
   });
 
   test('empty files list returns empty array and zero totals', async () => {
-    on('gh pr view', JSON.stringify({ files: [] }));
+    onExec('gh pr view', JSON.stringify({ files: [] }));
 
     const result = await prFilesGithub({ number: 99 });
     expectOk(result);
@@ -150,7 +134,7 @@ describe('prFilesGithub — subprocess boundary', () => {
   });
 
   test('missing files field defaults to empty list', async () => {
-    on('gh pr view', JSON.stringify({}));
+    onExec('gh pr view', JSON.stringify({}));
 
     const result = await prFilesGithub({ number: 1 });
     expectOk(result);
@@ -158,7 +142,7 @@ describe('prFilesGithub — subprocess boundary', () => {
   });
 
   test('non-numeric additions/deletions coerce to 0', async () => {
-    on(
+    onExec(
       'gh pr view',
       JSON.stringify({
         files: [
@@ -178,7 +162,7 @@ describe('prFilesGithub — subprocess boundary', () => {
   });
 
   test('returns AdapterResult{ok:false, code} on gh failure (not thrown)', async () => {
-    on('gh pr view', () => {
+    onExec('gh pr view', () => {
       const err = new Error('gh: not found') as ThrowableError;
       err.stderr = 'gh: not found';
       err.status = 1;
@@ -192,7 +176,7 @@ describe('prFilesGithub — subprocess boundary', () => {
   });
 
   test('--repo flag forwarded when args.repo provided', async () => {
-    on(
+    onExec(
       'gh pr view',
       JSON.stringify({
         files: [{ path: 'x.ts', additions: 1, deletions: 0, changeType: 'ADDED' }],

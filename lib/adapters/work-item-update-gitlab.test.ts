@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  onExec,
+  execCalls,
+  resetExecMock,
+  installChildProcessMock,
+} from '../test-support/mock-child-process.ts';
 import type { AdapterResult, WorkItemUpdateResponse } from './types.ts';
 
 // Subprocess-boundary tests for the GitLab work_item_update adapter (#287).
@@ -11,44 +17,13 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
 function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  if (
-    flat.includes('glab issue update') &&
-    (/--repo/.test(flat) || /--body\s/.test(flat) || /--add-label/.test(flat))
-  ) {
-    const err = new Error(
-      'FAIL: glab issue update invoked with gh-style flags',
-    ) as ThrowableError;
-    err.status = 127;
-    throw err;
-  }
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { workItemUpdateGitlab } = await import('./work-item-update-gitlab.ts');
-
-function on(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
 
 function expectOk(
   r: AdapterResult<WorkItemUpdateResponse>,
@@ -75,17 +50,16 @@ function expectUnsupported(
 }
 
 function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
+  return execCalls().find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('workItemUpdateGitlab — subprocess boundary', () => {
   test('title-only patch emits glab issue update --title', async () => {
-    on('glab issue update', 'https://gitlab.com/org/repo/-/issues/42\n');
+    onExec('glab issue update', 'https://gitlab.com/org/repo/-/issues/42\n');
 
     const result = await workItemUpdateGitlab({
       issue_ref: '#42',
@@ -100,7 +74,7 @@ describe('workItemUpdateGitlab — subprocess boundary', () => {
   });
 
   test('body-only patch emits --description (NOT --body)', async () => {
-    on('glab issue update', 'https://gitlab.com/org/repo/-/issues/42\n');
+    onExec('glab issue update', 'https://gitlab.com/org/repo/-/issues/42\n');
 
     await workItemUpdateGitlab({ issue_ref: '#42', patch: { body: 'x' } });
 
@@ -110,7 +84,7 @@ describe('workItemUpdateGitlab — subprocess boundary', () => {
   });
 
   test('-R forwarded for cross-repo update (NOT --repo)', async () => {
-    on('glab issue update', 'https://gitlab.com/foo/bar/-/issues/9\n');
+    onExec('glab issue update', 'https://gitlab.com/foo/bar/-/issues/9\n');
 
     await workItemUpdateGitlab({
       issue_ref: '#9',
@@ -124,7 +98,7 @@ describe('workItemUpdateGitlab — subprocess boundary', () => {
   });
 
   test('labels patch emits CSV --label / --unlabel diff', async () => {
-    on(
+    onExec(
       'glab issue view',
       JSON.stringify({
         iid: 7,
@@ -134,7 +108,7 @@ describe('workItemUpdateGitlab — subprocess boundary', () => {
         assignees: [],
       }),
     );
-    on('glab issue update', 'https://gitlab.com/org/repo/-/issues/7\n');
+    onExec('glab issue update', 'https://gitlab.com/org/repo/-/issues/7\n');
 
     await workItemUpdateGitlab({
       issue_ref: '#7',
@@ -147,7 +121,7 @@ describe('workItemUpdateGitlab — subprocess boundary', () => {
   });
 
   test('assignees patch emits --assignee / --unassign diff', async () => {
-    on(
+    onExec(
       'glab issue view',
       JSON.stringify({
         iid: 11,
@@ -157,7 +131,7 @@ describe('workItemUpdateGitlab — subprocess boundary', () => {
         assignees: [{ username: 'alice' }, { username: 'bob' }],
       }),
     );
-    on('glab issue update', 'https://gitlab.com/org/repo/-/issues/11\n');
+    onExec('glab issue update', 'https://gitlab.com/org/repo/-/issues/11\n');
 
     await workItemUpdateGitlab({
       issue_ref: '#11',
@@ -179,7 +153,7 @@ describe('workItemUpdateGitlab — subprocess boundary', () => {
     expectUnsupported(result);
     expect(result.hint.toLowerCase()).toContain('milestone');
     // No glab subprocess should have been attempted.
-    expect(execCalls.length).toBe(0);
+    expect(execCalls().length).toBe(0);
   });
 
   // ---- body_section: read-modify-write ----
@@ -196,7 +170,7 @@ describe('workItemUpdateGitlab — subprocess boundary', () => {
       '- [ ] AC',
     ].join('\n');
 
-    on(
+    onExec(
       'glab issue view',
       JSON.stringify({
         iid: 5,
@@ -206,7 +180,7 @@ describe('workItemUpdateGitlab — subprocess boundary', () => {
         assignees: [],
       }),
     );
-    on('glab issue update', 'https://gitlab.com/org/repo/-/issues/5\n');
+    onExec('glab issue update', 'https://gitlab.com/org/repo/-/issues/5\n');
 
     const result = await workItemUpdateGitlab({
       issue_ref: '#5',
@@ -222,7 +196,7 @@ describe('workItemUpdateGitlab — subprocess boundary', () => {
   });
 
   test('body_section missing returns typed error', async () => {
-    on(
+    onExec(
       'glab issue view',
       JSON.stringify({
         iid: 5,
@@ -251,7 +225,7 @@ describe('workItemUpdateGitlab — subprocess boundary', () => {
     });
     expectOk(result);
     expect(result.data.dry_run).toBe(true);
-    expect(execCalls.some((c) => unquote(c).includes('glab issue update'))).toBe(false);
+    expect(execCalls().some((c) => unquote(c).includes('glab issue update'))).toBe(false);
   });
 
   // ---- validation ----
@@ -283,7 +257,7 @@ describe('workItemUpdateGitlab — subprocess boundary', () => {
   // ---- error surface ----
 
   test('returns AdapterResult.error on glab issue update failure', async () => {
-    on('glab issue update', () => {
+    onExec('glab issue update', () => {
       const err = new Error('forbidden') as ThrowableError;
       err.stderr = 'glab: 403';
       err.status = 1;

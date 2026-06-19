@@ -10,15 +10,15 @@
 // The platform adapter is injected via the `Deps` seam so no `mock.module`
 // leakage hits sibling adapter tests (lesson_bun_native_apis.md).
 
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  setExecMock,
+  resetExecMock,
+} from '../lib/test-support/mock-child-process.ts';
 import { reconcile, type Deps } from '../handlers/wave_reconcile.ts';
 
-let execMockFn: (cmd: string) => string = (cmd: string) => {
-  if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
-  return '';
-};
-const mockExecSync = mock((cmd: string, _opts?: unknown) => execMockFn(cmd));
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 interface MockAdapter {
   prListCalls: Array<unknown>;
@@ -56,11 +56,11 @@ async function setupFixture(plan: object, state: object) {
 }
 
 function resetExec() {
-  execMockFn = (cmd: string) => {
+  resetExecMock();
+  setExecMock((cmd: string) => {
     if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
     return '';
-  };
-  mockExecSync.mockClear();
+  });
 }
 
 function restoreEnv() {

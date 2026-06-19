@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../test-support/mock-child-process.ts';
 import type { AdapterResult, PrMergeResponse } from './types.ts';
 
 // Subprocess-boundary tests for the GitHub pr_merge adapter (R-15).
@@ -14,47 +20,26 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
 function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { prMergeGithub } = await import('./pr-merge-github.ts');
 const { clearMergeQueueCache } = await import('../merge_queue_detect.ts');
 
-function on(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
-
 // Default GraphQL stub for queue detection: respond "no queue" so the
 // direct path / stderr-fallback tests don't need per-test boilerplate.
 function stubNoQueue(): void {
-  on(
+  onExec(
     'gh api graphql',
     JSON.stringify({ data: { repository: { mergeQueue: null } } }),
   );
 }
 
 function stubEnforcedQueue(): void {
-  on(
+  onExec(
     'gh api graphql',
     JSON.stringify({
       data: { repository: { mergeQueue: { __typename: 'MergeQueue' } } },
@@ -88,22 +73,21 @@ function expectErr(
 }
 
 function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
+  return execCalls().find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
   clearMergeQueueCache();
   // Default cwd remote — tests can override before relevant calls.
-  on('git remote get-url origin', 'https://github.com/org/repo.git\n');
+  onExec('git remote get-url origin', 'https://github.com/org/repo.git\n');
 });
 
 describe('prMergeGithub — subprocess boundary', () => {
   test('direct merge returns aggregate envelope (#225 shape preservation)', async () => {
     stubNoQueue();
-    on('gh pr merge 42 --squash --delete-branch', '');
-    on(
+    onExec('gh pr merge 42 --squash --delete-branch', '');
+    onExec(
       'gh pr view 42 --json state,url,mergeCommit',
       JSON.stringify({
         state: 'MERGED',
@@ -131,8 +115,8 @@ describe('prMergeGithub — subprocess boundary', () => {
 
   test('queue path returns enrolled+OPEN (#225 honesty preservation)', async () => {
     stubEnforcedQueue();
-    on('gh pr merge 100 --squash --delete-branch --auto', '');
-    on(
+    onExec('gh pr merge 100 --squash --delete-branch --auto', '');
+    onExec(
       'gh pr view 100 --json state,url,mergeCommit',
       JSON.stringify({
         state: 'OPEN',
@@ -150,7 +134,7 @@ describe('prMergeGithub — subprocess boundary', () => {
     expect(result.data.queue.enabled).toBe(true);
     expect(result.data.queue.enforced).toBe(true);
     // Critical: NO failed direct merge call before --auto.
-    const directOnly = execCalls.find(
+    const directOnly = execCalls().find(
       (c) =>
         c.startsWith('gh pr merge 100 --squash --delete-branch') && !c.includes('--auto'),
     );
@@ -159,8 +143,8 @@ describe('prMergeGithub — subprocess boundary', () => {
 
   test('skip_train + enforced queue emits warning (#224 fold preservation)', async () => {
     stubEnforcedQueue();
-    on('gh pr merge 200 --squash --delete-branch --auto', '');
-    on(
+    onExec('gh pr merge 200 --squash --delete-branch --auto', '');
+    onExec(
       'gh pr view 200 --json state,url,mergeCommit',
       JSON.stringify({
         state: 'OPEN',
@@ -180,8 +164,8 @@ describe('prMergeGithub — subprocess boundary', () => {
 
   test('use_merge_queue + skip_train precedence warning (#225 F3 preservation)', async () => {
     stubNoQueue();
-    on('gh pr merge 250 --squash --delete-branch --auto', '');
-    on(
+    onExec('gh pr merge 250 --squash --delete-branch --auto', '');
+    onExec(
       'gh pr view 250 --json state,url,mergeCommit',
       JSON.stringify({
         state: 'OPEN',
@@ -204,7 +188,7 @@ describe('prMergeGithub — subprocess boundary', () => {
 
   test('returns AdapterResult{ok:false, code} on gh failure (not thrown)', async () => {
     stubNoQueue();
-    on('gh pr merge 8 --squash --delete-branch', () => {
+    onExec('gh pr merge 8 --squash --delete-branch', () => {
       const err = new Error('Pull request is not mergeable: conflicts') as ThrowableError;
       err.stderr = 'Pull request is not mergeable: conflicts\n';
       throw err;
@@ -219,14 +203,14 @@ describe('prMergeGithub — subprocess boundary', () => {
   test('stderr-fallback into queue: --auto retried after queue stderr', async () => {
     stubNoQueue(); // detection returns false-negative
     let directCalled = false;
-    on('gh pr merge 55 --squash --delete-branch', () => {
+    onExec('gh pr merge 55 --squash --delete-branch', () => {
       if (!directCalled) {
         directCalled = true;
         throw mergeQueueError();
       }
       return '';
     });
-    on(
+    onExec(
       'gh pr view 55 --json state,url,mergeCommit',
       JSON.stringify({
         state: 'OPEN',
@@ -239,7 +223,7 @@ describe('prMergeGithub — subprocess boundary', () => {
     expectOk(result);
     expect(result.data.merge_method).toBe('merge_queue');
     expect(result.data.queue).toEqual({ enabled: true, position: null, enforced: true });
-    const autoCall = execCalls.find(
+    const autoCall = execCalls().find(
       (c) => c.includes('gh pr merge 55') && c.includes('--auto'),
     );
     expect(autoCall).toBeDefined();
@@ -247,8 +231,8 @@ describe('prMergeGithub — subprocess boundary', () => {
 
   test('regression #258: direct exec exit 0 + state OPEN reports merged:false, merge_queue', async () => {
     stubNoQueue();
-    on('gh pr merge 99 --squash --delete-branch', ''); // exits 0
-    on(
+    onExec('gh pr merge 99 --squash --delete-branch', ''); // exits 0
+    onExec(
       'gh pr view 99 --json state,url,mergeCommit',
       JSON.stringify({
         state: 'OPEN', // gh enrolled but didn't merge synchronously
@@ -268,8 +252,8 @@ describe('prMergeGithub — subprocess boundary', () => {
 
   test('multi-line squash message → --body-file', async () => {
     stubNoQueue();
-    on('gh pr merge 21 --squash --delete-branch', '');
-    on(
+    onExec('gh pr merge 21 --squash --delete-branch', '');
+    onExec(
       'gh pr view 21 --json state,url,mergeCommit',
       JSON.stringify({
         state: 'MERGED',
@@ -287,10 +271,10 @@ describe('prMergeGithub — subprocess boundary', () => {
   });
 
   test('--repo forwarded to merge + view + queue detection', async () => {
-    on('git remote get-url origin', 'https://github.com/cwd-org/cwd-repo.git\n');
+    onExec('git remote get-url origin', 'https://github.com/cwd-org/cwd-repo.git\n');
     stubNoQueue();
-    on('gh pr merge 42 --squash --delete-branch', '');
-    on(
+    onExec('gh pr merge 42 --squash --delete-branch', '');
+    onExec(
       'gh pr view 42 --json state,url,mergeCommit',
       JSON.stringify({
         state: 'MERGED',
@@ -320,10 +304,10 @@ describe('prMergeGithub — subprocess boundary', () => {
     // (we call prMergeGithub directly, not the handler) and verifies the
     // resulting command contains the dangerous chars only inside a single
     // shell-quoted token.
-    on('git remote get-url origin', 'https://github.com/cwd-org/cwd-repo.git\n');
+    onExec('git remote get-url origin', 'https://github.com/cwd-org/cwd-repo.git\n');
     stubNoQueue();
-    on('gh pr merge 99', '');
-    on(
+    onExec('gh pr merge 99', '');
+    onExec(
       'gh pr view 99',
       JSON.stringify({
         state: 'MERGED',
@@ -336,7 +320,7 @@ describe('prMergeGithub — subprocess boundary', () => {
     const hostileRepo = `sec/repo'; echo PWNED; #`;
     await prMergeGithub({ number: 99, repo: hostileRepo });
 
-    const mergeCall = execCalls.find((c) => c.includes('gh pr merge 99'));
+    const mergeCall = execCalls().find((c) => c.includes('gh pr merge 99'));
     expect(mergeCall).toBeDefined();
     // shellEscape wraps each argv element in `'...'` and rewrites embedded
     // single quotes as `'\''` (close + escape + reopen). The hostile value
@@ -362,14 +346,14 @@ describe('prMergeGithub — subprocess boundary', () => {
     // rather than surface gh_pr_merge_skip_train_failed to the caller.
     stubNoQueue();
     let directCalled = false;
-    on('gh pr merge 280 --squash --delete-branch', () => {
+    onExec('gh pr merge 280 --squash --delete-branch', () => {
       if (!directCalled) {
         directCalled = true;
         throw mergeQueueError();
       }
       return '';
     });
-    on(
+    onExec(
       'gh pr view 280 --json state,url,mergeCommit',
       JSON.stringify({
         state: 'OPEN',
@@ -384,7 +368,7 @@ describe('prMergeGithub — subprocess boundary', () => {
     expect(result.data.enrolled).toBe(true);
     expect(result.data.queue).toEqual({ enabled: true, position: null, enforced: true });
     // The --auto retry must have fired after the queue-strategy error.
-    const autoCall = execCalls.find(
+    const autoCall = execCalls().find(
       (c) => c.includes('gh pr merge 280') && c.includes('--auto'),
     );
     expect(autoCall).toBeDefined();
@@ -398,14 +382,14 @@ describe('prMergeGithub — subprocess boundary', () => {
     // Same scenario as above but focused on the new response-shape field.
     stubNoQueue();
     let directCalled = false;
-    on('gh pr merge 281 --squash --delete-branch', () => {
+    onExec('gh pr merge 281 --squash --delete-branch', () => {
       if (!directCalled) {
         directCalled = true;
         throw mergeQueueError();
       }
       return '';
     });
-    on(
+    onExec(
       'gh pr view 281 --json state,url,mergeCommit',
       JSON.stringify({
         state: 'OPEN',
@@ -424,8 +408,8 @@ describe('prMergeGithub — subprocess boundary', () => {
     // succeeds synchronously. queue_fallback must stay false — the field is a
     // signal that the silent retry fired, not that skip_train was requested.
     stubNoQueue();
-    on('gh pr merge 282 --squash --delete-branch', '');
-    on(
+    onExec('gh pr merge 282 --squash --delete-branch', '');
+    onExec(
       'gh pr view 282 --json state,url,mergeCommit',
       JSON.stringify({
         state: 'MERGED',
@@ -441,7 +425,7 @@ describe('prMergeGithub — subprocess boundary', () => {
     expect(result.data.queue_fallback).toBe(false);
     expect(result.data.warnings).toEqual([]);
     // No --auto call on the happy path.
-    const autoCall = execCalls.find(
+    const autoCall = execCalls().find(
       (c) => c.includes('gh pr merge 282') && c.includes('--auto'),
     );
     expect(autoCall).toBeUndefined();
@@ -456,7 +440,7 @@ describe('prMergeGithub — subprocess boundary', () => {
     // direct merge AND gh pr merge --auto fail. The adapter should fall back
     // to GraphQL enqueuePullRequest mutation.
     // Register more specific matcher for enqueuePullRequest BEFORE stubNoQueue
-    on(
+    onExec(
       'enqueuePullRequest',
       JSON.stringify({
         data: {
@@ -467,21 +451,21 @@ describe('prMergeGithub — subprocess boundary', () => {
       }),
     );
     stubNoQueue(); // detection returns false-negative
-    on('gh pr merge 284 --squash --delete-branch', () => {
+    onExec('gh pr merge 284 --squash --delete-branch', () => {
       throw mergeQueueError();
     });
     // --auto ALSO fails with a queue-related error (merge-queue-on but auto-merge-off)
-    on('gh pr merge 284 --squash --delete-branch --auto', () => {
+    onExec('gh pr merge 284 --squash --delete-branch --auto', () => {
       const err = new Error('Auto merge is not allowed for this repository') as ThrowableError;
       err.stderr = 'Auto merge is not allowed for this repository\n';
       throw err;
     });
     // GraphQL node_id fetch
-    on(
+    onExec(
       'gh api repos/org/repo/pulls/284',
       JSON.stringify({ node_id: 'PR_kwDOAbc123' }),
     );
-    on(
+    onExec(
       'gh pr view 284 --json state,url,mergeCommit',
       JSON.stringify({
         state: 'OPEN',
@@ -499,15 +483,15 @@ describe('prMergeGithub — subprocess boundary', () => {
     expect(result.data.graphql_fallback).toBe(true);
     expect(result.data.queue_position).toBe(3);
     // Verify both --auto and GraphQL calls were made
-    const autoCall = execCalls.find(
+    const autoCall = execCalls().find(
       (c) => unquote(c).includes('gh pr merge 284') && unquote(c).includes('--auto'),
     );
     expect(autoCall).toBeDefined();
-    const nodeIdCall = execCalls.find((c) =>
+    const nodeIdCall = execCalls().find((c) =>
       unquote(c).includes('gh api repos/org/repo/pulls/284'),
     );
     expect(nodeIdCall).toBeDefined();
-    const graphqlCall = execCalls.find(
+    const graphqlCall = execCalls().find(
       (c) =>
         unquote(c).includes('gh api graphql') && unquote(c).includes('enqueuePullRequest'),
     );
@@ -519,27 +503,27 @@ describe('prMergeGithub — subprocess boundary', () => {
     // (runArgv) so that special characters in `repo` or `prId` cannot break
     // out of the shell command. We verify by stubbing a node_id with chars
     // that would terminate a string-template'd command.
-    on(
+    onExec(
       'enqueuePullRequest',
       JSON.stringify({
         data: { enqueuePullRequest: { mergeQueueEntry: { position: 7 } } },
       }),
     );
     stubNoQueue();
-    on('gh pr merge 286 --squash --delete-branch', () => {
+    onExec('gh pr merge 286 --squash --delete-branch', () => {
       throw mergeQueueError();
     });
-    on('gh pr merge 286 --squash --delete-branch --auto', () => {
+    onExec('gh pr merge 286 --squash --delete-branch --auto', () => {
       const err = new Error('Auto merge is not allowed for this repository') as ThrowableError;
       err.stderr = 'Auto merge is not allowed for this repository\n';
       throw err;
     });
     // node_id contains characters that WOULD break out of a quoted shell value
-    on(
+    onExec(
       'gh api repos/org/repo/pulls/286',
       JSON.stringify({ node_id: `PR_kw"; echo PWNED; #` }),
     );
-    on(
+    onExec(
       'gh pr view 286 --json state,url,mergeCommit',
       JSON.stringify({
         state: 'OPEN',
@@ -553,7 +537,7 @@ describe('prMergeGithub — subprocess boundary', () => {
     // The dangerous prId value should appear inside single-quoted argv
     // elements, never as bare shell text. With shell-escape, every `'` in
     // the value is replaced by `'\''` and the value is wrapped in `'...'`.
-    const graphqlCall = execCalls.find(
+    const graphqlCall = execCalls().find(
       (c) => c.includes('gh') && c.includes('graphql') && c.includes('PWNED'),
     );
     expect(graphqlCall).toBeDefined();
@@ -576,8 +560,8 @@ describe('prMergeGithub — subprocess boundary', () => {
   test('pr-merge-github — direct merge success has graphql_fallback:false', async () => {
     // Happy path: direct merge succeeds, no GraphQL fallback needed.
     stubNoQueue();
-    on('gh pr merge 285 --squash --delete-branch', '');
-    on(
+    onExec('gh pr merge 285 --squash --delete-branch', '');
+    onExec(
       'gh pr view 285 --json state,url,mergeCommit',
       JSON.stringify({
         state: 'MERGED',
@@ -599,7 +583,7 @@ describe('prMergeGithub — subprocess boundary', () => {
     // gh fails for a non-queue reason (e.g., CI red, conflicts). The adapter
     // should NOT invoke GraphQL enqueuePullRequest fallback, just surface the error.
     stubNoQueue();
-    on('gh pr merge 286 --squash --delete-branch', () => {
+    onExec('gh pr merge 286 --squash --delete-branch', () => {
       const err = new Error('Pull request is not mergeable: conflicts') as ThrowableError;
       err.stderr = 'Pull request is not mergeable: conflicts\n';
       throw err;
@@ -610,10 +594,10 @@ describe('prMergeGithub — subprocess boundary', () => {
     expect(result.code).toBe('gh_pr_merge_failed');
     expect(result.error).toContain('conflicts');
     // Queue detection GraphQL call is expected, but enqueuePullRequest should NOT be called
-    const graphqlEnqueueCall = execCalls.find((c) => c.includes('enqueuePullRequest'));
+    const graphqlEnqueueCall = execCalls().find((c) => c.includes('enqueuePullRequest'));
     expect(graphqlEnqueueCall).toBeUndefined();
     // Also should not fetch node_id
-    const nodeIdCall = execCalls.find((c) => c.includes('gh api repos/org/repo/pulls/286'));
+    const nodeIdCall = execCalls().find((c) => c.includes('gh api repos/org/repo/pulls/286'));
     expect(nodeIdCall).toBeUndefined();
   });
 });

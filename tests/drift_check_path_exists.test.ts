@@ -1,8 +1,14 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../lib/test-support/mock-child-process.ts';
 
 // drift_check_path_exists now uses child_process.execSync (story #253). Tests
-// intercept the boundary via `mock.module('child_process', ...)`. Each test
-// populates `execRegistry` with substring → responder mappings; an unmatched
+// intercept the boundary via the shared child_process mock. Each test
+// populates the registry with substring → responder mappings; an unmatched
 // call throws so missing stubs surface loudly.
 
 interface ThrowableError extends Error {
@@ -11,45 +17,12 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-type Responder = string | (() => string);
-
-let execRegistry: Array<{ match: string; respond: Responder }> = [];
-let execCalls: string[] = [];
-
-function unquote(cmd: string): string {
-  return cmd.replace(/'([^']*)'/g, '$1');
-}
-
-function mockExec(cmd: string): string {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec call: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec call: ${cmd}`;
-  err.status = 127;
-  throw err;
-}
-
-mock.module('child_process', () => ({
-  execSync: (cmd: string, _opts?: unknown) => mockExec(cmd),
-}));
+installChildProcessMock();
 
 const { default: handler } = await import('../handlers/drift_check_path_exists.ts');
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
   return JSON.parse(result.content[0].text);
-}
-
-function onExec(match: string, respond: Responder) {
-  execRegistry.push({ match, respond });
-}
-
-function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
 
 function failExec(match: string, stderr: string = 'No such file or directory', status: number = 1): void {
@@ -78,14 +51,12 @@ function restoreEnv() {
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
   setProjectDir();
 });
 
 afterEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
   restoreEnv();
 });
 
@@ -170,14 +141,14 @@ describe('drift_check_path_exists handler', () => {
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);
     // No execSync should have been called.
-    expect(execCalls.length).toBe(0);
+    expect(execCalls().length).toBe(0);
   });
 
   test('schema_validation — rejects invalid kind', async () => {
     const result = await handler.execute({ path: 'x', kind: 'bogus' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);
-    expect(execCalls.length).toBe(0);
+    expect(execCalls().length).toBe(0);
   });
 
   // --- boundary test (per #253 / Story 1.1 test-procedure ledger) ---
@@ -187,9 +158,9 @@ describe('drift_check_path_exists handler', () => {
 
     await handler.execute({ path: 'probe.ts' });
 
-    expect(execCalls.length).toBe(1);
+    expect(execCalls().length).toBe(1);
     // Fully shell-escaped: every token wrapped in '...'.
-    expect(execCalls[0]).toMatch(
+    expect(execCalls()[0]).toMatch(
       new RegExp(`^'stat' '-c' '%F' '${FIXTURE_ROOT}/probe\\.ts'$`),
     );
   });

@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../lib/test-support/mock-child-process.ts';
 
 // --- Mock child_process.execSync at module level ---
 // We intercept execSync via a registry so individual tests can override calls.
@@ -11,30 +17,11 @@ import { describe, test, expect, mock, beforeEach } from 'bun:test';
 // by tests/pr_create.test.ts (PR #266), tests/pr_diff.test.ts (PR #267), and
 // tests/pr_files.test.ts (PR #268).
 
-let execRegistry: Record<string, string> = {};
-let execCalls: string[] = [];
-let execError: Error | null = null;
-
 function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-function mockExec(cmd: string): string {
-  execCalls.push(cmd);
-  if (execError) throw execError;
-  // Match by prefix/substring against both the raw and unquoted forms so
-  // existing match keys (which assume the pre-runArgv unquoted shape) still
-  // hit on the GitHub adapter's shell-escaped invocations.
-  const flat = unquote(cmd);
-  for (const [key, value] of Object.entries(execRegistry)) {
-    if (cmd.includes(key) || flat.includes(key)) return value;
-  }
-  throw new Error(`Unexpected exec call: ${cmd}`);
-}
-
-mock.module('child_process', () => ({
-  execSync: (cmd: string, _opts?: unknown) => mockExec(cmd),
-}));
+installChildProcessMock();
 
 // Import AFTER the mock is registered
 const { default: prListHandler } = await import('../handlers/pr_list.ts');
@@ -44,16 +31,14 @@ function parseResult(content: Array<{ type: string; text: string }>) {
 }
 
 beforeEach(() => {
-  execRegistry = {};
-  execCalls = [];
-  execError = null;
+  resetExecMock();
 });
 
 describe('pr_list handler', () => {
   // --- github: head filter ---
   test('github head_filter — passes --head flag to gh pr list', async () => {
-    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
-    execRegistry['gh pr list'] = JSON.stringify([
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
+    onExec('gh pr list', JSON.stringify([
       {
         number: 7,
         title: 'Some PR',
@@ -62,7 +47,7 @@ describe('pr_list handler', () => {
         baseRefName: 'main',
         url: 'https://github.com/org/repo/pull/7',
       },
-    ]);
+    ]));
 
     const result = await prListHandler.execute({ head: 'feature/42-thing' });
     const data = parseResult(result.content);
@@ -75,81 +60,83 @@ describe('pr_list handler', () => {
     expect(prs[0].base).toBe('main');
     expect(prs[0].url).toBe('https://github.com/org/repo/pull/7');
 
-    const ghCall = execCalls.find((c) => unquote(c).startsWith('gh pr list')) ?? '';
+    const ghCall = execCalls().find((c) => unquote(c).startsWith('gh pr list')) ?? '';
     expect(unquote(ghCall)).toContain('--head feature/42-thing');
   });
 
   // --- github: state filter ---
   test('github state_filter — passes --state flag and default is open', async () => {
-    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
-    execRegistry['gh pr list'] = JSON.stringify([]);
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
+    onExec('gh pr list', JSON.stringify([]));
 
     // explicit state
     await prListHandler.execute({ state: 'closed' });
-    let ghCall = execCalls.find((c) => unquote(c).startsWith('gh pr list')) ?? '';
+    let ghCall = execCalls().find((c) => unquote(c).startsWith('gh pr list')) ?? '';
     expect(unquote(ghCall)).toContain('--state closed');
 
     // default state
-    execCalls = [];
+    resetExecMock();
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
+    onExec('gh pr list', JSON.stringify([]));
     await prListHandler.execute({});
-    ghCall = execCalls.find((c) => unquote(c).startsWith('gh pr list')) ?? '';
+    ghCall = execCalls().find((c) => unquote(c).startsWith('gh pr list')) ?? '';
     expect(unquote(ghCall)).toContain('--state open');
   });
 
   // --- github: author filter ---
   test('github author_filter — passes --author flag when provided', async () => {
-    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
-    execRegistry['gh pr list'] = JSON.stringify([]);
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
+    onExec('gh pr list', JSON.stringify([]));
 
     await prListHandler.execute({ author: '@me' });
-    const ghCall = execCalls.find((c) => unquote(c).startsWith('gh pr list')) ?? '';
+    const ghCall = execCalls().find((c) => unquote(c).startsWith('gh pr list')) ?? '';
     expect(unquote(ghCall)).toContain('--author @me');
   });
 
   // --- github: author omitted ---
   test('github author_omitted — no --author flag when not provided', async () => {
-    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
-    execRegistry['gh pr list'] = JSON.stringify([]);
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
+    onExec('gh pr list', JSON.stringify([]));
 
     await prListHandler.execute({});
-    const ghCall = execCalls.find((c) => unquote(c).startsWith('gh pr list')) ?? '';
+    const ghCall = execCalls().find((c) => unquote(c).startsWith('gh pr list')) ?? '';
     expect(ghCall).not.toContain('--author');
   });
 
   // --- github: default limit ---
   test('github default_limit — uses --limit 20 by default', async () => {
-    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
-    execRegistry['gh pr list'] = JSON.stringify([]);
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
+    onExec('gh pr list', JSON.stringify([]));
 
     await prListHandler.execute({});
-    const ghCall = execCalls.find((c) => unquote(c).startsWith('gh pr list')) ?? '';
+    const ghCall = execCalls().find((c) => unquote(c).startsWith('gh pr list')) ?? '';
     expect(unquote(ghCall)).toContain('--limit 20');
   });
 
   // --- github: custom limit ---
   test('github custom_limit — passes provided --limit', async () => {
-    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
-    execRegistry['gh pr list'] = JSON.stringify([]);
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
+    onExec('gh pr list', JSON.stringify([]));
 
     await prListHandler.execute({ limit: 5 });
-    const ghCall = execCalls.find((c) => unquote(c).startsWith('gh pr list')) ?? '';
+    const ghCall = execCalls().find((c) => unquote(c).startsWith('gh pr list')) ?? '';
     expect(unquote(ghCall)).toContain('--limit 5');
   });
 
   // --- github: base filter ---
   test('github base_filter — passes --base flag when provided', async () => {
-    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
-    execRegistry['gh pr list'] = JSON.stringify([]);
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
+    onExec('gh pr list', JSON.stringify([]));
 
     await prListHandler.execute({ base: 'main' });
-    const ghCall = execCalls.find((c) => unquote(c).startsWith('gh pr list')) ?? '';
+    const ghCall = execCalls().find((c) => unquote(c).startsWith('gh pr list')) ?? '';
     expect(unquote(ghCall)).toContain('--base main');
   });
 
   // --- github: empty result ---
   test('github empty_result — returns {prs: []} not an error', async () => {
-    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
-    execRegistry['gh pr list'] = JSON.stringify([]);
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
+    onExec('gh pr list', JSON.stringify([]));
 
     const result = await prListHandler.execute({ head: 'feature/99-none' });
     const data = parseResult(result.content);
@@ -160,8 +147,8 @@ describe('pr_list handler', () => {
 
   // --- github: normalizes field names ---
   test('github normalize — maps headRefName/baseRefName to head/base', async () => {
-    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
-    execRegistry['gh pr list'] = JSON.stringify([
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
+    onExec('gh pr list', JSON.stringify([
       {
         number: 12,
         title: 'Refactor',
@@ -170,7 +157,7 @@ describe('pr_list handler', () => {
         baseRefName: 'develop',
         url: 'https://github.com/org/repo/pull/12',
       },
-    ]);
+    ]));
 
     const result = await prListHandler.execute({});
     const data = parseResult(result.content);
@@ -188,9 +175,9 @@ describe('pr_list handler', () => {
 
   // --- gitlab: head filter ---
   test('gitlab head_filter — filters by source_branch via API', async () => {
-    execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
     // Default state is 'open' -> 'opened' in GitLab API
-    execRegistry['glab api projects/org%2Frepo/merge_requests?state=opened&source_branch='] = JSON.stringify([
+    onExec('glab api projects/org%2Frepo/merge_requests?state=opened&source_branch=', JSON.stringify([
       {
         iid: 5,
         title: 'Some MR',
@@ -200,7 +187,7 @@ describe('pr_list handler', () => {
         web_url: 'https://gitlab.com/org/repo/-/merge_requests/5',
         labels: [],
       },
-    ]);
+    ]));
 
     const result = await prListHandler.execute({ head: 'feature/5-thing' });
     const data = parseResult(result.content);
@@ -216,33 +203,35 @@ describe('pr_list handler', () => {
 
   // --- gitlab: state filter ---
   test('gitlab state_filter — filters by state via API (merged, default opened)', async () => {
-    execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
-    execRegistry['glab api projects/org%2Frepo/merge_requests?state='] = JSON.stringify([]);
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests?state=', JSON.stringify([]));
 
     await prListHandler.execute({ state: 'merged' });
-    let glabCall = execCalls.find((c) => c.includes('glab api projects/')) ?? '';
+    let glabCall = execCalls().find((c) => c.includes('glab api projects/')) ?? '';
     expect(glabCall).toContain('state=merged');
 
-    execCalls = [];
+    resetExecMock();
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests?state=', JSON.stringify([]));
     await prListHandler.execute({});
-    glabCall = execCalls.find((c) => c.includes('glab api projects/')) ?? '';
+    glabCall = execCalls().find((c) => c.includes('glab api projects/')) ?? '';
     expect(glabCall).toContain('state=opened');
   });
 
   // --- gitlab: author filter ---
   test('gitlab author_filter — filters by author_username via API', async () => {
-    execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
-    execRegistry['glab api projects/org%2Frepo/merge_requests?author_username='] = JSON.stringify([]);
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests?author_username=', JSON.stringify([]));
 
     await prListHandler.execute({ author: 'alice' });
-    const glabCall = execCalls.find((c) => c.includes('glab api projects/')) ?? '';
+    const glabCall = execCalls().find((c) => c.includes('glab api projects/')) ?? '';
     expect(glabCall).toContain('author_username=alice');
   });
 
   // --- gitlab: empty result ---
   test('gitlab empty_result — returns {prs: []} not an error', async () => {
-    execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
-    execRegistry['glab api projects/org%2Frepo/merge_requests?state=opened&source_branch='] = JSON.stringify([]);
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests?state=opened&source_branch=', JSON.stringify([]));
 
     const result = await prListHandler.execute({ head: 'feature/99-none' });
     const data = parseResult(result.content);
@@ -253,18 +242,18 @@ describe('pr_list handler', () => {
 
   // --- gitlab: default limit via per_page query param ---
   test('gitlab default_limit — uses per_page=20 by default', async () => {
-    execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
-    execRegistry['glab api projects/org%2Frepo/merge_requests?state=opened&per_page=20'] = JSON.stringify([]);
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests?state=opened&per_page=20', JSON.stringify([]));
 
     await prListHandler.execute({});
-    const glabCall = execCalls.find((c) => c.includes('glab api projects/')) ?? '';
+    const glabCall = execCalls().find((c) => c.includes('glab api projects/')) ?? '';
     expect(glabCall).toContain('per_page=20');
   });
 
   // --- gitlab: normalizes field names ---
   test('gitlab normalize — maps source_branch/target_branch to head/base and iid to number', async () => {
-    execRegistry['git remote get-url origin'] = 'https://gitlab.com/org/repo.git';
-    execRegistry['glab api projects/org%2Frepo/merge_requests?state=opened&per_page=20'] = JSON.stringify([
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests?state=opened&per_page=20', JSON.stringify([
       {
         iid: 21,
         title: 'Docs update',
@@ -274,7 +263,7 @@ describe('pr_list handler', () => {
         web_url: 'https://gitlab.com/org/repo/-/merge_requests/21',
         labels: [],
       },
-    ]);
+    ]));
 
     const result = await prListHandler.execute({});
     const data = parseResult(result.content);
@@ -302,20 +291,20 @@ describe('pr_list handler', () => {
   // --- cross-repo: route_with_repo ---
   test('route_with_repo — forwards --repo to gh pr list when repo arg provided (github)', async () => {
     // cwd origin is a DIFFERENT repo — repo arg must override.
-    execRegistry['git remote get-url origin'] = 'https://github.com/Wave-Engineering/claudecode-workflow.git';
-    execRegistry['gh pr list'] = JSON.stringify([]);
+    onExec('git remote get-url origin', 'https://github.com/Wave-Engineering/claudecode-workflow.git');
+    onExec('gh pr list', JSON.stringify([]));
 
     await prListHandler.execute({ repo: 'Wave-Engineering/mcp-server-sdlc' });
-    const ghCall = execCalls.find((c) => unquote(c).startsWith('gh pr list')) ?? '';
+    const ghCall = execCalls().find((c) => unquote(c).startsWith('gh pr list')) ?? '';
     expect(unquote(ghCall)).toContain('--repo Wave-Engineering/mcp-server-sdlc');
   });
 
   test('route_with_repo — forwards owner/repo into glab api URL path (gitlab)', async () => {
-    execRegistry['git remote get-url origin'] = 'https://gitlab.com/other-org/other-repo.git';
-    execRegistry['glab api projects/target-org%2Ftarget-repo/merge_requests'] = JSON.stringify([]);
+    onExec('git remote get-url origin', 'https://gitlab.com/other-org/other-repo.git');
+    onExec('glab api projects/target-org%2Ftarget-repo/merge_requests', JSON.stringify([]));
 
     await prListHandler.execute({ repo: 'target-org/target-repo' });
-    const glabCall = execCalls.find((c) => c.includes('glab api projects/')) ?? '';
+    const glabCall = execCalls().find((c) => c.includes('glab api projects/')) ?? '';
     expect(glabCall).toContain('target-org%2Ftarget-repo');
     // Must NOT use the cwd-derived slug.
     expect(glabCall).not.toContain('other-org%2Fother-repo');
@@ -323,20 +312,20 @@ describe('pr_list handler', () => {
 
   // --- cross-repo: regression_without_repo ---
   test('regression_without_repo — no repo arg preserves cwd-based behavior (github)', async () => {
-    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
-    execRegistry['gh pr list'] = JSON.stringify([]);
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
+    onExec('gh pr list', JSON.stringify([]));
 
     await prListHandler.execute({});
-    const ghCall = execCalls.find((c) => unquote(c).startsWith('gh pr list')) ?? '';
+    const ghCall = execCalls().find((c) => unquote(c).startsWith('gh pr list')) ?? '';
     expect(ghCall).not.toContain('--repo');
   });
 
   test('regression_without_repo — glab api uses cwd slug when no repo arg (gitlab)', async () => {
-    execRegistry['git remote get-url origin'] = 'https://gitlab.com/cwd-org/cwd-repo.git';
-    execRegistry['glab api projects/cwd-org%2Fcwd-repo/merge_requests'] = JSON.stringify([]);
+    onExec('git remote get-url origin', 'https://gitlab.com/cwd-org/cwd-repo.git');
+    onExec('glab api projects/cwd-org%2Fcwd-repo/merge_requests', JSON.stringify([]));
 
     await prListHandler.execute({});
-    const glabCall = execCalls.find((c) => c.includes('glab api projects/')) ?? '';
+    const glabCall = execCalls().find((c) => c.includes('glab api projects/')) ?? '';
     expect(glabCall).toContain('cwd-org%2Fcwd-repo');
   });
 
@@ -349,6 +338,6 @@ describe('pr_list handler', () => {
     expect(data.ok).toBe(false);
     expect(typeof data.error).toBe('string');
     // Crucially: no subprocess call was made.
-    expect(execCalls).toHaveLength(0);
+    expect(execCalls()).toHaveLength(0);
   });
 });

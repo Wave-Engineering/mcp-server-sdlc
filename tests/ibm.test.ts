@@ -1,23 +1,19 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  setExecMock,
+  resetExecMock,
+} from '../lib/test-support/mock-child-process.ts';
 
 // --- Mock child_process.execSync at module level ---
 // We intercept execSync via a registry so individual tests can override calls.
+// The boundary is the shared child_process mock helper (#455); this file keeps
+// its object-shaped `execRegistry` and routes it through the shared responder.
 
 let execRegistry: Record<string, string> = {};
 let execError: Error | null = null;
 
-function mockExec(cmd: string): string {
-  if (execError) throw execError;
-  // Match by prefix/substring
-  for (const [key, value] of Object.entries(execRegistry)) {
-    if (cmd.includes(key)) return value;
-  }
-  throw new Error(`Unexpected exec call: ${cmd}`);
-}
-
-mock.module('child_process', () => ({
-  execSync: (cmd: string, _opts?: unknown) => mockExec(cmd),
-}));
+installChildProcessMock();
 
 // Import AFTER the mock is registered
 const { default: ibmHandler } = await import('../handlers/ibm.ts');
@@ -27,8 +23,17 @@ function parseResult(content: Array<{ type: string; text: string }>) {
 }
 
 beforeEach(() => {
+  resetExecMock();
   execRegistry = {};
   execError = null;
+  setExecMock((cmd: string) => {
+    if (execError) throw execError;
+    // Match by prefix/substring
+    for (const [key, value] of Object.entries(execRegistry)) {
+      if (cmd.includes(key)) return value;
+    }
+    throw new Error(`Unexpected exec call: ${cmd}`);
+  });
 });
 
 describe('ibm handler', () => {

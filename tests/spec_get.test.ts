@@ -1,14 +1,13 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import { installChildProcessMock, setExecMock, resetExecMock } from '../lib/test-support/mock-child-process.ts';
 
-let execMockFn: (cmd: string) => string = () => '';
-const mockExecSync = mock((cmd: string, _opts?: unknown) => execMockFn(cmd));
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { default: handler } = await import('../handlers/spec_get.ts');
 
 function resetMocks() {
-  execMockFn = () => '';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => '');
 }
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
@@ -49,7 +48,7 @@ describe('spec_get handler', () => {
   });
 
   test('parses_standard_sections — Summary/Changes/Tests/Acceptance Criteria/Dependencies', async () => {
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
       if (cmd.includes('gh issue view 42')) {
         return JSON.stringify({
@@ -61,7 +60,7 @@ describe('spec_get handler', () => {
         });
       }
       return '';
-    };
+    });
     const result = await handler.execute({ issue_ref: '#42' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -85,7 +84,7 @@ describe('spec_get handler', () => {
 
   test('handles_cross_repo_ref — org/repo#N format uses --repo flag', async () => {
     let seenCmd = '';
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/other/thing.git\n';
       if (cmd.includes('gh issue view')) {
         seenCmd = cmd;
@@ -98,7 +97,7 @@ describe('spec_get handler', () => {
         });
       }
       return '';
-    };
+    });
     const result = await handler.execute({ issue_ref: 'acme/widgets#7' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -107,7 +106,7 @@ describe('spec_get handler', () => {
   });
 
   test('handles_missing_sections — body without sections', async () => {
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
       if (cmd.includes('gh issue view')) {
         return JSON.stringify({
@@ -119,7 +118,7 @@ describe('spec_get handler', () => {
         });
       }
       return '';
-    };
+    });
     const result = await handler.execute({ issue_ref: '#1' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -128,7 +127,7 @@ describe('spec_get handler', () => {
   });
 
   test('normalizes_section_headings — "Acceptance Criteria" -> acceptance_criteria', async () => {
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
       if (cmd.includes('gh issue view')) {
         return JSON.stringify({
@@ -140,7 +139,7 @@ describe('spec_get handler', () => {
         });
       }
       return '';
-    };
+    });
     const result = await handler.execute({ issue_ref: '#1' });
     const parsed = parseResult(result);
     expect(parsed.sections.acceptance_criteria).toBeDefined();
@@ -148,10 +147,10 @@ describe('spec_get handler', () => {
   });
 
   test('handles_nonexistent_issue — gh error returns structured error', async () => {
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
       throw new Error('gh: issue #9999 not found');
-    };
+    });
     const result = await handler.execute({ issue_ref: '#9999' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);

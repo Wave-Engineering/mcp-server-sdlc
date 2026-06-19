@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../lib/test-support/mock-child-process.ts';
 
 // Thin handler-level smoke tests for pr_merge_wait. Story 1.11 (#248) moved
 // the orchestration tests to lib/adapters/pr-merge-wait-{github,gitlab}.test.ts
@@ -11,46 +17,21 @@ import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
 // Each test file installs its OWN mock.module BEFORE the dynamic import
 // (56-file convention).
 
-interface ThrowableError extends Error {
-  stderr?: string;
-}
-
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { default: prMergeWaitHandler } = await import('../handlers/pr_merge_wait.ts');
-
-function on(match: string, respond: string | (() => string)) {
-  execRegistry.push({ match, respond });
-}
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
   return JSON.parse(result.content[0].text) as Record<string, unknown>;
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
-  on('git remote get-url origin', 'https://github.com/org/repo.git\n');
+  resetExecMock();
+  onExec('git remote get-url origin', 'https://github.com/org/repo.git\n');
 });
 
 afterEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('pr_merge_wait handler — thin dispatcher', () => {
@@ -67,7 +48,7 @@ describe('pr_merge_wait handler — thin dispatcher', () => {
   });
 
   test('end-to-end envelope: detect-and-skip path returns ok:true with merged:true', async () => {
-    on(
+    onExec(
       'gh pr view 50 --json state,url,mergeCommit',
       JSON.stringify({
         state: 'MERGED',
@@ -83,7 +64,7 @@ describe('pr_merge_wait handler — thin dispatcher', () => {
     expect(data.pr_state).toBe('MERGED');
     expect(data.merge_commit_sha).toBe('preexisting');
     // No merge call should have been issued — detect-and-skip short-circuits.
-    expect(execCalls.find((c) => c.includes('gh pr merge'))).toBeUndefined();
+    expect(execCalls().find((c) => c.includes('gh pr merge'))).toBeUndefined();
   });
 
   test('handler exports valid HandlerDef shape', () => {

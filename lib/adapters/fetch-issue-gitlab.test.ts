@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  setExecMock,
+  resetExecMock,
+  execCalls,
+} from '../test-support/mock-child-process.ts';
 import type { AdapterIssue, AdapterResult } from './types.ts';
 
 // Subprocess-boundary tests for the GitLab fetchIssue adapter (Story 2.1,
@@ -21,27 +27,20 @@ function expectErr(
   }
 }
 
-let execCalls: string[] = [];
-let execMockFn: (cmd: string) => string = () => '';
-const mockExecSync = mock((cmd: string) => {
-  execCalls.push(cmd);
-  return execMockFn(cmd);
-});
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { fetchIssueGitlab, fetchIssueGitlabSync } = await import(
   './fetch-issue-gitlab.ts'
 );
 
 beforeEach(() => {
-  execCalls = [];
-  execMockFn = () => '';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => '');
 });
 
 describe('fetchIssueGitlab — argv shape via gitlabApiIssue helper', () => {
   test('invokes glab api projects/:id/issues/:iid with explicit owner/repo', () => {
-    execMockFn = () =>
+    setExecMock(() =>
       JSON.stringify({
         iid: 42,
         title: 't',
@@ -49,14 +48,15 @@ describe('fetchIssueGitlab — argv shape via gitlabApiIssue helper', () => {
         state: 'opened',
         labels: [],
         web_url: 'https://gitlab.com/foo/bar/-/issues/42',
-      });
+      }),
+    );
     fetchIssueGitlabSync(42, 'foo/bar');
-    const apiCall = execCalls.find((c) => c.includes('glab api')) ?? '';
+    const apiCall = execCalls().find((c) => c.includes('glab api')) ?? '';
     expect(apiCall).toContain('projects/foo%2Fbar/issues/42');
   });
 
   test('falls back to cwd project slug when repo arg omitted', () => {
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.includes('git remote get-url')) {
         return 'https://gitlab.com/org/repo.git\n';
       }
@@ -68,16 +68,16 @@ describe('fetchIssueGitlab — argv shape via gitlabApiIssue helper', () => {
         labels: [],
         web_url: '',
       });
-    };
+    });
     fetchIssueGitlabSync(7);
-    const apiCall = execCalls.find((c) => c.includes('glab api')) ?? '';
+    const apiCall = execCalls().find((c) => c.includes('glab api')) ?? '';
     expect(apiCall).toContain('/issues/7');
   });
 });
 
 describe('fetchIssueGitlab — parses glab api response into normalized shape', () => {
   test('normalizes opened -> OPEN and surfaces all fields', () => {
-    execMockFn = () =>
+    setExecMock(() =>
       JSON.stringify({
         iid: 11,
         title: 'demo',
@@ -85,7 +85,8 @@ describe('fetchIssueGitlab — parses glab api response into normalized shape', 
         state: 'opened',
         labels: ['priority::high', 'size::S'],
         web_url: 'https://gitlab.com/org/repo/-/issues/11',
-      });
+      }),
+    );
     const issue = fetchIssueGitlabSync(11, 'org/repo');
     expect(issue.number).toBe(11);
     expect(issue.title).toBe('demo');
@@ -96,7 +97,7 @@ describe('fetchIssueGitlab — parses glab api response into normalized shape', 
   });
 
   test('normalizes closed -> CLOSED', () => {
-    execMockFn = () =>
+    setExecMock(() =>
       JSON.stringify({
         iid: 11,
         title: 't',
@@ -104,12 +105,13 @@ describe('fetchIssueGitlab — parses glab api response into normalized shape', 
         state: 'closed',
         labels: [],
         web_url: '',
-      });
+      }),
+    );
     expect(fetchIssueGitlabSync(11, 'org/repo').state).toBe('CLOSED');
   });
 
   test('coerces null description to empty body', () => {
-    execMockFn = () =>
+    setExecMock(() =>
       JSON.stringify({
         iid: 11,
         title: 't',
@@ -117,14 +119,15 @@ describe('fetchIssueGitlab — parses glab api response into normalized shape', 
         state: 'opened',
         labels: [],
         web_url: '',
-      });
+      }),
+    );
     expect(fetchIssueGitlabSync(11, 'org/repo').body).toBe('');
   });
 });
 
 describe('fetchIssueGitlab — AdapterResult wrapper', () => {
   test('returns ok:true wrapping AdapterIssue on success', async () => {
-    execMockFn = () =>
+    setExecMock(() =>
       JSON.stringify({
         iid: 1,
         title: 't',
@@ -132,7 +135,8 @@ describe('fetchIssueGitlab — AdapterResult wrapper', () => {
         state: 'opened',
         labels: ['bug'],
         web_url: 'https://gitlab.com/org/repo/-/issues/1',
-      });
+      }),
+    );
     const result = await fetchIssueGitlab({ number: 1, repo: 'org/repo' });
     expectOk(result);
     expect(result.data.number).toBe(1);
@@ -141,9 +145,9 @@ describe('fetchIssueGitlab — AdapterResult wrapper', () => {
   });
 
   test('returns AdapterResult.error on glab failure', async () => {
-    execMockFn = () => {
+    setExecMock(() => {
       throw new Error('glab: 404 not found');
-    };
+    });
     const result = await fetchIssueGitlab({ number: 999, repo: 'org/repo' });
     expectErr(result);
     expect(result.code).toBe('glab_api_issue_failed');

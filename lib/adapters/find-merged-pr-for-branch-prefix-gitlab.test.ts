@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../test-support/mock-child-process.ts';
 import type { AdapterResult } from './types.ts';
 
 // Subprocess-boundary tests for the GitLab findMergedPrForBranchPrefix adapter
@@ -13,23 +19,7 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const {
   findMergedPrForBranchPrefixGitlab,
@@ -37,12 +27,8 @@ const {
   DEFAULT_LIMIT,
 } = await import('./find-merged-pr-for-branch-prefix-gitlab.ts');
 
-function on(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
-
 function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle)) ?? '';
+  return execCalls().find((c) => c.includes(needle)) ?? '';
 }
 
 function expectOk(
@@ -62,14 +48,13 @@ function expectErr(
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('find-merged-pr-for-branch-prefix-gitlab — argv + prefix match', () => {
   test('passes state=merged + per_page=<limit> query params', () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
     findMergedPrForBranchPrefixGitlabSync('feature/42-', 100);
     const call = findCall('glab api projects/');
     expect(call).toContain('state=merged');
@@ -77,8 +62,8 @@ describe('find-merged-pr-for-branch-prefix-gitlab — argv + prefix match', () =
   });
 
   test('default limit is 100 (widens bug #282 hardcoded 50)', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
     expect(DEFAULT_LIMIT).toBe(100);
     await findMergedPrForBranchPrefixGitlab({ prefix: 'feature/42-' });
     const call = findCall('glab api projects/');
@@ -87,15 +72,15 @@ describe('find-merged-pr-for-branch-prefix-gitlab — argv + prefix match', () =
   });
 
   test('caller limit honored verbatim (e.g. 250)', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
     await findMergedPrForBranchPrefixGitlab({ prefix: 'feature/42-', limit: 250 });
     const call = findCall('glab api projects/');
     expect(call).toContain('per_page=250');
   });
 
   test('args.repo overrides cwd slug (URL-encoded)', () => {
-    on(
+    onExec(
       'glab api projects/target-org%2Ftarget-repo/merge_requests',
       JSON.stringify([]),
     );
@@ -105,8 +90,8 @@ describe('find-merged-pr-for-branch-prefix-gitlab — argv + prefix match', () =
   });
 
   test('returns first MR whose source_branch startsWith prefix', () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on(
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec(
       'glab api projects/org%2Frepo/merge_requests',
       JSON.stringify([
         {
@@ -136,15 +121,15 @@ describe('find-merged-pr-for-branch-prefix-gitlab — argv + prefix match', () =
 
 describe('find-merged-pr-for-branch-prefix-gitlab — null when no matching MR', () => {
   test('returns null when empty array', () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
     const result = findMergedPrForBranchPrefixGitlabSync('feature/42-', 100);
     expect(result).toBeNull();
   });
 
   test('returns null when no branch startsWith prefix', () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on(
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec(
       'glab api projects/org%2Frepo/merge_requests',
       JSON.stringify([
         {
@@ -160,8 +145,8 @@ describe('find-merged-pr-for-branch-prefix-gitlab — null when no matching MR',
 
 describe('find-merged-pr-for-branch-prefix-gitlab — AdapterResult wrapper', () => {
   test('returns ok:true wrapping url on success', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on(
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec(
       'glab api projects/org%2Frepo/merge_requests',
       JSON.stringify([
         {
@@ -176,16 +161,16 @@ describe('find-merged-pr-for-branch-prefix-gitlab — AdapterResult wrapper', ()
   });
 
   test('returns ok:true + data:null when no match', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
     const result = await findMergedPrForBranchPrefixGitlab({ prefix: 'feature/42-' });
     expectOk(result);
     expect(result.data).toBeNull();
   });
 
   test('returns ok:false with code on subprocess failure', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on('glab api projects/org%2Frepo/merge_requests', () => {
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests', () => {
       const err = new Error('glab: not authenticated') as ThrowableError;
       err.stderr = 'glab: not authenticated';
       err.status = 1;

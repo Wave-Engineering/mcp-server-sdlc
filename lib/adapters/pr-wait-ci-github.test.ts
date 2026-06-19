@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../test-support/mock-child-process.ts';
 
 // Subprocess-boundary tests for the GitHub pr_wait_ci adapter (R-15).
 // Integration-level coverage (handler dispatch, polling-loop behavior across
@@ -13,23 +19,7 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const {
   prWaitCiGithub,
@@ -39,18 +29,13 @@ const {
   probeGithub,
 } = await import('./pr-wait-ci-github.ts');
 
-function on(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
-
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('snapshotGithub — argv shape (#220 regression)', () => {
   test('uses `gh pr view --json statusCheckRollup,url` (NOT `gh pr checks --json`)', () => {
-    on(
+    onExec(
       'gh pr view',
       JSON.stringify({
         url: 'https://github.com/org/repo/pull/5',
@@ -64,18 +49,18 @@ describe('snapshotGithub — argv shape (#220 regression)', () => {
     expect(snap.total).toBe(1);
     expect(snap.passed).toBe(1);
 
-    const viewCall = execCalls.find((c) => c.startsWith('gh pr view')) ?? '';
+    const viewCall = execCalls().find((c) => c.startsWith('gh pr view')) ?? '';
     expect(viewCall).toContain('gh pr view 5');
     expect(viewCall).toContain('--json');
     expect(viewCall).toContain('statusCheckRollup');
     expect(viewCall).toContain('url');
     // Regression guard for #220 — `gh pr checks --json` was added in a later
     // gh release and broke the handler on Ubuntu 24.04's default gh 2.45.
-    expect(execCalls.some((c) => c.startsWith('gh pr checks'))).toBe(false);
+    expect(execCalls().some((c) => c.startsWith('gh pr checks'))).toBe(false);
   });
 
   test('threads --repo flag when provided', () => {
-    on(
+    onExec(
       'gh pr view',
       JSON.stringify({
         url: 'https://github.com/Wave-Engineering/mcp-server-sdlc/pull/42',
@@ -86,12 +71,12 @@ describe('snapshotGithub — argv shape (#220 regression)', () => {
     );
 
     snapshotGithub(42, 'Wave-Engineering/mcp-server-sdlc');
-    const viewCall = execCalls.find((c) => c.startsWith('gh pr view')) ?? '';
+    const viewCall = execCalls().find((c) => c.startsWith('gh pr view')) ?? '';
     expect(viewCall).toContain('--repo Wave-Engineering/mcp-server-sdlc');
   });
 
   test('omits --repo when undefined', () => {
-    on(
+    onExec(
       'gh pr view',
       JSON.stringify({
         url: 'https://github.com/org/repo/pull/9',
@@ -101,12 +86,12 @@ describe('snapshotGithub — argv shape (#220 regression)', () => {
       }),
     );
     snapshotGithub(9);
-    const viewCall = execCalls.find((c) => c.startsWith('gh pr view')) ?? '';
+    const viewCall = execCalls().find((c) => c.startsWith('gh pr view')) ?? '';
     expect(viewCall).not.toContain('--repo');
   });
 
   test('counts mixed CheckRun + StatusContext + SKIPPED correctly', () => {
-    on(
+    onExec(
       'gh pr view',
       JSON.stringify({
         url: 'https://github.com/org/repo/pull/77',
@@ -128,8 +113,8 @@ describe('snapshotGithub — argv shape (#220 regression)', () => {
   });
 
   test('throws on gh failure (handler/poll-loop layer maps to AdapterResult)', () => {
-    execRegistry = [];
-    on('gh pr view', () => {
+    resetExecMock();
+    onExec('gh pr view', () => {
       const err = new Error('HTTP 404: Not Found') as ThrowableError;
       err.stderr = 'HTTP 404: Not Found';
       err.status = 1;
@@ -139,7 +124,7 @@ describe('snapshotGithub — argv shape (#220 regression)', () => {
   });
 
   test('omits url when missing in response', () => {
-    on(
+    onExec(
       'gh pr view',
       JSON.stringify({ statusCheckRollup: [] }),
     );
@@ -224,7 +209,7 @@ describe('classifyRollupItem — full mapping table', () => {
 // so a single snapshot iteration suffices.
 describe('prWaitCiGithub — #221 all-skipped regression', () => {
   test('all SKIPPED checks → final_state passed on first poll', async () => {
-    on(
+    onExec(
       'gh pr view',
       JSON.stringify({
         url: 'https://github.com/org/repo/pull/1',
@@ -259,7 +244,7 @@ describe('prWaitCiGithub — #221 all-skipped regression', () => {
 // --- #416: empty-rollup short-circuit at the adapter boundary -----------
 describe('prWaitCiGithub — empty-rollup short-circuit (#416)', () => {
   test('empty rollup + mergeable → no_checks_required immediately', async () => {
-    on(
+    onExec(
       'gh pr view',
       JSON.stringify({
         url: 'https://github.com/org/repo/pull/42',
@@ -286,16 +271,16 @@ describe('prWaitCiGithub — empty-rollup short-circuit (#416)', () => {
     expect(data.elapsed_sec).toBeLessThan(5);
     expect(data.url).toBe('https://github.com/org/repo/pull/42');
     // Probe argv must include the new fields the short-circuit needs.
-    const viewCall = execCalls.find((c) => c.startsWith('gh pr view')) ?? '';
+    const viewCall = execCalls().find((c) => c.startsWith('gh pr view')) ?? '';
     expect(viewCall).toContain('mergeable');
     expect(viewCall).toContain('isDraft');
     expect(viewCall).toContain('state');
     // #220 regression — never use the broken `gh pr checks --json` form.
-    expect(execCalls.some((c) => c.startsWith('gh pr checks'))).toBe(false);
+    expect(execCalls().some((c) => c.startsWith('gh pr checks'))).toBe(false);
   });
 
   test('empty rollup + CONFLICTING → no_checks_required + conflicts blocker', async () => {
-    on(
+    onExec(
       'gh pr view',
       JSON.stringify({
         url: 'https://github.com/org/repo/pull/43',
@@ -319,7 +304,7 @@ describe('prWaitCiGithub — empty-rollup short-circuit (#416)', () => {
   });
 
   test('empty rollup + draft → no_checks_required + draft blocker', async () => {
-    on(
+    onExec(
       'gh pr view',
       JSON.stringify({
         url: 'https://github.com/org/repo/pull/44',
@@ -339,7 +324,7 @@ describe('prWaitCiGithub — empty-rollup short-circuit (#416)', () => {
   });
 
   test('empty rollup + closed PR → no_checks_required + closed blocker', async () => {
-    on(
+    onExec(
       'gh pr view',
       JSON.stringify({
         url: 'https://github.com/org/repo/pull/45',
@@ -360,7 +345,7 @@ describe('prWaitCiGithub — empty-rollup short-circuit (#416)', () => {
 
   test('non-empty rollup does NOT short-circuit — polled-response shape returned', async () => {
     // Regression — proves the addition is conditional on rollup.length === 0.
-    on(
+    onExec(
       'gh pr view',
       JSON.stringify({
         url: 'https://github.com/org/repo/pull/46',
@@ -420,7 +405,7 @@ describe('emptyRollupBlocker — pure mapping table', () => {
 
 describe('probeGithub — argv shape', () => {
   test('asks for statusCheckRollup,url,state,isDraft,mergeable,mergeStateStatus', () => {
-    on(
+    onExec(
       'gh pr view',
       JSON.stringify({
         url: 'https://github.com/org/repo/pull/1',
@@ -432,7 +417,7 @@ describe('probeGithub — argv shape', () => {
       }),
     );
     probeGithub(1);
-    const viewCall = execCalls.find((c) => c.startsWith('gh pr view')) ?? '';
+    const viewCall = execCalls().find((c) => c.startsWith('gh pr view')) ?? '';
     expect(viewCall).toContain('statusCheckRollup');
     expect(viewCall).toContain('url');
     expect(viewCall).toContain('state');
@@ -444,7 +429,7 @@ describe('probeGithub — argv shape', () => {
 
 describe('prWaitCiGithub — failure surfaces as AdapterResult', () => {
   test('gh failure → ok:false, code unexpected_error', async () => {
-    on('gh pr view', () => {
+    onExec('gh pr view', () => {
       const err = new Error('HTTP 404: Not Found') as ThrowableError;
       err.stderr = 'HTTP 404: Not Found';
       err.status = 1;

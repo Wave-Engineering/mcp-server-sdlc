@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../test-support/mock-child-process.ts';
 import type { AdapterResult, CiRunLogsResponse } from './types.ts';
 
 // Subprocess-boundary tests for the GitHub ci_run_logs adapter (R-15).
@@ -13,34 +19,9 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
-function unquote(cmd: string): string {
-  return cmd.replace(/'([^']*)'/g, '$1');
-}
-
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { ciRunLogsGithub } = await import('./ci-run-logs-github.ts');
-
-function on(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
 
 function expectOk(
   r: AdapterResult<CiRunLogsResponse>,
@@ -59,18 +40,18 @@ function expectErr(
 }
 
 function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
+  const unquote = (cmd: string) => cmd.replace(/'([^']*)'/g, '$1');
+  return execCalls().find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('ciRunLogsGithub — subprocess boundary', () => {
   test('argv: gh run view <id> --log-failed (default)', async () => {
-    on('git remote get-url', 'https://github.com/org/repo.git\n');
-    on('gh run view', 'some log\n');
+    onExec('git remote get-url', 'https://github.com/org/repo.git\n');
+    onExec('gh run view', 'some log\n');
 
     const result = await ciRunLogsGithub({ run_id: 12345, failed_only: true });
     expectOk(result);
@@ -87,8 +68,8 @@ describe('ciRunLogsGithub — subprocess boundary', () => {
   });
 
   test('argv: gh run view <id> --log when failed_only=false', async () => {
-    on('git remote get-url', 'https://github.com/org/repo.git\n');
-    on('gh run view', 'full log\n');
+    onExec('git remote get-url', 'https://github.com/org/repo.git\n');
+    onExec('gh run view', 'full log\n');
 
     await ciRunLogsGithub({ run_id: 1, failed_only: false });
 
@@ -98,8 +79,8 @@ describe('ciRunLogsGithub — subprocess boundary', () => {
   });
 
   test('argv: --job <id> forwarded when job_id provided', async () => {
-    on('git remote get-url', 'https://github.com/org/repo.git\n');
-    on('gh run view', 'job-specific log\n');
+    onExec('git remote get-url', 'https://github.com/org/repo.git\n');
+    onExec('gh run view', 'job-specific log\n');
 
     await ciRunLogsGithub({ run_id: 42, job_id: 999, failed_only: false });
 
@@ -110,8 +91,8 @@ describe('ciRunLogsGithub — subprocess boundary', () => {
 
   test('argv: --repo flag forwarded when repo provided', async () => {
     // No git remote probed when repo is explicit, but stub it anyway for safety.
-    on('git remote get-url', 'https://github.com/cwd-org/cwd-repo.git\n');
-    on('gh run view', 'cross-repo log\n');
+    onExec('git remote get-url', 'https://github.com/cwd-org/cwd-repo.git\n');
+    onExec('gh run view', 'cross-repo log\n');
 
     await ciRunLogsGithub({
       run_id: 77,
@@ -125,8 +106,8 @@ describe('ciRunLogsGithub — subprocess boundary', () => {
   });
 
   test('returns AdapterResult with logs + url (implicit cwd slug)', async () => {
-    on('git remote get-url', 'https://github.com/org/repo.git\n');
-    on('gh run view', 'line1\nline2\n');
+    onExec('git remote get-url', 'https://github.com/org/repo.git\n');
+    onExec('gh run view', 'line1\nline2\n');
 
     const result = await ciRunLogsGithub({ run_id: 555, failed_only: true });
     expectOk(result);
@@ -136,8 +117,8 @@ describe('ciRunLogsGithub — subprocess boundary', () => {
   });
 
   test('returns AdapterResult with logs + url (explicit slug wins over cwd)', async () => {
-    on('git remote get-url', 'https://github.com/cwd-org/cwd-repo.git\n');
-    on('gh run view', 'xr log\n');
+    onExec('git remote get-url', 'https://github.com/cwd-org/cwd-repo.git\n');
+    onExec('gh run view', 'xr log\n');
 
     const result = await ciRunLogsGithub({
       run_id: 888,
@@ -152,8 +133,8 @@ describe('ciRunLogsGithub — subprocess boundary', () => {
   });
 
   test('response job_id mirrors caller job_id when provided', async () => {
-    on('git remote get-url', 'https://github.com/org/repo.git\n');
-    on('gh run view', 'j log\n');
+    onExec('git remote get-url', 'https://github.com/org/repo.git\n');
+    onExec('gh run view', 'j log\n');
 
     const result = await ciRunLogsGithub({
       run_id: 1,
@@ -165,8 +146,8 @@ describe('ciRunLogsGithub — subprocess boundary', () => {
   });
 
   test('returns AdapterResult.error on gh failure (not thrown)', async () => {
-    on('git remote get-url', 'https://github.com/org/repo.git\n');
-    on('gh run view', () => {
+    onExec('git remote get-url', 'https://github.com/org/repo.git\n');
+    onExec('gh run view', () => {
       const err = new Error('gh: run not found') as ThrowableError;
       err.stderr = 'gh: run not found';
       err.status = 1;

@@ -1,14 +1,17 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  setExecMock,
+  resetExecMock,
+} from '../lib/test-support/mock-child-process.ts';
 
-let execMockFn: (cmd: string) => string = () => '';
-const mockExecSync = mock((cmd: string, _opts?: unknown) => execMockFn(cmd));
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { default: handler } = await import('../handlers/epic_sub_issues.ts');
 
 function resetMocks() {
-  execMockFn = () => '';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => '');
 }
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
@@ -16,11 +19,11 @@ function parseResult(result: { content: Array<{ type: string; text: string }> })
 }
 
 function mockBody(body: string) {
-  execMockFn = (cmd: string) => {
+  setExecMock((cmd: string) => {
     if (cmd.startsWith('git remote')) return 'https://github.com/myorg/myrepo.git\n';
     if (cmd.includes('gh issue view')) return JSON.stringify({ body });
     return '';
-  };
+  });
 }
 
 describe('epic_sub_issues handler', () => {
@@ -195,7 +198,7 @@ describe('epic_sub_issues handler', () => {
   test('cross_repo_epic_bare_ref_resolves_to_epic_repo', async () => {
     // Epic ref is qualified to a DIFFERENT repo than cwd. Bare `#N` refs in
     // the epic body must resolve against the epic's repo, NOT cwd.
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/myorg/myrepo.git\n';
       if (cmd.includes('gh issue view 42') && cmd.includes('--repo Wave-Engineering/sdlc')) {
         return JSON.stringify({
@@ -203,7 +206,7 @@ describe('epic_sub_issues handler', () => {
         });
       }
       return JSON.stringify({ body: '' });
-    };
+    });
     const result = await handler.execute({ epic_ref: 'Wave-Engineering/sdlc#42' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -217,7 +220,7 @@ describe('epic_sub_issues handler', () => {
   test('cross_repo_epic_bare_ref_resolves_to_epic_repo_table_format', async () => {
     // Table-format variant of the cross-repo bare-ref test (exercises
     // parseTableRows separately from parseChecklistOrBullets).
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/myorg/myrepo.git\n';
       if (cmd.includes('gh issue view 42') && cmd.includes('--repo Wave-Engineering/sdlc')) {
         return JSON.stringify({
@@ -225,7 +228,7 @@ describe('epic_sub_issues handler', () => {
         });
       }
       return JSON.stringify({ body: '' });
-    };
+    });
     const result = await handler.execute({ epic_ref: 'Wave-Engineering/sdlc#42' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -238,7 +241,7 @@ describe('epic_sub_issues handler', () => {
   test('cross_repo_epic_already_qualified_ref_preserved', async () => {
     // Already-qualified refs in the epic body must be preserved verbatim,
     // never double-qualified.
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote')) return 'https://github.com/myorg/myrepo.git\n';
       if (cmd.includes('gh issue view 42') && cmd.includes('--repo Wave-Engineering/sdlc')) {
         return JSON.stringify({
@@ -246,7 +249,7 @@ describe('epic_sub_issues handler', () => {
         });
       }
       return JSON.stringify({ body: '' });
-    };
+    });
     const result = await handler.execute({ epic_ref: 'Wave-Engineering/sdlc#42' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);

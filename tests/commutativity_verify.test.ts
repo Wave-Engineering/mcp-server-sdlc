@@ -1,4 +1,11 @@
 import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+  mockExecSync,
+} from '../lib/test-support/mock-child-process.ts';
 
 // Responder returns a string (probe stdout) when called. The function form
 // receives the full cmd so tests can REJECT wrong-shape argv loudly per
@@ -6,24 +13,14 @@ import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
 // confidence twice this session (glab `--jq`, bare-hex `--color`).
 type Responder = string | ((cmd: string) => string);
 
-let execRegistry: Array<{ match: string; respond: Responder }> = [];
-let execCalls: string[] = [];
-let lastExecOpts: { timeout?: number; cwd?: string } | undefined;
-
-function mockExec(cmd: string, opts?: { timeout?: number; cwd?: string }): string {
-  execCalls.push(cmd);
-  lastExecOpts = opts;
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match)) {
-      return typeof respond === 'function' ? respond(cmd) : respond;
-    }
-  }
-  throw new Error(`Unexpected exec call: ${cmd}`);
+// The shared mock fn records every call's args; read the opts of the most
+// recent exec from its recorded calls (replaces the old local `lastExecOpts`).
+function lastExecOpts(): { timeout?: number; cwd?: string } | undefined {
+  const recorded = mockExecSync.mock.calls;
+  return recorded.at(-1)?.[1] as { timeout?: number; cwd?: string } | undefined;
 }
 
-mock.module('child_process', () => ({
-  execSync: (cmd: string, opts?: { timeout?: number; cwd?: string }) => mockExec(cmd, opts),
-}));
+installChildProcessMock();
 
 // Mock the logger so we can (a) count calls per invocation — issue #256 says
 // the wrapper was suspected of multi-emitting; this test locks in the
@@ -63,10 +60,6 @@ const { default: handler } = await import('../handlers/commutativity_verify.ts')
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
   return JSON.parse(result.content[0].text) as Record<string, unknown>;
-}
-
-function onExec(match: string, respond: Responder) {
-  execRegistry.push({ match, respond });
 }
 
 // Throw a shaped error that mimics execSync on `command not found` via the
@@ -118,16 +111,12 @@ function probeJson(verdict: string, pairs: Array<{
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
-  lastExecOpts = undefined;
+  resetExecMock();
   logCalls = [];
 });
 
 afterEach(() => {
-  execRegistry = [];
-  execCalls = [];
-  lastExecOpts = undefined;
+  resetExecMock();
   logCalls = [];
 });
 
@@ -496,8 +485,8 @@ describe('commutativity_verify handler', () => {
       ],
     });
 
-    expect(execCalls).toHaveLength(1);
-    const cmd = execCalls[0];
+    expect(execCalls()).toHaveLength(1);
+    const cmd = execCalls()[0];
     expect(cmd).toContain('commutativity-probe analyze');
     expect(cmd).toContain("--repo '/my/repo'");
     expect(cmd).toContain("--base 'v1.0.0'");
@@ -524,7 +513,7 @@ describe('commutativity_verify handler', () => {
       ],
     });
 
-    const cmd = execCalls[0];
+    const cmd = execCalls()[0];
     expect(cmd).toContain("--repo '/my repo/with spaces'");
   });
 
@@ -654,8 +643,8 @@ describe('commutativity_verify handler', () => {
       changesets: [{ id: 'kahuna', head_ref: 'kahuna/42-foo' }],
     });
 
-    expect(execCalls).toHaveLength(1);
-    const cmd = execCalls[0];
+    expect(execCalls()).toHaveLength(1);
+    const cmd = execCalls()[0];
     expect(cmd).toContain('commutativity-probe analyze');
     expect(cmd).toContain("--repo '/repo'");
     expect(cmd).toContain("--base 'main'");
@@ -699,7 +688,7 @@ describe('commutativity_verify handler', () => {
       timeout_sec: 5,
     });
 
-    expect(lastExecOpts?.timeout).toBe(5_000);
+    expect(lastExecOpts()?.timeout).toBe(5_000);
   });
 
   test('default timeout (30s) used when timeout_sec omitted', async () => {
@@ -715,7 +704,7 @@ describe('commutativity_verify handler', () => {
       changesets: [{ id: 'kahuna', head_ref: 'feature/1' }],
     });
 
-    expect(lastExecOpts?.timeout).toBe(30_000);
+    expect(lastExecOpts()?.timeout).toBe(30_000);
   });
 
   // --- three changesets produce correct pair count ---
@@ -871,7 +860,7 @@ describe('commutativity_verify handler', () => {
     ];
 
     for (const s of scenarios) {
-      execRegistry = [];
+      resetExecMock();
       logCalls = [];
       s.setup();
       await handler.execute({

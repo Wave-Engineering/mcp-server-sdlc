@@ -1,24 +1,18 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  setExecMock,
+  resetExecMock,
+  execCallsDetailed,
+} from '../lib/test-support/mock-child-process.ts';
 
-interface ExecCall {
-  cmd: string;
-  opts: { cwd?: string; encoding?: string } | undefined;
-}
-
-let execCalls: ExecCall[] = [];
-let execMockFn: (cmd: string, opts?: { cwd?: string }) => string = () => '';
-const mockExecSync = mock((cmd: string, opts?: { cwd?: string; encoding?: string }) => {
-  execCalls.push({ cmd, opts });
-  return execMockFn(cmd, opts);
-});
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { default: handler } = await import('../handlers/ddd_verify_committed.ts');
 
 function resetMocks() {
-  execCalls = [];
-  execMockFn = () => '';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => '');
 }
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
@@ -54,7 +48,7 @@ describe('ddd_verify_committed handler', () => {
   });
 
   test('returns committed:true when file is clean', async () => {
-    execMockFn = buildExec({ fileExists: true, gitStatus: '' });
+    setExecMock(buildExec({ fileExists: true, gitStatus: '' }));
     const result = await handler.execute({ path: '/tmp/repo/docs/DOMAIN-MODEL.md' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -64,10 +58,10 @@ describe('ddd_verify_committed handler', () => {
   });
 
   test('returns committed:false with status for modified file', async () => {
-    execMockFn = buildExec({
+    setExecMock(buildExec({
       fileExists: true,
       gitStatus: ' M docs/DOMAIN-MODEL.md\n',
-    });
+    }));
     const result = await handler.execute({ path: '/tmp/repo/docs/DOMAIN-MODEL.md' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -76,10 +70,10 @@ describe('ddd_verify_committed handler', () => {
   });
 
   test('returns committed:false for untracked file', async () => {
-    execMockFn = buildExec({
+    setExecMock(buildExec({
       fileExists: true,
       gitStatus: '?? docs/DOMAIN-MODEL.md\n',
-    });
+    }));
     const result = await handler.execute({ path: '/tmp/repo/docs/DOMAIN-MODEL.md' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
@@ -88,7 +82,7 @@ describe('ddd_verify_committed handler', () => {
   });
 
   test('returns error when file does not exist', async () => {
-    execMockFn = buildExec({ fileExists: false, gitStatus: '' });
+    setExecMock(buildExec({ fileExists: false, gitStatus: '' }));
     const result = await handler.execute({ path: '/tmp/nonexistent.md' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);
@@ -96,7 +90,7 @@ describe('ddd_verify_committed handler', () => {
   });
 
   test('returns error when git status fails (not a git repo)', async () => {
-    execMockFn = buildExec({ fileExists: true, gitStatus: '', gitThrows: true });
+    setExecMock(buildExec({ fileExists: true, gitStatus: '', gitThrows: true }));
     const result = await handler.execute({ path: '/tmp/not-a-repo/file.md' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);
@@ -104,11 +98,11 @@ describe('ddd_verify_committed handler', () => {
   });
 
   test('git status invoked with cwd set to containing directory', async () => {
-    execMockFn = buildExec({ fileExists: true, gitStatus: '' });
+    setExecMock(buildExec({ fileExists: true, gitStatus: '' }));
     await handler.execute({ path: '/tmp/repo/subdir/FILE.md' });
-    const gitCall = execCalls.find(c => c.cmd.startsWith('git status'));
+    const gitCall = execCallsDetailed().find(c => c.cmd.startsWith('git status'));
     expect(gitCall).toBeDefined();
-    expect(gitCall?.opts?.cwd).toBe('/tmp/repo/subdir');
+    expect((gitCall?.opts as { cwd?: string } | undefined)?.cwd).toBe('/tmp/repo/subdir');
   });
 
   test('schema rejects missing path', async () => {

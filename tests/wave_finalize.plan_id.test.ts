@@ -6,36 +6,21 @@
 // paths, path containment, body assembly). Here we pin the AC-2 title
 // contract under the new `plan_id` parameter name.
 
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { join } from 'path';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../lib/test-support/mock-child-process.ts';
 
-type Responder = string | (() => string);
-
-let execRegistry: Array<{ match: string; respond: Responder }> = [];
-let execCalls: string[] = [];
-
-function mockExec(cmd: string): string {
-  execCalls.push(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  throw new Error(`Unexpected exec call: ${cmd}`);
-}
-
-mock.module('child_process', () => ({
-  execSync: (cmd: string, _opts?: unknown) => mockExec(cmd),
-}));
+installChildProcessMock();
 
 const { default: handler } = await import('../handlers/wave_finalize.ts');
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
   return JSON.parse(result.content[0].text) as Record<string, unknown>;
-}
-
-function onExec(match: string, respond: Responder) {
-  execRegistry.push({ match, respond });
 }
 
 let tmpRoot: string = '';
@@ -59,18 +44,13 @@ function mockGithubCreate(prNumber: number, headRef: string, baseRef = 'main') {
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
   tmpRoot = makeTmpRoot();
-  execRegistry.push({
-    match: 'git remote get-url origin',
-    respond: () => 'git@github.com:o/r.git',
-  });
+  onExec('git remote get-url origin', () => 'git@github.com:o/r.git');
 });
 
 afterEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('wave_finalize plan_id title pattern', () => {
@@ -90,7 +70,7 @@ describe('wave_finalize plan_id title pattern', () => {
     expect(data.ok).toBe(true);
     expect(data.created).toBe(true);
 
-    const createCall = execCalls.find(c => c.includes("'pr' 'create'"));
+    const createCall = execCalls().find(c => c.includes("'pr' 'create'"));
     expect(createCall).toBeDefined();
     expect(createCall).toContain("'--title' 'plan(#77): docmancer-portal — kahuna to main'");
   });
@@ -109,7 +89,7 @@ describe('wave_finalize plan_id title pattern', () => {
       body_artifacts_dir: tmpRoot,
     });
 
-    const createCall = execCalls.find(c => c.includes("'pr' 'create'"));
+    const createCall = execCalls().find(c => c.includes("'pr' 'create'"));
     expect(createCall).toBeDefined();
     expect(createCall as string).toContain("'--title' 'plan(#99): foo — kahuna to release/v2'");
   });
@@ -126,7 +106,7 @@ describe('wave_finalize plan_id title pattern', () => {
       body_artifacts_dir: tmpRoot,
     });
 
-    const createCall = execCalls.find(c => c.includes("'pr' 'create'"));
+    const createCall = execCalls().find(c => c.includes("'pr' 'create'"));
     expect(createCall).toBeDefined();
     expect(createCall as string).not.toContain('epic(#');
   });

@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../test-support/mock-child-process.ts';
 import type { AdapterResult, PrCommentResponse } from './types.ts';
 
 // Subprocess-boundary tests for the GitLab pr_comment adapter (R-15).
@@ -10,34 +16,13 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
 function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { prCommentGitlab } = await import('./pr-comment-gitlab.ts');
-
-function on(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
 
 function expectOk(
   r: AdapterResult<PrCommentResponse>,
@@ -56,17 +41,16 @@ function expectErr(
 }
 
 function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
+  return execCalls().find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('prCommentGitlab — subprocess boundary', () => {
   test('glab CLI invocation matches expected argv shape (happy path)', async () => {
-    on(
+    onExec(
       'glab mr note',
       'https://gitlab.com/org/repo/-/merge_requests/55#note_9090\n',
     );
@@ -90,7 +74,7 @@ describe('prCommentGitlab — subprocess boundary', () => {
   });
 
   test('multi-line markdown body is preserved verbatim through shell-escape', async () => {
-    on(
+    onExec(
       'glab mr note',
       'https://gitlab.com/org/repo/-/merge_requests/88#note_7070\n',
     );
@@ -124,7 +108,7 @@ describe('prCommentGitlab — subprocess boundary', () => {
   });
 
   test('parses note ID from #note_<id> URL fragment', async () => {
-    on(
+    onExec(
       'glab mr note',
       'https://gitlab.example.com/team/proj/-/merge_requests/11#note_2222\n',
     );
@@ -136,7 +120,7 @@ describe('prCommentGitlab — subprocess boundary', () => {
   });
 
   test('returns AdapterResult{ok:false, code} on glab failure (not thrown)', async () => {
-    on('glab mr note', () => {
+    onExec('glab mr note', () => {
       const err = new Error('permission denied') as ThrowableError;
       err.stderr = 'permission denied';
       err.status = 1;
@@ -151,7 +135,7 @@ describe('prCommentGitlab — subprocess boundary', () => {
   });
 
   test('returns parse-failure code when stdout lacks #note_<id>', async () => {
-    on('glab mr note', 'posted note ok\n');
+    onExec('glab mr note', 'posted note ok\n');
 
     const result = await prCommentGitlab({ number: 1, body: 'x' });
     expectErr(result);
@@ -160,7 +144,7 @@ describe('prCommentGitlab — subprocess boundary', () => {
   });
 
   test('-R flag forwarded when args.repo provided (GitLab uses -R, not --repo)', async () => {
-    on(
+    onExec(
       'glab mr note',
       'https://gitlab.com/target-org/target-repo/-/merge_requests/55#note_9090\n',
     );
@@ -177,7 +161,7 @@ describe('prCommentGitlab — subprocess boundary', () => {
   });
 
   test('target:"issue" routes to glab issue note (#430)', async () => {
-    on(
+    onExec(
       'glab issue note',
       'https://gitlab.com/org/repo/-/issues/2#note_5555\n',
     );
@@ -195,7 +179,7 @@ describe('prCommentGitlab — subprocess boundary', () => {
   });
 
   test('target:"mr" explicitly routes to glab mr note', async () => {
-    on(
+    onExec(
       'glab mr note',
       'https://gitlab.com/org/repo/-/merge_requests/3#note_6666\n',
     );
@@ -209,7 +193,7 @@ describe('prCommentGitlab — subprocess boundary', () => {
   });
 
   test('target omitted defaults to mr (backwards compat)', async () => {
-    on(
+    onExec(
       'glab mr note',
       'https://gitlab.com/org/repo/-/merge_requests/10#note_7777\n',
     );
@@ -222,7 +206,7 @@ describe('prCommentGitlab — subprocess boundary', () => {
   });
 
   test('target:"issue" failure returns glab_issue_note_failed code', async () => {
-    on('glab issue note', () => {
+    onExec('glab issue note', () => {
       const err = new Error('not found') as ThrowableError;
       err.stderr = 'not found';
       err.status = 1;

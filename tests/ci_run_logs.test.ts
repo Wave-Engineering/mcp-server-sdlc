@@ -1,4 +1,9 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  setExecMock,
+  resetExecMock,
+} from '../lib/test-support/mock-child-process.ts';
 
 // --- Mock child_process.execSync at module level ---
 //
@@ -14,9 +19,7 @@ import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
 // colocated adapter tests (lib/adapters/ci-run-logs-{github,gitlab}.test.ts).
 // Direct `truncateLogs` unit tests live in lib/shared/truncate-logs.test.ts.
 
-let execMockFn: (cmd: string) => string = () => '';
-const mockExecSync = mock((cmd: string, _opts?: unknown) => execMockFn(cmd));
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { default: ciRunLogsHandler } = await import('../handlers/ci_run_logs.ts');
 
@@ -29,8 +32,8 @@ function parseResult(result: { content: Array<{ type: string; text: string }> })
 }
 
 function resetMocks() {
-  execMockFn = () => '';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => '');
 }
 
 function makeLines(n: number, prefix = 'line'): string {
@@ -58,12 +61,12 @@ describe('ci_run_logs handler', () => {
 
   test('github — failed-only logs, short content (no truncation)', async () => {
     const logContent = makeLines(10);
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       const flat = unquote(cmd);
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
       if (flat.includes('gh run view') && flat.includes('--log-failed')) return logContent;
       throw new Error(`unexpected cmd: ${cmd}`);
-    };
+    });
 
     const result = await ciRunLogsHandler.execute({ run_id: 12345 });
     const parsed = parseResult(result);
@@ -81,7 +84,7 @@ describe('ci_run_logs handler', () => {
   test('github — uses --log (not --log-failed) when failed_only=false', async () => {
     let sawFullLog = false;
     let sawFailedOnly = false;
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       const flat = unquote(cmd);
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
       if (flat.includes('gh run view')) {
@@ -90,7 +93,7 @@ describe('ci_run_logs handler', () => {
         return 'some logs\n';
       }
       throw new Error(`unexpected cmd: ${cmd}`);
-    };
+    });
 
     const result = await ciRunLogsHandler.execute({ run_id: 1, failed_only: false });
     const parsed = parseResult(result);
@@ -102,7 +105,7 @@ describe('ci_run_logs handler', () => {
 
   test('github — specific job_id passes --job flag', async () => {
     let jobFlagSeen = false;
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       const flat = unquote(cmd);
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
       if (flat.includes('gh run view')) {
@@ -110,7 +113,7 @@ describe('ci_run_logs handler', () => {
         return 'job logs\n';
       }
       throw new Error(`unexpected cmd: ${cmd}`);
-    };
+    });
 
     const result = await ciRunLogsHandler.execute({ run_id: 42, job_id: 999 });
     const parsed = parseResult(result);
@@ -125,12 +128,12 @@ describe('ci_run_logs handler', () => {
     // adapter response. Proof: logs > max_lines yields `truncated: true`
     // and `line_count` reflects the ORIGINAL size.
     const longLog = makeLines(500);
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       const flat = unquote(cmd);
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
       if (flat.includes('gh run view')) return longLog;
       throw new Error(`unexpected cmd: ${cmd}`);
-    };
+    });
 
     const result = await ciRunLogsHandler.execute({ run_id: 1, max_lines: 100 });
     const parsed = parseResult(result);
@@ -147,12 +150,12 @@ describe('ci_run_logs handler', () => {
 
   test('github — hard cap at 10000 overrides caller max_lines', async () => {
     const hugeLog = makeLines(50000);
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       const flat = unquote(cmd);
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
       if (flat.includes('gh run view')) return hugeLog;
       throw new Error(`unexpected cmd: ${cmd}`);
-    };
+    });
 
     // Caller asks for 20000 but hard cap is 10000.
     const result = await ciRunLogsHandler.execute({ run_id: 1, max_lines: 20000 });
@@ -174,7 +177,7 @@ describe('ci_run_logs handler', () => {
   test('gitlab — with explicit job_id uses glab ci trace directly', async () => {
     const logContent = makeLines(5, 'gl');
     let tracedJob = 0;
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       const flat = unquote(cmd);
       if (cmd.startsWith('git remote')) return 'https://gitlab.com/grp/proj.git\n';
       if (flat.startsWith('glab ci trace')) {
@@ -183,7 +186,7 @@ describe('ci_run_logs handler', () => {
         return logContent;
       }
       throw new Error(`unexpected cmd: ${cmd}`);
-    };
+    });
 
     const result = await ciRunLogsHandler.execute({ run_id: 10, job_id: 77 });
     const parsed = parseResult(result);
@@ -198,7 +201,7 @@ describe('ci_run_logs handler', () => {
   });
 
   test('gitlab — without job_id fetches first failed job from pipeline', async () => {
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       const flat = unquote(cmd);
       if (cmd.startsWith('git remote')) return 'https://gitlab.com/grp/proj.git\n';
       if (flat.includes('glab api') && flat.includes('/pipelines/55/jobs')) {
@@ -212,7 +215,7 @@ describe('ci_run_logs handler', () => {
         return 'failed job log\n';
       }
       throw new Error(`unexpected cmd: ${cmd}`);
-    };
+    });
 
     const result = await ciRunLogsHandler.execute({ run_id: 55 });
     const parsed = parseResult(result);
@@ -224,14 +227,14 @@ describe('ci_run_logs handler', () => {
   });
 
   test('gitlab — no failed job in pipeline returns error', async () => {
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       const flat = unquote(cmd);
       if (cmd.startsWith('git remote')) return 'https://gitlab.com/grp/proj.git\n';
       if (flat.includes('glab api') && flat.includes('/pipelines/99/jobs')) {
         return JSON.stringify([{ id: 1, status: 'success' }]);
       }
       throw new Error(`unexpected cmd: ${cmd}`);
-    };
+    });
 
     const result = await ciRunLogsHandler.execute({ run_id: 99 });
     const parsed = parseResult(result);
@@ -244,7 +247,7 @@ describe('ci_run_logs handler', () => {
 
   test('github_explicit_repo — appends --repo flag to gh run view', async () => {
     let sawRepoFlag = false;
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       const flat = unquote(cmd);
       if (cmd.startsWith('git remote'))
         return 'https://github.com/cwd-org/cwd-repo.git\n';
@@ -253,7 +256,7 @@ describe('ci_run_logs handler', () => {
         return 'logline\n';
       }
       throw new Error(`unexpected cmd: ${cmd}`);
-    };
+    });
 
     const result = await ciRunLogsHandler.execute({
       run_id: 321,
@@ -265,13 +268,13 @@ describe('ci_run_logs handler', () => {
   });
 
   test('github_explicit_repo — URL construction uses explicit slug not cwd', async () => {
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       const flat = unquote(cmd);
       if (cmd.startsWith('git remote'))
         return 'https://github.com/cwd-org/cwd-repo.git\n';
       if (flat.includes('gh run view')) return 'logline\n';
       throw new Error(`unexpected cmd: ${cmd}`);
-    };
+    });
 
     const result = await ciRunLogsHandler.execute({
       run_id: 654,
@@ -287,7 +290,7 @@ describe('ci_run_logs handler', () => {
   test('gitlab_explicit_repo — pipelines URL + trace use explicit slug', async () => {
     let sawExplicitPipelinesPath = false;
     let sawTraceRepoFlag = false;
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       const flat = unquote(cmd);
       if (cmd.startsWith('git remote'))
         return 'https://gitlab.com/cwd-org/cwd-repo.git\n';
@@ -303,7 +306,7 @@ describe('ci_run_logs handler', () => {
         return 'failing log\n';
       }
       throw new Error(`unexpected cmd: ${cmd}`);
-    };
+    });
 
     const result = await ciRunLogsHandler.execute({
       run_id: 99,
@@ -319,12 +322,12 @@ describe('ci_run_logs handler', () => {
 
   test('gitlab — long log triggers truncation (composition)', async () => {
     const longLog = makeLines(1200);
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       const flat = unquote(cmd);
       if (cmd.startsWith('git remote')) return 'https://gitlab.com/grp/proj.git\n';
       if (flat.startsWith('glab ci trace')) return longLog;
       throw new Error(`unexpected cmd: ${cmd}`);
-    };
+    });
 
     const result = await ciRunLogsHandler.execute({
       run_id: 1,
@@ -341,14 +344,14 @@ describe('ci_run_logs handler', () => {
 
   // --- exec error surfaces as ok:false ---
   test('github_exec_error — surfaces gh command failure as ok:false', async () => {
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       const flat = unquote(cmd);
       if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
       if (flat.includes('gh run view')) {
         throw new Error('gh: run not found');
       }
       throw new Error(`unexpected cmd: ${cmd}`);
-    };
+    });
 
     const result = await ciRunLogsHandler.execute({ run_id: 404 });
     const parsed = parseResult(result);

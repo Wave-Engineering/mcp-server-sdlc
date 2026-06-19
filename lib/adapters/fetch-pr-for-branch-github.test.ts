@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  setExecMock,
+  resetExecMock,
+  execCalls,
+} from '../test-support/mock-child-process.ts';
 import type { AdapterResult, PrForBranchRef } from './types.ts';
 
 // Subprocess-boundary tests for the GitHub fetchPrForBranch adapter
@@ -21,68 +27,61 @@ function expectErr(
   }
 }
 
-let execCalls: string[] = [];
-let execMockFn: (cmd: string) => string = () => '';
-const mockExecSync = mock((cmd: string) => {
-  execCalls.push(cmd);
-  return execMockFn(cmd);
-});
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { fetchPrForBranchGithub, fetchPrForBranchGithubSync } = await import(
   './fetch-pr-for-branch-github.ts'
 );
 
 beforeEach(() => {
-  execCalls = [];
-  execMockFn = () => '';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => '');
 });
 
 describe('fetch-pr-for-branch-github — argv + state filter', () => {
   test('passes --head, --state, --json fields in argv', () => {
-    execMockFn = () =>
+    setExecMock(() =>
       JSON.stringify([
         { number: 7, url: 'https://github.com/org/repo/pull/7' },
-      ]);
+      ]));
     fetchPrForBranchGithubSync('feature/42-thing', 'open');
-    expect(execCalls.length).toBe(1);
-    expect(execCalls[0]).toContain('gh pr list');
-    expect(execCalls[0]).toContain('--head feature/42-thing');
-    expect(execCalls[0]).toContain('--state open');
-    expect(execCalls[0]).toContain('--json number,url');
+    expect(execCalls().length).toBe(1);
+    expect(execCalls()[0]).toContain('gh pr list');
+    expect(execCalls()[0]).toContain('--head feature/42-thing');
+    expect(execCalls()[0]).toContain('--state open');
+    expect(execCalls()[0]).toContain('--json number,url');
   });
 
   test('passes caller state verbatim (merged)', () => {
-    execMockFn = () => '[]';
+    setExecMock(() => '[]');
     fetchPrForBranchGithubSync('feature/42-thing', 'merged');
-    expect(execCalls[0]).toContain('--state merged');
+    expect(execCalls()[0]).toContain('--state merged');
   });
 
   test('passes caller state verbatim (all)', () => {
-    execMockFn = () => '[]';
+    setExecMock(() => '[]');
     fetchPrForBranchGithubSync('feature/42-thing', 'all');
-    expect(execCalls[0]).toContain('--state all');
+    expect(execCalls()[0]).toContain('--state all');
   });
 
   test('passes --repo when supplied', () => {
-    execMockFn = () => '[]';
+    setExecMock(() => '[]');
     fetchPrForBranchGithubSync('feature/42-thing', 'open', 'org/other');
-    expect(execCalls[0]).toContain('--repo org/other');
+    expect(execCalls()[0]).toContain('--repo org/other');
   });
 
   test('omits --repo when not supplied (uses cwd)', () => {
-    execMockFn = () => '[]';
+    setExecMock(() => '[]');
     fetchPrForBranchGithubSync('feature/42-thing', 'open');
-    expect(execCalls[0]).not.toContain('--repo');
+    expect(execCalls()[0]).not.toContain('--repo');
   });
 
   test('returns first PR when list is non-empty', () => {
-    execMockFn = () =>
+    setExecMock(() =>
       JSON.stringify([
         { number: 7, url: 'https://github.com/org/repo/pull/7' },
         { number: 8, url: 'https://github.com/org/repo/pull/8' },
-      ]);
+      ]));
     const ref = fetchPrForBranchGithubSync('feature/42-thing', 'open');
     expect(ref).toEqual({ number: 7, url: 'https://github.com/org/repo/pull/7' });
   });
@@ -91,33 +90,33 @@ describe('fetch-pr-for-branch-github — argv + state filter', () => {
     expect(() =>
       fetchPrForBranchGithubSync('feature/42-x', 'open', 'org/repo; rm -rf /'),
     ).toThrow(/invalid repo slug/);
-    expect(execCalls.length).toBe(0);
+    expect(execCalls().length).toBe(0);
   });
 
   test('rejects branch with shell metacharacter (no exec)', () => {
     expect(() =>
       fetchPrForBranchGithubSync('feature/42-x`whoami`', 'open'),
     ).toThrow(/invalid branch/);
-    expect(execCalls.length).toBe(0);
+    expect(execCalls().length).toBe(0);
   });
 });
 
 describe('fetch-pr-for-branch-github — null when no matching PR', () => {
   test('returns null when empty array', () => {
-    execMockFn = () => '[]';
+    setExecMock(() => '[]');
     const ref = fetchPrForBranchGithubSync('feature/42-thing', 'open');
     expect(ref).toBeNull();
   });
 
   test('returns null when first entry missing url', () => {
-    execMockFn = () => JSON.stringify([{ number: 7 }]);
+    setExecMock(() => JSON.stringify([{ number: 7 }]));
     const ref = fetchPrForBranchGithubSync('feature/42-thing', 'open');
     expect(ref).toBeNull();
   });
 
   test('returns null when first entry missing number', () => {
-    execMockFn = () =>
-      JSON.stringify([{ url: 'https://github.com/org/repo/pull/7' }]);
+    setExecMock(() =>
+      JSON.stringify([{ url: 'https://github.com/org/repo/pull/7' }]));
     const ref = fetchPrForBranchGithubSync('feature/42-thing', 'open');
     expect(ref).toBeNull();
   });
@@ -125,10 +124,10 @@ describe('fetch-pr-for-branch-github — null when no matching PR', () => {
 
 describe('fetch-pr-for-branch-github — AdapterResult wrapper', () => {
   test('returns ok:true wrapping ref on success', async () => {
-    execMockFn = () =>
+    setExecMock(() =>
       JSON.stringify([
         { number: 7, url: 'https://github.com/org/repo/pull/7' },
-      ]);
+      ]));
     const result = await fetchPrForBranchGithub({
       branch: 'feature/42-x',
     });
@@ -140,7 +139,7 @@ describe('fetch-pr-for-branch-github — AdapterResult wrapper', () => {
   });
 
   test('returns ok:true + data:null when no match', async () => {
-    execMockFn = () => '[]';
+    setExecMock(() => '[]');
     const result = await fetchPrForBranchGithub({
       branch: 'feature/42-x',
     });
@@ -149,15 +148,15 @@ describe('fetch-pr-for-branch-github — AdapterResult wrapper', () => {
   });
 
   test('defaults state to open when omitted', async () => {
-    execMockFn = () => '[]';
+    setExecMock(() => '[]');
     await fetchPrForBranchGithub({ branch: 'feature/42-x' });
-    expect(execCalls[0]).toContain('--state open');
+    expect(execCalls()[0]).toContain('--state open');
   });
 
   test('returns ok:false with code on subprocess failure', async () => {
-    execMockFn = () => {
+    setExecMock(() => {
       throw new Error('gh: network error');
-    };
+    });
     const result = await fetchPrForBranchGithub({
       branch: 'feature/42-x',
     });
@@ -173,6 +172,6 @@ describe('fetch-pr-for-branch-github — AdapterResult wrapper', () => {
     });
     expectErr(result);
     expect(result.error).toMatch(/invalid repo slug/);
-    expect(execCalls.length).toBe(0);
+    expect(execCalls().length).toBe(0);
   });
 });

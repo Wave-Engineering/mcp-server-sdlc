@@ -1,5 +1,11 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
 import type { AdapterResult, NormalizedLabel } from './types.ts';
+import {
+  installChildProcessMock,
+  onExec as on,
+  resetExecMock,
+  execCalls,
+} from '../test-support/mock-child-process.ts';
 
 // Subprocess-boundary tests for the GitHub label_create adapter (R-15).
 // Integration-level coverage (schema validation, handler envelope, cross-platform
@@ -16,43 +22,13 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
 function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  // Argv strictness — leading-# color on the gh path means we regressed.
-  // Fail LOUDLY rather than let the test silently pass.
-  if (flat.includes("gh label create") && flat.includes("--color #")) {
-    const err = new Error(
-      `FAIL: gh label create invoked with leading-# color — gh requires BARE hex`,
-    ) as ThrowableError;
-    err.status = 127;
-    throw err;
-  }
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { labelCreateGithub } = await import('./label-create-github.ts');
-
-function on(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
 
 function expectOk(
   r: AdapterResult<NormalizedLabel>,
@@ -71,12 +47,11 @@ function expectErr(
 }
 
 function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
+  return execCalls().find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('labelCreateGithub — subprocess boundary', () => {

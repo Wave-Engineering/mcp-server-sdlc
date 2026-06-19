@@ -1,4 +1,10 @@
 import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../test-support/mock-child-process.ts';
 import type { AdapterResult, CiRunStatusResponse } from './types.ts';
 
 // Subprocess-boundary tests for the GitLab ci_run_status adapter (R-15).
@@ -17,37 +23,16 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
 function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 mock.module('../shared/parse-repo-slug.js', () => ({
   parseRepoSlug: () => 'org/repo',
 }));
 
 const { ciRunStatusGitlab } = await import('./ci-run-status-gitlab.ts');
-
-function on(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
 
 function expectOk(
   r: AdapterResult<CiRunStatusResponse>,
@@ -66,19 +51,18 @@ function expectErr(
 }
 
 function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
+  return execCalls().find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('ciRunStatusGitlab — subprocess boundary', () => {
   // --- argv + normalization for the three status enum families ---
 
   test('argv: glab api pipelines?ref=... per_page=1 by default; normalizes success', async () => {
-    on(
+    onExec(
       'glab api projects/org%2Frepo/pipelines?ref=',
       JSON.stringify([
         {
@@ -113,7 +97,7 @@ describe('ciRunStatusGitlab — subprocess boundary', () => {
   });
 
   test('normalizes failed → failure conclusion', async () => {
-    on(
+    onExec(
       'glab api projects/org%2Frepo/pipelines?ref=',
       JSON.stringify([
         {
@@ -137,7 +121,7 @@ describe('ciRunStatusGitlab — subprocess boundary', () => {
   });
 
   test('normalizes canceled/cancelled → cancelled', async () => {
-    on(
+    onExec(
       'glab api projects/org%2Frepo/pipelines?ref=',
       JSON.stringify([
         {
@@ -160,7 +144,7 @@ describe('ciRunStatusGitlab — subprocess boundary', () => {
   });
 
   test('normalizes running → in_progress with null conclusion', async () => {
-    on(
+    onExec(
       'glab api projects/org%2Frepo/pipelines?ref=',
       JSON.stringify([
         {
@@ -185,7 +169,7 @@ describe('ciRunStatusGitlab — subprocess boundary', () => {
   });
 
   test('normalizes queued-family (pending/created/preparing → queued)', async () => {
-    on(
+    onExec(
       'glab api projects/org%2Frepo/pipelines?ref=',
       JSON.stringify([
         {
@@ -208,7 +192,7 @@ describe('ciRunStatusGitlab — subprocess boundary', () => {
   });
 
   test('workflow_name filters client-side against `source`; uses per_page=20', async () => {
-    on(
+    onExec(
       'glab api projects/org%2Frepo/pipelines?ref=main&per_page=20',
       JSON.stringify([
         {
@@ -246,7 +230,7 @@ describe('ciRunStatusGitlab — subprocess boundary', () => {
   });
 
   test('explicit repo targets encoded other-org/other-repo', async () => {
-    on(
+    onExec(
       'glab api projects/other-org%2Fother-repo/pipelines?ref=',
       JSON.stringify([
         {
@@ -273,7 +257,7 @@ describe('ciRunStatusGitlab — subprocess boundary', () => {
   // --- null return when no matching run ---
 
   test('null return when the pipeline list is empty', async () => {
-    on('glab api projects/org%2Frepo/pipelines?ref=', JSON.stringify([]));
+    onExec('glab api projects/org%2Frepo/pipelines?ref=', JSON.stringify([]));
 
     const result = await ciRunStatusGitlab({ ref: 'branch-no-runs' });
     expectOk(result);
@@ -281,7 +265,7 @@ describe('ciRunStatusGitlab — subprocess boundary', () => {
   });
 
   test('null return when workflow_name filter matches nothing', async () => {
-    on(
+    onExec(
       'glab api projects/org%2Frepo/pipelines?ref=main&per_page=20',
       JSON.stringify([
         {
@@ -305,7 +289,7 @@ describe('ciRunStatusGitlab — subprocess boundary', () => {
   // --- error surface ---
 
   test('returns AdapterResult.error on glab failure (not thrown)', async () => {
-    on('glab api', () => {
+    onExec('glab api', () => {
       const err = new Error('glab: 401 unauthorized') as ThrowableError;
       err.stderr = 'glab: 401 unauthorized';
       err.status = 1;

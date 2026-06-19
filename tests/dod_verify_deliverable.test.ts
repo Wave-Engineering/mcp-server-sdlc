@@ -1,9 +1,15 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../lib/test-support/mock-child-process.ts';
 
 // dod_verify_deliverable now uses child_process.execSync (story #253). Tests
-// intercept the boundary via `mock.module('child_process', ...)`. Each test
-// populates `execRegistry` with substring → responder mappings; an unmatched
-// call throws so missing stubs surface loudly.
+// intercept the boundary via the shared child_process mock helper. Each test
+// registers substring → responder mappings via `onExec`; an unmatched call
+// throws so missing stubs surface loudly.
 
 interface ThrowableError extends Error {
   stderr?: string;
@@ -11,41 +17,12 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-type Responder = string | (() => string);
-
-let execRegistry: Array<{ match: string; respond: Responder }> = [];
-let execCalls: string[] = [];
-
-function unquote(cmd: string): string {
-  return cmd.replace(/'([^']*)'/g, '$1');
-}
-
-function mockExec(cmd: string): string {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec call: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec call: ${cmd}`;
-  err.status = 127;
-  throw err;
-}
-
-mock.module('child_process', () => ({
-  execSync: (cmd: string, _opts?: unknown) => mockExec(cmd),
-}));
+installChildProcessMock();
 
 const { default: handler } = await import('../handlers/dod_verify_deliverable.ts');
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
   return JSON.parse(result.content[0].text);
-}
-
-function onExec(match: string, respond: Responder) {
-  execRegistry.push({ match, respond });
 }
 
 function failExec(match: string, stderr: string = 'No such file or directory', status: number = 1): void {
@@ -59,13 +36,11 @@ function failExec(match: string, stderr: string = 'No such file or directory', s
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 afterEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('dod_verify_deliverable handler', () => {
@@ -160,14 +135,14 @@ describe('dod_verify_deliverable handler', () => {
     const result = await handler.execute({ evidence_path: '/tmp/x' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);
-    expect(execCalls.length).toBe(0);
+    expect(execCalls().length).toBe(0);
   });
 
   test('schema_validation — rejects missing evidence_path', async () => {
     const result = await handler.execute({ id: 'D-01' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);
-    expect(execCalls.length).toBe(0);
+    expect(execCalls().length).toBe(0);
   });
 
   // --- boundary test (per #253 / Story 1.1 test-procedure ledger) ---
@@ -178,8 +153,8 @@ describe('dod_verify_deliverable handler', () => {
 
     await handler.execute({ id: 'D-X', evidence_path: path });
 
-    expect(execCalls.length).toBe(1);
-    expect(execCalls[0]).toBe(`'stat' '-c' '%F|%s|%Y' '${path}'`);
+    expect(execCalls().length).toBe(1);
+    expect(execCalls()[0]).toBe(`'stat' '-c' '%F|%s|%Y' '${path}'`);
   });
 
   test('execSync invocation matches ls CLI shape (directory path)', async () => {
@@ -189,8 +164,8 @@ describe('dod_verify_deliverable handler', () => {
 
     await handler.execute({ id: 'D-X', evidence_path: path });
 
-    expect(execCalls.length).toBe(2);
-    expect(execCalls[0]).toBe(`'stat' '-c' '%F|%s|%Y' '${path}'`);
-    expect(execCalls[1]).toBe(`'ls' '-A' '${path}'`);
+    expect(execCalls().length).toBe(2);
+    expect(execCalls()[0]).toBe(`'stat' '-c' '%F|%s|%Y' '${path}'`);
+    expect(execCalls()[1]).toBe(`'ls' '-A' '${path}'`);
   });
 });

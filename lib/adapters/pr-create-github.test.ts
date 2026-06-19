@@ -1,4 +1,11 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+  mockExecSync,
+} from '../test-support/mock-child-process.ts';
 import type { AdapterResult, PrCreateResponse } from './types.ts';
 
 // Subprocess-boundary tests for the GitHub pr_create adapter (R-15).
@@ -12,36 +19,13 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-let execOpts: Array<{ cwd?: string } | undefined> = [];
-
 function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-const mockExecSync = mock((cmd: string, opts?: { cwd?: string }) => {
-  execCalls.push(cmd);
-  execOpts.push(opts);
-  const flat = unquote(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { prCreateGithub } = await import('./pr-create-github.ts');
-
-function on(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
 
 // Narrow AdapterResult into the success branch — throws if it's an error or
 // platform_unsupported variant. Lets test bodies access `.data` directly
@@ -63,28 +47,30 @@ function expectErr(
 }
 
 function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
+  return execCalls().find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
 
 function optsForCall(needle: string): { cwd?: string } | undefined {
-  const idx = execCalls.findIndex((c) => c.includes(needle) || unquote(c).includes(needle));
-  return idx >= 0 ? execOpts[idx] : undefined;
+  const idx = execCalls().findIndex(
+    (c) => c.includes(needle) || unquote(c).includes(needle),
+  );
+  return idx >= 0
+    ? (mockExecSync.mock.calls[idx]?.[1] as { cwd?: string } | undefined)
+    : undefined;
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
-  execOpts = [];
+  resetExecMock();
 });
 
 describe('prCreateGithub — subprocess boundary', () => {
   test('gh CLI invocation matches expected argv shape (happy path)', async () => {
-    on('git branch --show-current', 'feature/x\n');
-    on(
+    onExec('git branch --show-current', 'feature/x\n');
+    onExec(
       'gh pr create',
       'https://github.com/owner/repo/pull/42\n',
     );
-    on(
+    onExec(
       'gh pr view',
       JSON.stringify({
         number: 42,
@@ -118,9 +104,9 @@ describe('prCreateGithub — subprocess boundary', () => {
   });
 
   test('parses gh pr view response into PrCreateResponse', async () => {
-    on('git branch --show-current', 'feature/y\n');
-    on('gh pr create', 'https://github.com/o/r/pull/7\n');
-    on(
+    onExec('git branch --show-current', 'feature/y\n');
+    onExec('gh pr create', 'https://github.com/o/r/pull/7\n');
+    onExec(
       'gh pr view',
       JSON.stringify({
         number: 7,
@@ -144,8 +130,8 @@ describe('prCreateGithub — subprocess boundary', () => {
   });
 
   test('returns AdapterResult{ok:false, code} on gh failure (not thrown)', async () => {
-    on('git branch --show-current', 'feature/z\n');
-    on('gh pr create', () => {
+    onExec('git branch --show-current', 'feature/z\n');
+    onExec('gh pr create', () => {
       const err = new Error('gh: auth required') as ThrowableError;
       err.stderr = 'gh: auth required';
       err.status = 4;
@@ -159,14 +145,14 @@ describe('prCreateGithub — subprocess boundary', () => {
   });
 
   test('idempotent path: "already exists" → looks up existing PR and returns created:false', async () => {
-    on('git branch --show-current', 'feature/dup\n');
-    on('gh pr create', () => {
+    onExec('git branch --show-current', 'feature/dup\n');
+    onExec('gh pr create', () => {
       const err = new Error('a pull request for branch already exists') as ThrowableError;
       err.stderr = 'a pull request for branch already exists';
       err.status = 1;
       throw err;
     });
-    on(
+    onExec(
       'gh pr list',
       JSON.stringify([
         {
@@ -186,9 +172,9 @@ describe('prCreateGithub — subprocess boundary', () => {
   });
 
   test('--draft flag added when args.draft=true', async () => {
-    on('git branch --show-current', 'draft-branch\n');
-    on('gh pr create', 'https://github.com/o/r/pull/3\n');
-    on(
+    onExec('git branch --show-current', 'draft-branch\n');
+    onExec('gh pr create', 'https://github.com/o/r/pull/3\n');
+    onExec(
       'gh pr view',
       JSON.stringify({
         number: 3,
@@ -204,9 +190,9 @@ describe('prCreateGithub — subprocess boundary', () => {
   });
 
   test('--repo flag forwarded when args.repo provided', async () => {
-    on('git branch --show-current', 'feature/cross\n');
-    on('gh pr create', 'https://github.com/Org/Other/pull/12\n');
-    on(
+    onExec('git branch --show-current', 'feature/cross\n');
+    onExec('gh pr create', 'https://github.com/Org/Other/pull/12\n');
+    onExec(
       'gh pr view',
       JSON.stringify({
         number: 12,
@@ -227,9 +213,9 @@ describe('prCreateGithub — subprocess boundary', () => {
   });
 
   test('runs gh in args.cwd when supplied (#453)', async () => {
-    on('git branch --show-current', 'feature/rooted\n');
-    on('gh pr create', 'https://github.com/o/r/pull/77\n');
-    on(
+    onExec('git branch --show-current', 'feature/rooted\n');
+    onExec('gh pr create', 'https://github.com/o/r/pull/77\n');
+    onExec(
       'gh pr view',
       JSON.stringify({
         number: 77,
@@ -248,10 +234,10 @@ describe('prCreateGithub — subprocess boundary', () => {
   });
 
   test('default-branch resolution via gh repo view when args.base is undefined', async () => {
-    on('git branch --show-current', 'feature/no-base\n');
-    on('gh repo view', 'develop\n');
-    on('gh pr create', 'https://github.com/o/r/pull/55\n');
-    on(
+    onExec('git branch --show-current', 'feature/no-base\n');
+    onExec('gh repo view', 'develop\n');
+    onExec('gh pr create', 'https://github.com/o/r/pull/55\n');
+    onExec(
       'gh pr view',
       JSON.stringify({
         number: 55,

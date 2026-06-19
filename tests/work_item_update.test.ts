@@ -1,4 +1,5 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import { installChildProcessMock, onExec, resetExecMock, execCalls } from '../lib/test-support/mock-child-process.ts';
 
 // Integration coverage for the work_item_update handler (#287).
 //
@@ -19,25 +20,11 @@ interface MockExecError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
 function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  throw new Error(`Unexpected exec: ${cmd}`);
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { default: handler } = await import('../handlers/work_item_update.ts');
 
@@ -45,13 +32,8 @@ function parseResult(content: Array<{ type: string; text: string }>) {
   return JSON.parse(content[0].text) as Record<string, unknown>;
 }
 
-function onExec(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
-
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('work_item_update handler', () => {
@@ -104,7 +86,7 @@ describe('work_item_update handler', () => {
     expect(data.number).toBe(42);
     expect(data.dry_run).toBe(false);
 
-    const call = execCalls.find((c) => unquote(c).includes('gh issue edit')) ?? '';
+    const call = execCalls().find((c) => unquote(c).includes('gh issue edit')) ?? '';
     expect(call).toContain("'--title' 'Renamed'");
   });
 
@@ -133,7 +115,7 @@ describe('work_item_update handler', () => {
     // AC: section patching preserves other H2 sections unmodified
     expect(data.resolved_body).toContain('## Summary');
 
-    const editCall = execCalls.find((c) => unquote(c).includes('gh issue edit')) ?? '';
+    const editCall = execCalls().find((c) => unquote(c).includes('gh issue edit')) ?? '';
     expect(editCall).toContain('--body');
   });
 
@@ -148,7 +130,7 @@ describe('work_item_update handler', () => {
     const data = parseResult(result.content);
     expect(data.ok).toBe(true);
     expect(data.dry_run).toBe(true);
-    expect(execCalls.find((c) => unquote(c).includes('gh issue edit'))).toBeUndefined();
+    expect(execCalls().find((c) => unquote(c).includes('gh issue edit'))).toBeUndefined();
   });
 
   // ---- gitlab dispatch ----
@@ -164,7 +146,7 @@ describe('work_item_update handler', () => {
     const data = parseResult(result.content);
     expect(data.ok).toBe(true);
 
-    const call = execCalls.find((c) => unquote(c).includes('glab issue update')) ?? '';
+    const call = execCalls().find((c) => unquote(c).includes('glab issue update')) ?? '';
     expect(call).toContain("'--title' 'Renamed'");
   });
 

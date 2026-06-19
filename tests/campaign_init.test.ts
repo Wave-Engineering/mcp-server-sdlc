@@ -1,24 +1,18 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  setExecMock,
+  resetExecMock,
+  execCallsDetailed,
+} from '../lib/test-support/mock-child-process.ts';
 
-interface ExecCall {
-  cmd: string;
-  opts: { cwd?: string; encoding?: string } | undefined;
-}
-
-let execCalls: ExecCall[] = [];
-let execMockFn: (cmd: string, opts?: { cwd?: string }) => string = () => '';
-const mockExecSync = mock((cmd: string, opts?: { cwd?: string; encoding?: string }) => {
-  execCalls.push({ cmd, opts });
-  return execMockFn(cmd, opts);
-});
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { default: handler } = await import('../handlers/campaign_init.ts');
 
 function resetMocks() {
-  execCalls = [];
-  execMockFn = () => '';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => '');
 }
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
@@ -67,7 +61,7 @@ describe('campaign_init handler', () => {
   });
 
   test('initializes campaign in a fresh project', async () => {
-    execMockFn = buildExec({});
+    setExecMock(buildExec({}));
     const result = await handler.execute({
       project_name: 'test-project',
       root: '/tmp/myrepo',
@@ -79,16 +73,16 @@ describe('campaign_init handler', () => {
   });
 
   test('passes project_name to campaign-status CLI', async () => {
-    execMockFn = buildExec({});
+    setExecMock(buildExec({}));
     await handler.execute({ project_name: 'my-cool-project', root: '/tmp/repo' });
-    const initCall = execCalls.find(c => c.cmd.startsWith('campaign-status init'));
+    const initCall = execCallsDetailed().find(c => c.cmd.startsWith('campaign-status init'));
     expect(initCall).toBeDefined();
     expect(initCall?.cmd).toContain("'my-cool-project'");
-    expect(initCall?.opts?.cwd).toBe('/tmp/repo');
+    expect((initCall?.opts as { cwd?: string })?.cwd).toBe('/tmp/repo');
   });
 
   test('errors when already initialized', async () => {
-    execMockFn = buildExec({ initThrows: true });
+    setExecMock(buildExec({ initThrows: true }));
     const result = await handler.execute({
       project_name: 'test-project',
       root: '/tmp/myrepo',
@@ -99,7 +93,7 @@ describe('campaign_init handler', () => {
   });
 
   test('errors when root directory missing', async () => {
-    execMockFn = buildExec({ rootExists: false });
+    setExecMock(buildExec({ rootExists: false }));
     const result = await handler.execute({
       project_name: 'test-project',
       root: '/tmp/no-such-dir',
@@ -110,7 +104,7 @@ describe('campaign_init handler', () => {
   });
 
   test('errors when .sdlc/ not created after init succeeds', async () => {
-    execMockFn = buildExec({ sdlcCreated: false });
+    setExecMock(buildExec({ sdlcCreated: false }));
     const result = await handler.execute({
       project_name: 'test-project',
       root: '/tmp/myrepo',
@@ -123,14 +117,14 @@ describe('campaign_init handler', () => {
   test('uses CLAUDE_PROJECT_DIR when root not provided', async () => {
     const oldEnv = process.env.CLAUDE_PROJECT_DIR;
     process.env.CLAUDE_PROJECT_DIR = '/tmp/from-env';
-    execMockFn = buildExec({});
+    setExecMock(buildExec({}));
     try {
       const result = await handler.execute({ project_name: 'test-project' });
       const parsed = parseResult(result);
       expect(parsed.ok).toBe(true);
       expect(parsed.sdlc_dir).toBe('/tmp/from-env/.sdlc');
-      const initCall = execCalls.find(c => c.cmd.startsWith('campaign-status init'));
-      expect(initCall?.opts?.cwd).toBe('/tmp/from-env');
+      const initCall = execCallsDetailed().find(c => c.cmd.startsWith('campaign-status init'));
+      expect((initCall?.opts as { cwd?: string })?.cwd).toBe('/tmp/from-env');
     } finally {
       if (oldEnv === undefined) {
         delete process.env.CLAUDE_PROJECT_DIR;

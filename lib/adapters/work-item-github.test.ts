@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../test-support/mock-child-process.ts';
 import type { AdapterResult, WorkItemResponse } from './types.ts';
 
 // Subprocess-boundary tests for the GitHub work_item adapter (R-15).
@@ -17,45 +23,13 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
 function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  // Argv strictness — glab-style flags on the gh path means we regressed.
-  if (
-    (flat.includes('gh issue create') || flat.includes('gh pr create')) &&
-    (/\s-R\s/.test(flat) || /--description/.test(flat) || /--source-branch/.test(flat) || /--target-branch/.test(flat))
-  ) {
-    const err = new Error(
-      `FAIL: gh ${flat.includes('issue') ? 'issue' : 'pr'} create invoked with glab-style flags`,
-    ) as ThrowableError;
-    err.status = 127;
-    throw err;
-  }
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { workItemGithub } = await import('./work-item-github.ts');
-
-function on(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
 
 function expectOk(
   r: AdapterResult<WorkItemResponse>,
@@ -82,12 +56,11 @@ function expectUnsupported(
 }
 
 function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
+  return execCalls().find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('workItemGithub — subprocess boundary', () => {
@@ -98,13 +71,13 @@ describe('workItemGithub — subprocess boundary', () => {
     expectUnsupported(result);
     expect(result.hint).toContain('type="pr"');
     // No `glab` sub-command should have been attempted.
-    expect(execCalls.length).toBe(0);
+    expect(execCalls().length).toBe(0);
   });
 
   // --- issue types → gh issue create ---
 
   test("argv: gh issue create for type:'story' auto-merges type::story label", async () => {
-    on('gh issue create', 'https://github.com/org/repo/issues/42\n');
+    onExec('gh issue create', 'https://github.com/org/repo/issues/42\n');
 
     const result = await workItemGithub({ type: 'story', title: 'My story', body: 'details' });
     expectOk(result);
@@ -119,7 +92,7 @@ describe('workItemGithub — subprocess boundary', () => {
   });
 
   test('argv: forwards caller labels alongside auto type::* label', async () => {
-    on('gh issue create', 'https://github.com/org/repo/issues/7\n');
+    onExec('gh issue create', 'https://github.com/org/repo/issues/7\n');
 
     await workItemGithub({ type: 'epic', title: 'Big epic', labels: ['priority::high', 'size::XL'] });
 
@@ -130,7 +103,7 @@ describe('workItemGithub — subprocess boundary', () => {
   });
 
   test('argv: --repo forwarded for cross-repo issue create', async () => {
-    on('gh issue create', 'https://github.com/foo/bar/issues/3\n');
+    onExec('gh issue create', 'https://github.com/foo/bar/issues/3\n');
 
     await workItemGithub({ type: 'chore', title: 'Cleanup', repo: 'foo/bar' });
 
@@ -139,7 +112,7 @@ describe('workItemGithub — subprocess boundary', () => {
   });
 
   test('argv: body defaults to empty string when omitted', async () => {
-    on('gh issue create', 'https://github.com/org/repo/issues/1\n');
+    onExec('gh issue create', 'https://github.com/org/repo/issues/1\n');
 
     await workItemGithub({ type: 'bug', title: 'No body' });
 
@@ -150,7 +123,7 @@ describe('workItemGithub — subprocess boundary', () => {
   // --- type:'pr' → gh pr create ---
 
   test("argv: gh pr create for type:'pr' with head/base/draft", async () => {
-    on('gh pr create', 'https://github.com/org/repo/pull/99\n');
+    onExec('gh pr create', 'https://github.com/org/repo/pull/99\n');
 
     const result = await workItemGithub({
       type: 'pr',
@@ -172,7 +145,7 @@ describe('workItemGithub — subprocess boundary', () => {
   });
 
   test("type:'pr' gets no automatic type label; caller labels still forwarded", async () => {
-    on('gh pr create', 'https://github.com/org/repo/pull/5\n');
+    onExec('gh pr create', 'https://github.com/org/repo/pull/5\n');
 
     await workItemGithub({ type: 'pr', title: 'Patch', labels: ['size::S'] });
 
@@ -182,7 +155,7 @@ describe('workItemGithub — subprocess boundary', () => {
   });
 
   test('argv: omits --draft when draft not set', async () => {
-    on('gh pr create', 'https://github.com/org/repo/pull/5\n');
+    onExec('gh pr create', 'https://github.com/org/repo/pull/5\n');
 
     await workItemGithub({ type: 'pr', title: 'Patch', head_branch: 'x', base_branch: 'main' });
 
@@ -193,7 +166,7 @@ describe('workItemGithub — subprocess boundary', () => {
   // --- error surface ---
 
   test('returns AdapterResult.error on gh issue failure (not thrown)', async () => {
-    on('gh issue create', () => {
+    onExec('gh issue create', () => {
       const err = new Error('gh: not authenticated') as ThrowableError;
       err.stderr = 'gh: not authenticated';
       err.status = 1;
@@ -207,7 +180,7 @@ describe('workItemGithub — subprocess boundary', () => {
   });
 
   test('returns AdapterResult.error on gh pr failure (not thrown)', async () => {
-    on('gh pr create', () => {
+    onExec('gh pr create', () => {
       const err = new Error('gh: cannot find base branch') as ThrowableError;
       err.stderr = 'no such ref';
       err.status = 1;
@@ -220,7 +193,7 @@ describe('workItemGithub — subprocess boundary', () => {
   });
 
   test('shell-escapes titles with embedded quotes', async () => {
-    on('gh issue create', 'https://github.com/org/repo/issues/1\n');
+    onExec('gh issue create', 'https://github.com/org/repo/issues/1\n');
 
     await workItemGithub({ type: 'story', title: "it's a story" });
 

@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../test-support/mock-child-process.ts';
 
 // Subprocess-boundary tests for the GitLab pr_wait_ci adapter (R-15).
 // Locks the pipeline-status normalization table (success/failed/canceled/...
@@ -10,33 +16,12 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { prWaitCiGitlab, snapshotGitlab } = await import('./pr-wait-ci-gitlab.ts');
 
-function on(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
-
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 function mrJson(status: string | undefined, web_url: string = 'https://gitlab.com/org/repo/-/merge_requests/3') {
@@ -51,21 +36,21 @@ function mrJson(status: string | undefined, web_url: string = 'https://gitlab.co
 
 describe('snapshotGitlab — pipeline-status normalization table', () => {
   test('queries glab api projects/<encoded-slug>/merge_requests/<iid>', () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on('glab api projects/org%2Frepo/merge_requests/3', mrJson('success'));
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests/3', mrJson('success'));
 
     const snap = snapshotGitlab(3);
     expect(snap.passed).toBe(1);
     expect(snap.summary).toBe('pipeline success');
 
-    const apiCall = execCalls.find((c) => c.includes('glab api projects/')) ?? '';
+    const apiCall = execCalls().find((c) => c.includes('glab api projects/')) ?? '';
     expect(apiCall).toContain('org%2Frepo');
     expect(apiCall).toContain('merge_requests/3');
   });
 
   test('success → passed=1', () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on('glab api projects/org%2Frepo/merge_requests/3', mrJson('success'));
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests/3', mrJson('success'));
     const snap = snapshotGitlab(3);
     expect(snap).toEqual({
       total: 1,
@@ -79,10 +64,9 @@ describe('snapshotGitlab — pipeline-status normalization table', () => {
 
   test('failed/canceled/cancelled → failed=1', () => {
     for (const status of ['failed', 'canceled', 'cancelled']) {
-      execRegistry = [];
-      execCalls = [];
-      on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-      on('glab api projects/org%2Frepo/merge_requests/3', mrJson(status));
+      resetExecMock();
+      onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+      onExec('glab api projects/org%2Frepo/merge_requests/3', mrJson(status));
       const snap = snapshotGitlab(3);
       expect(snap.failed).toBe(1);
       expect(snap.passed).toBe(0);
@@ -101,10 +85,9 @@ describe('snapshotGitlab — pipeline-status normalization table', () => {
       'scheduled',
       'manual',
     ]) {
-      execRegistry = [];
-      execCalls = [];
-      on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-      on('glab api projects/org%2Frepo/merge_requests/3', mrJson(status));
+      resetExecMock();
+      onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+      onExec('glab api projects/org%2Frepo/merge_requests/3', mrJson(status));
       const snap = snapshotGitlab(3);
       expect(snap.pending).toBe(1);
       expect(snap.passed).toBe(0);
@@ -114,8 +97,8 @@ describe('snapshotGitlab — pipeline-status normalization table', () => {
   });
 
   test('unknown / missing pipeline → all zeros (loop will time out)', () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on('glab api projects/org%2Frepo/merge_requests/3', mrJson(undefined));
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests/3', mrJson(undefined));
     const snap = snapshotGitlab(3);
     expect(snap.total).toBe(0);
     expect(snap.passed).toBe(0);
@@ -125,8 +108,8 @@ describe('snapshotGitlab — pipeline-status normalization table', () => {
   });
 
   test('pipeline preferred over head_pipeline when both present', () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on(
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec(
       'glab api projects/org%2Frepo/merge_requests/3',
       JSON.stringify({
         iid: 3,
@@ -145,8 +128,8 @@ describe('snapshotGitlab — pipeline-status normalization table', () => {
   });
 
   test('args.repo overrides cwd remote — slug is URL-encoded', () => {
-    on('git remote get-url origin', 'https://gitlab.com/cwd-org/cwd-repo.git');
-    on(
+    onExec('git remote get-url origin', 'https://gitlab.com/cwd-org/cwd-repo.git');
+    onExec(
       'glab api projects/target-org%2Ftarget-repo/merge_requests/3',
       mrJson('success', 'https://gitlab.com/target-org/target-repo/-/merge_requests/3'),
     );
@@ -154,28 +137,28 @@ describe('snapshotGitlab — pipeline-status normalization table', () => {
     const snap = snapshotGitlab(3, 'target-org/target-repo');
     expect(snap.passed).toBe(1);
 
-    const apiCall = execCalls.find((c) => c.includes('glab api projects/')) ?? '';
+    const apiCall = execCalls().find((c) => c.includes('glab api projects/')) ?? '';
     expect(apiCall).toContain('target-org%2Ftarget-repo');
     expect(apiCall).not.toContain('cwd-org%2Fcwd-repo');
   });
 
   test('throws on glab failure (handler/poll-loop layer maps to AdapterResult)', () => {
-    execRegistry = [];
-    on('glab api', () => {
+    resetExecMock();
+    onExec('glab api', () => {
       const err = new Error('glab: not authenticated') as ThrowableError;
       err.stderr = 'glab: not authenticated';
       err.status = 1;
       throw err;
     });
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
     expect(() => snapshotGitlab(3)).toThrow();
   });
 });
 
 describe('prWaitCiGitlab — full poll path', () => {
   test('successful pipeline → final_state passed on first iteration', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on('glab api projects/org%2Frepo/merge_requests/3', mrJson('success'));
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests/3', mrJson('success'));
 
     const result = await prWaitCiGitlab({
       number: 3,
@@ -194,8 +177,8 @@ describe('prWaitCiGitlab — full poll path', () => {
   });
 
   test('failed pipeline → final_state failed', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on('glab api projects/org%2Frepo/merge_requests/9', mrJson('failed', 'https://gitlab.com/org/repo/-/merge_requests/9'));
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests/9', mrJson('failed', 'https://gitlab.com/org/repo/-/merge_requests/9'));
 
     const result = await prWaitCiGitlab({
       number: 9,
@@ -214,8 +197,8 @@ describe('prWaitCiGitlab — full poll path', () => {
 
   // --- #416: empty-pipeline short-circuit ---
   test('empty pipeline + mergeable MR → no_checks_required immediately', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on(
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec(
       'glab api projects/org%2Frepo/merge_requests/3',
       JSON.stringify({
         iid: 3,
@@ -246,8 +229,8 @@ describe('prWaitCiGitlab — full poll path', () => {
   });
 
   test('empty pipeline + draft MR → no_checks_required + draft blocker', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on(
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec(
       'glab api projects/org%2Frepo/merge_requests/4',
       JSON.stringify({
         iid: 4,
@@ -272,8 +255,8 @@ describe('prWaitCiGitlab — full poll path', () => {
   });
 
   test('empty pipeline + conflicts → no_checks_required + conflicts blocker', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on(
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec(
       'glab api projects/org%2Frepo/merge_requests/5',
       JSON.stringify({
         iid: 5,
@@ -301,8 +284,8 @@ describe('prWaitCiGitlab — full poll path', () => {
   test('non-empty pipeline (success) does NOT short-circuit — polled-response shape returned', async () => {
     // Regression — when head_pipeline is present we hit the poll path and the
     // returned envelope must carry `final_state`, NOT `status: no_checks_required`.
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on('glab api projects/org%2Frepo/merge_requests/6', mrJson('success', 'https://gitlab.com/org/repo/-/merge_requests/6'));
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests/6', mrJson('success', 'https://gitlab.com/org/repo/-/merge_requests/6'));
 
     const result = await prWaitCiGitlab({
       number: 6,
@@ -318,8 +301,8 @@ describe('prWaitCiGitlab — full poll path', () => {
   });
 
   test('glab failure → AdapterResult ok:false with unexpected_error code', async () => {
-    on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on('glab api projects/org%2Frepo/merge_requests/77', () => {
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests/77', () => {
       const err = new Error('glab: not authenticated') as ThrowableError;
       err.stderr = 'glab: not authenticated';
       err.status = 1;

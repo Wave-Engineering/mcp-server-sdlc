@@ -1,9 +1,15 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../lib/test-support/mock-child-process.ts';
 
 // pr_create now uses child_process.execSync (story #238 — normalize subprocess
-// invocation). Tests intercept the boundary via `mock.module('child_process', ...)`
-// — same pattern as pr_merge.test.ts. Each test populates `execRegistry` with
-// substring → responder mappings; an unmatched call throws so missing stubs
+// invocation). Tests intercept the boundary via the shared child_process mock
+// helper — same pattern as pr_merge.test.ts. Each test registers substring →
+// responder mappings via `onExec`; an unmatched call throws so missing stubs
 // surface loudly.
 
 interface ThrowableError extends Error {
@@ -11,11 +17,6 @@ interface ThrowableError extends Error {
   stdout?: string;
   status?: number;
 }
-
-type Responder = string | (() => string);
-
-let execRegistry: Array<{ match: string; respond: Responder }> = [];
-let execCalls: string[] = [];
 
 // Strip the shell-quoting layer the handler applies so test match-keys can be
 // authored as plain `gh pr create` rather than `'gh' 'pr' 'create'`. We only
@@ -25,23 +26,7 @@ function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-function mockExec(cmd: string): string {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec call: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec call: ${cmd}`;
-  err.status = 127;
-  throw err;
-}
-
-mock.module('child_process', () => ({
-  execSync: (cmd: string, _opts?: unknown) => mockExec(cmd),
-}));
+installChildProcessMock();
 
 const { default: handler } = await import('../handlers/pr_create.ts');
 
@@ -49,15 +34,11 @@ function parseResult(result: { content: Array<{ type: string; text: string }> })
   return JSON.parse(result.content[0].text) as Record<string, unknown>;
 }
 
-function onExec(match: string, respond: Responder) {
-  execRegistry.push({ match, respond });
-}
-
 // Locate a recorded call whose unquoted form contains `needle`. Returns the
 // raw (still-quoted) call so flag-presence assertions still see the literal
 // argv (e.g. `--draft`, `--repo`, `'main'`).
 function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
+  return execCalls().find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
 
 function failExec(match: string, stderr: string, status: number = 1): void {
@@ -71,13 +52,11 @@ function failExec(match: string, stderr: string, status: number = 1): void {
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 afterEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('pr_create handler', () => {
@@ -272,7 +251,7 @@ describe('pr_create handler', () => {
     onExec('glab api', () => {
       // Faithful to the real glab binary — fail loudly if the handler ever
       // passes --jq. Look at the most recent recorded call.
-      const last = execCalls[execCalls.length - 1] ?? '';
+      const last = execCalls()[execCalls().length - 1] ?? '';
       if (last.includes('--jq')) {
         const err = new Error('FAIL: glab api does not accept --jq') as ThrowableError;
         err.stderr = 'FAIL: glab api does not accept --jq';
@@ -328,7 +307,7 @@ describe('pr_create handler', () => {
     expect(data.base).toBe('release/v2');
 
     // Confirm gh repo view was never called.
-    expect(execCalls.some((c) => c.includes('gh repo view'))).toBe(false);
+    expect(execCalls().some((c) => c.includes('gh repo view'))).toBe(false);
   });
 
   test('default_branch_resolution_failure — surfaces ok:false when gh repo view fails', async () => {
@@ -374,7 +353,7 @@ describe('pr_create handler', () => {
     const data = parseResult(result);
     expect(data.ok).toBe(true);
     expect(data.head).toBe('custom-head');
-    expect(execCalls.some((c) => c.includes('git branch --show-current'))).toBe(false);
+    expect(execCalls().some((c) => c.includes('git branch --show-current'))).toBe(false);
   });
 
   test('github_error_path — gh pr create fails, returns ok=false with error', async () => {
@@ -572,7 +551,7 @@ describe('pr_create handler', () => {
     const data = parseResult(result);
     expect(data.ok).toBe(false);
     expect(String(data.error)).toContain('repo');
-    expect(execCalls.length).toBe(0);
+    expect(execCalls().length).toBe(0);
   });
 
   test('fallback_platform_detection — uses git remote URL to route', async () => {

@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import {
+  onExec,
+  execCalls,
+  resetExecMock,
+  installChildProcessMock,
+} from '../test-support/mock-child-process.ts';
 import type { AdapterResult, PrStatusResponse } from './types.ts';
 
 // Subprocess-boundary tests for the GitHub pr_status adapter (R-15).
@@ -13,34 +19,13 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
 function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { prStatusGithub, aggregateGithubChecks } = await import('./pr-status-github.ts');
-
-function on(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
 
 function expectOk(
   r: AdapterResult<PrStatusResponse>,
@@ -59,17 +44,16 @@ function expectErr(
 }
 
 function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
+  return execCalls().find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('prStatusGithub — subprocess boundary', () => {
   test('gh CLI invocation matches expected argv shape (happy path)', async () => {
-    on(
+    onExec(
       'gh pr view',
       JSON.stringify({
         state: 'OPEN',
@@ -78,7 +62,7 @@ describe('prStatusGithub — subprocess boundary', () => {
         url: 'https://github.com/o/r/pull/42',
       }),
     );
-    on(
+    onExec(
       'gh pr checks',
       JSON.stringify([
         { name: 'validate', state: 'completed', conclusion: 'success' },
@@ -104,7 +88,7 @@ describe('prStatusGithub — subprocess boundary', () => {
   });
 
   test('parses pr view + pr checks responses into PrStatusResponse', async () => {
-    on(
+    onExec(
       'gh pr view',
       JSON.stringify({
         state: 'OPEN',
@@ -113,7 +97,7 @@ describe('prStatusGithub — subprocess boundary', () => {
         url: 'https://github.com/o/r/pull/7',
       }),
     );
-    on(
+    onExec(
       'gh pr checks',
       JSON.stringify([
         { name: 'a', state: 'completed', conclusion: 'success' },
@@ -134,7 +118,7 @@ describe('prStatusGithub — subprocess boundary', () => {
   });
 
   test('boolean mergeable=true is honored alongside MERGEABLE string', async () => {
-    on(
+    onExec(
       'gh pr view',
       JSON.stringify({
         state: 'OPEN',
@@ -143,7 +127,7 @@ describe('prStatusGithub — subprocess boundary', () => {
         url: 'https://github.com/o/r/pull/3',
       }),
     );
-    on('gh pr checks', JSON.stringify([]));
+    onExec('gh pr checks', JSON.stringify([]));
 
     const result = await prStatusGithub({ number: 3 });
     expectOk(result);
@@ -159,9 +143,8 @@ describe('prStatusGithub — subprocess boundary', () => {
       ['SOMETHING_NEW', 'unknown'],
     ];
     for (const [status, expected] of cases) {
-      execRegistry = [];
-      execCalls = [];
-      on(
+      resetExecMock();
+      onExec(
         'gh pr view',
         JSON.stringify({
           state: 'OPEN',
@@ -170,7 +153,7 @@ describe('prStatusGithub — subprocess boundary', () => {
           url: 'https://github.com/o/r/pull/1',
         }),
       );
-      on('gh pr checks', JSON.stringify([]));
+      onExec('gh pr checks', JSON.stringify([]));
 
       const result = await prStatusGithub({ number: 1 });
       expectOk(result);
@@ -186,9 +169,8 @@ describe('prStatusGithub — subprocess boundary', () => {
       ['weird', 'open'],
     ];
     for (const [raw, expected] of cases) {
-      execRegistry = [];
-      execCalls = [];
-      on(
+      resetExecMock();
+      onExec(
         'gh pr view',
         JSON.stringify({
           state: raw,
@@ -197,7 +179,7 @@ describe('prStatusGithub — subprocess boundary', () => {
           url: 'https://github.com/o/r/pull/2',
         }),
       );
-      on('gh pr checks', JSON.stringify([]));
+      onExec('gh pr checks', JSON.stringify([]));
 
       const result = await prStatusGithub({ number: 2 });
       expectOk(result);
@@ -206,7 +188,7 @@ describe('prStatusGithub — subprocess boundary', () => {
   });
 
   test('gh pr checks failure is treated as no checks (summary none)', async () => {
-    on(
+    onExec(
       'gh pr view',
       JSON.stringify({
         state: 'OPEN',
@@ -215,7 +197,7 @@ describe('prStatusGithub — subprocess boundary', () => {
         url: 'https://github.com/o/r/pull/99',
       }),
     );
-    on('gh pr checks', () => {
+    onExec('gh pr checks', () => {
       const err = new Error('no checks reported') as ThrowableError;
       err.stderr = 'no checks reported';
       err.status = 1;
@@ -231,7 +213,7 @@ describe('prStatusGithub — subprocess boundary', () => {
   });
 
   test('returns AdapterResult{ok:false, code} on gh pr view failure (not thrown)', async () => {
-    on('gh pr view', () => {
+    onExec('gh pr view', () => {
       const err = new Error('gh: not found') as ThrowableError;
       err.stderr = 'gh: not found';
       err.status = 1;
@@ -245,7 +227,7 @@ describe('prStatusGithub — subprocess boundary', () => {
   });
 
   test('--repo flag forwarded into both pr view AND pr checks', async () => {
-    on(
+    onExec(
       'gh pr view',
       JSON.stringify({
         state: 'OPEN',
@@ -254,7 +236,7 @@ describe('prStatusGithub — subprocess boundary', () => {
         url: 'https://github.com/Org/Other/pull/5',
       }),
     );
-    on('gh pr checks', JSON.stringify([]));
+    onExec('gh pr checks', JSON.stringify([]));
 
     await prStatusGithub({ number: 5, repo: 'Org/Other' });
     const viewCall = findCall('gh pr view');

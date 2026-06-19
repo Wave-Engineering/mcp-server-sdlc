@@ -1,4 +1,5 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
+import { installChildProcessMock, onExec, resetExecMock, execCalls } from '../lib/test-support/mock-child-process.ts';
 
 // Integration coverage for the work_item handler post-Story-2.17 (#311).
 //
@@ -21,25 +22,11 @@ interface MockExecError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
 function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  throw new Error(`Unexpected exec: ${cmd}`);
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { default: handler } = await import('../handlers/work_item.ts');
 
@@ -47,13 +34,8 @@ function parseResult(content: Array<{ type: string; text: string }>) {
   return JSON.parse(content[0].text) as Record<string, unknown>;
 }
 
-function onExec(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
-
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('work_item handler', () => {
@@ -90,7 +72,7 @@ describe('work_item handler', () => {
     expect(data.number).toBe(42);
     expect(data.url).toBe('https://github.com/org/repo/issues/42');
 
-    const call = execCalls.find((c) => unquote(c).includes('gh issue create')) ?? '';
+    const call = execCalls().find((c) => unquote(c).includes('gh issue create')) ?? '';
     expect(call).toContain("'--title' 'My story'");
     expect(call).toContain("'--label' 'type::story'");
   });
@@ -101,7 +83,7 @@ describe('work_item handler', () => {
 
     await handler.execute({ type: 'bug', title: 'A bug', labels: ['priority::high'] });
 
-    const call = execCalls.find((c) => unquote(c).includes('gh issue create')) ?? '';
+    const call = execCalls().find((c) => unquote(c).includes('gh issue create')) ?? '';
     expect(call).toContain("'--label' 'type::bug'");
     expect(call).toContain("'--label' 'priority::high'");
   });
@@ -123,7 +105,7 @@ describe('work_item handler', () => {
     expect(data.ok).toBe(true);
     expect(data.number).toBe(99);
 
-    const call = execCalls.find((c) => unquote(c).includes('gh pr create')) ?? '';
+    const call = execCalls().find((c) => unquote(c).includes('gh pr create')) ?? '';
     expect(call).toContain("'--head' 'feature/1-foo'");
     expect(call).toContain("'--base' 'main'");
     expect(call).toContain('--draft');
@@ -140,7 +122,7 @@ describe('work_item handler', () => {
     expect(data.platform_unsupported).toBe(true);
     expect(String(data.error)).toContain('type="pr"');
     // Verify NO `glab` sub-command was attempted (only `git remote get-url`).
-    const glabCalls = execCalls.filter((c) => unquote(c).includes('glab'));
+    const glabCalls = execCalls().filter((c) => unquote(c).includes('glab'));
     expect(glabCalls.length).toBe(0);
   });
 
@@ -153,7 +135,7 @@ describe('work_item handler', () => {
     expect(data.platform_unsupported).toBe(true);
     expect(String(data.error)).toContain('type="mr"');
     // Verify NO `gh` sub-command was attempted.
-    const ghCalls = execCalls.filter((c) => {
+    const ghCalls = execCalls().filter((c) => {
       const flat = unquote(c);
       return flat.startsWith('gh ') || flat.includes(' gh ');
     });
@@ -176,7 +158,7 @@ describe('work_item handler', () => {
     expect(data.ok).toBe(true);
     expect(data.number).toBe(5);
 
-    const call = execCalls.find((c) => unquote(c).includes('glab issue create')) ?? '';
+    const call = execCalls().find((c) => unquote(c).includes('glab issue create')) ?? '';
     expect(call).toContain("'--title' 'GL story'");
     expect(call).toContain("'--label' 'type::story,team::alpha'");
     expect(call).toContain("'-R' 'foo/bar'");
@@ -198,7 +180,7 @@ describe('work_item handler', () => {
     expect(data.ok).toBe(true);
     expect(data.number).toBe(12);
 
-    const call = execCalls.find((c) => unquote(c).includes('glab mr create')) ?? '';
+    const call = execCalls().find((c) => unquote(c).includes('glab mr create')) ?? '';
     expect(call).toContain("'--source-branch' 'feature/2-bar'");
     expect(call).toContain("'--target-branch' 'main'");
   });

@@ -1,5 +1,11 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
 import type { AdapterResult } from './types.ts';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../test-support/mock-child-process.ts';
 
 // Subprocess-boundary tests for the GitLab createBranch adapter (R-15).
 
@@ -9,34 +15,13 @@ interface ThrowableError extends Error {
   status?: number;
 }
 
-let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
-let execCalls: string[] = [];
-
 function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec: ${cmd}`;
-  err.status = 127;
-  throw err;
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { createBranchGitlab } = await import('./create-branch-gitlab.ts');
-
-function on(match: string, respond: string | (() => string)): void {
-  execRegistry.push({ match, respond });
-}
 
 function expectOk(r: AdapterResult<void>): asserts r is { ok: true; data: void } {
   if (!('ok' in r) || !r.ok) {
@@ -45,19 +30,18 @@ function expectOk(r: AdapterResult<void>): asserts r is { ok: true; data: void }
 }
 
 function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
+  return execCalls().find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
 
 const VALID_SHA = 'b'.repeat(40);
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('createBranchGitlab — subprocess boundary', () => {
   test('argv: glab api projects/<encoded>/repository/branches -X POST -f branch=<name> -f ref=<sha>', async () => {
-    on('glab api projects/my-group%2Fmy-repo/repository/branches', '');
+    onExec('glab api projects/my-group%2Fmy-repo/repository/branches', '');
 
     const result = await createBranchGitlab({
       branch: 'kahuna/7-feature-x',
@@ -76,7 +60,7 @@ describe('createBranchGitlab — subprocess boundary', () => {
   });
 
   test('void return on success', async () => {
-    on('glab api', '');
+    onExec('glab api', '');
     const result = await createBranchGitlab({
       branch: 'feature/1-demo',
       sha: VALID_SHA,
@@ -87,7 +71,7 @@ describe('createBranchGitlab — subprocess boundary', () => {
   });
 
   test('returns ok:false when glab exits non-zero', async () => {
-    on('glab api', () => {
+    onExec('glab api', () => {
       const err = new Error('glab: Branch already exists') as ThrowableError;
       err.stderr = 'Branch already exists';
       err.status = 1;
@@ -105,7 +89,7 @@ describe('createBranchGitlab — subprocess boundary', () => {
   });
 
   test('does NOT pass -R flag (glab api is path-resolved)', async () => {
-    on('glab api', '');
+    onExec('glab api', '');
     await createBranchGitlab({
       branch: 'kahuna/1-foo',
       sha: VALID_SHA,
@@ -126,7 +110,7 @@ describe('createBranchGitlab — subprocess boundary', () => {
     });
     expect('ok' in result && result.ok).toBe(false);
     expect((result as { code: string }).code).toBe('invalid_branch');
-    expect(execCalls.length).toBe(0);
+    expect(execCalls().length).toBe(0);
   });
 
   test('rejects invalid sha', async () => {
@@ -137,7 +121,7 @@ describe('createBranchGitlab — subprocess boundary', () => {
     });
     expect('ok' in result && result.ok).toBe(false);
     expect((result as { code: string }).code).toBe('invalid_sha');
-    expect(execCalls.length).toBe(0);
+    expect(execCalls().length).toBe(0);
   });
 
   test('rejects invalid repo slug', async () => {
@@ -148,11 +132,11 @@ describe('createBranchGitlab — subprocess boundary', () => {
     });
     expect('ok' in result && result.ok).toBe(false);
     expect((result as { code: string }).code).toBe('invalid_repo');
-    expect(execCalls.length).toBe(0);
+    expect(execCalls().length).toBe(0);
   });
 
   test('supports nested group slugs (org/sub/repo → org%2Fsub%2Frepo)', async () => {
-    on('glab api projects/org%2Fsub%2Frepo/repository/branches', '');
+    onExec('glab api projects/org%2Fsub%2Frepo/repository/branches', '');
 
     const result = await createBranchGitlab({
       branch: 'kahuna/1-foo',

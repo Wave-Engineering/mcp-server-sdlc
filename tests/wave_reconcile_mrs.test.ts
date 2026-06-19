@@ -1,13 +1,13 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  setExecMock,
+  resetExecMock,
+  mockExecSync,
+} from '../lib/test-support/mock-child-process.ts';
 
 // Mock child_process for platform detection (detectPlatform) and record-mr calls.
-let execMockFn: (cmd: string) => string = () => '';
-
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  return execMockFn(cmd);
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { reconcile, default: handler } = await import(
   '../handlers/wave_reconcile_mrs.ts'
@@ -29,8 +29,8 @@ async function setupFixture(plan: object, state: object) {
 }
 
 function resetMocks() {
-  execMockFn = () => '';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => '');
   fixtureDir = '';
 }
 
@@ -74,7 +74,7 @@ describe('wave_reconcile_mrs handler', () => {
     await setupFixture(PLAN, state);
 
     // Mock: detectPlatform → github, gh pr list returns merged PRs
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote'))
         return 'https://github.com/org/repo.git\n';
       if (cmd.startsWith('gh pr list'))
@@ -93,7 +93,7 @@ describe('wave_reconcile_mrs handler', () => {
       // wave-status record-mr calls — return success
       if (cmd.startsWith('wave-status record-mr')) return '';
       return '';
-    };
+    });
 
     const recordMrCalls: string[] = [];
     const deps = {
@@ -101,7 +101,7 @@ describe('wave_reconcile_mrs handler', () => {
         if (cmd.startsWith('wave-status record-mr')) {
           recordMrCalls.push(cmd);
         }
-        return execMockFn(cmd);
+        return mockExecSync(cmd);
       },
     };
 
@@ -134,15 +134,15 @@ describe('wave_reconcile_mrs handler', () => {
     };
     await setupFixture(PLAN, state);
 
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote'))
         return 'https://github.com/org/repo.git\n';
       if (cmd.startsWith('gh pr list')) return JSON.stringify([]);
       return '';
-    };
+    });
 
     const deps = {
-      execFn: (cmd: string) => execMockFn(cmd),
+      execFn: (cmd: string) => mockExecSync(cmd),
     };
 
     const result = await reconcile({}, deps);
@@ -161,15 +161,15 @@ describe('wave_reconcile_mrs handler', () => {
     };
     await setupFixture(PLAN, state);
 
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote'))
         return 'https://github.com/org/repo.git\n';
       if (cmd.startsWith('gh pr list')) return JSON.stringify([]);
       return '';
-    };
+    });
 
     const deps = {
-      execFn: (cmd: string) => execMockFn(cmd),
+      execFn: (cmd: string) => mockExecSync(cmd),
     };
 
     const result = await reconcile({}, deps);
@@ -183,7 +183,7 @@ describe('wave_reconcile_mrs handler', () => {
     process.env.CLAUDE_PROJECT_DIR = fixtureDir;
 
     const deps = {
-      execFn: (cmd: string) => execMockFn(cmd),
+      execFn: (cmd: string) => mockExecSync(cmd),
     };
 
     const result = await reconcile({}, deps);
@@ -199,7 +199,7 @@ describe('wave_reconcile_mrs handler', () => {
     await setupFixture(PLAN, state);
 
     const ghCalls: string[] = [];
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote'))
         return 'https://github.com/org/repo.git\n';
       if (cmd.startsWith('gh pr list')) {
@@ -207,9 +207,9 @@ describe('wave_reconcile_mrs handler', () => {
         return JSON.stringify([]);
       }
       return '';
-    };
+    });
 
-    const deps = { execFn: (cmd: string) => execMockFn(cmd) };
+    const deps = { execFn: (cmd: string) => mockExecSync(cmd) };
     await reconcile({}, deps);
     expect(ghCalls.length).toBeGreaterThan(0);
     for (const c of ghCalls) {
@@ -226,7 +226,7 @@ describe('wave_reconcile_mrs handler', () => {
     await setupFixture(PLAN, state);
 
     const ghCalls: string[] = [];
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote'))
         return 'https://github.com/org/repo.git\n';
       if (cmd.startsWith('gh pr list')) {
@@ -234,8 +234,8 @@ describe('wave_reconcile_mrs handler', () => {
         return JSON.stringify([]);
       }
       return '';
-    };
-    const deps = { execFn: (cmd: string) => execMockFn(cmd) };
+    });
+    const deps = { execFn: (cmd: string) => mockExecSync(cmd) };
     await reconcile({ limit: 250 }, deps);
     expect(ghCalls.length).toBeGreaterThan(0);
     for (const c of ghCalls) expect(c).toContain('--limit 250');
@@ -257,14 +257,14 @@ describe('wave_reconcile_mrs handler', () => {
     };
     await setupFixture(PLAN, state);
 
-    execMockFn = (cmd: string) => {
+    setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote'))
         return 'https://github.com/org/repo.git\n';
       return '';
-    };
+    });
 
     const deps = {
-      execFn: (cmd: string) => execMockFn(cmd),
+      execFn: (cmd: string) => mockExecSync(cmd),
     };
 
     const result = await reconcile({}, deps);

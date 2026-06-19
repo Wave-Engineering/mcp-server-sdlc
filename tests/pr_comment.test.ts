@@ -1,21 +1,21 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  onExec,
+  resetExecMock,
+  execCalls,
+} from '../lib/test-support/mock-child-process.ts';
 
 // pr_comment now uses child_process.execSync (story #253 — sweep follow-up to
-// #238). Tests intercept the boundary via `mock.module('child_process', ...)`
-// — same pattern as pr_create.test.ts and pr_merge.test.ts. Each test populates
-// `execRegistry` with substring → responder mappings; an unmatched call throws
-// so missing stubs surface loudly.
+// #238). Tests intercept the boundary via the shared child_process mock helper.
+// Each test populates the registry (via `onExec`) with substring → responder
+// mappings; an unmatched call throws so missing stubs surface loudly.
 
 interface ThrowableError extends Error {
   stderr?: string;
   stdout?: string;
   status?: number;
 }
-
-type Responder = string | (() => string);
-
-let execRegistry: Array<{ match: string; respond: Responder }> = [];
-let execCalls: string[] = [];
 
 // Strip the shell-quoting layer the handler applies so test match-keys can be
 // authored as plain `gh pr comment` rather than `'gh' 'pr' 'comment'`. We only
@@ -25,23 +25,7 @@ function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-function mockExec(cmd: string): string {
-  execCalls.push(cmd);
-  const flat = unquote(cmd);
-  for (const { match, respond } of execRegistry) {
-    if (cmd.includes(match) || flat.includes(match)) {
-      return typeof respond === 'function' ? respond() : respond;
-    }
-  }
-  const err = new Error(`Unexpected exec call: ${cmd}`) as ThrowableError;
-  err.stderr = `Unexpected exec call: ${cmd}`;
-  err.status = 127;
-  throw err;
-}
-
-mock.module('child_process', () => ({
-  execSync: (cmd: string, _opts?: unknown) => mockExec(cmd),
-}));
+installChildProcessMock();
 
 const { default: handler } = await import('../handlers/pr_comment.ts');
 
@@ -49,15 +33,11 @@ function parseResult(result: { content: Array<{ type: string; text: string }> })
   return JSON.parse(result.content[0].text) as Record<string, unknown>;
 }
 
-function onExec(match: string, respond: Responder) {
-  execRegistry.push({ match, respond });
-}
-
 // Locate a recorded call whose unquoted form contains `needle`. Returns the
 // raw (still-quoted) call so flag-presence assertions still see the literal
 // argv (e.g. `--repo`, `-R`).
 function findCall(needle: string): string {
-  return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
+  return execCalls().find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
 
 function failExec(match: string, stderr: string, status: number = 1): void {
@@ -71,13 +51,11 @@ function failExec(match: string, stderr: string, status: number = 1): void {
 }
 
 beforeEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 afterEach(() => {
-  execRegistry = [];
-  execCalls = [];
+  resetExecMock();
 });
 
 describe('pr_comment handler', () => {
@@ -113,7 +91,7 @@ describe('pr_comment handler', () => {
     expect(data.ok).toBe(false);
     expect(String(data.error)).toContain('repo');
     // No execSync calls should have been made.
-    expect(execCalls.length).toBe(0);
+    expect(execCalls().length).toBe(0);
   });
 
   // --- github happy paths ---
@@ -397,9 +375,9 @@ describe('pr_comment handler', () => {
     // shell-escapes every token) and one git call (platform detect — the
     // adapter routing layer calls `detectPlatform()` which uses raw `execSync`
     // without shell-escape, hence the unquoted match).
-    const ghCalls = execCalls.filter((c) => c.includes("'gh'"));
+    const ghCalls = execCalls().filter((c) => c.includes("'gh'"));
     expect(ghCalls.length).toBe(1);
-    const gitCalls = execCalls.filter((c) => c.includes('git remote get-url'));
+    const gitCalls = execCalls().filter((c) => c.includes('git remote get-url'));
     expect(gitCalls.length).toBe(1);
 
     // The single gh call is fully shell-escaped: every token wrapped in '...'.

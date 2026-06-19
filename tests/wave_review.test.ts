@@ -1,21 +1,18 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import {
+  installChildProcessMock,
+  setExecMock,
+  resetExecMock,
+  execCalls,
+} from '../lib/test-support/mock-child-process.ts';
 
-let lastExecCall = '';
-let execMockFn: (cmd: string) => string = () => 'review phase\n';
-
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
-  lastExecCall = cmd;
-  return execMockFn(cmd);
-});
-
-mock.module('child_process', () => ({ execSync: mockExecSync }));
+installChildProcessMock();
 
 const { default: handler } = await import('../handlers/wave_review.ts');
 
 function resetMocks() {
-  lastExecCall = '';
-  execMockFn = () => 'review phase\n';
-  mockExecSync.mockClear();
+  resetExecMock();
+  setExecMock(() => 'review phase\n');
 }
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
@@ -33,16 +30,16 @@ describe('wave_review handler', () => {
 
   test('happy_path — invokes wave-status review', async () => {
     const result = await handler.execute({});
-    expect(lastExecCall).toBe('wave-status review');
+    expect(execCalls().at(-1) ?? '').toBe('wave-status review');
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
     expect(parsed.data).toBe('review phase');
   });
 
   test('cli_error — returns ok:false on non-zero exit', async () => {
-    execMockFn = () => {
+    setExecMock(() => {
       throw new Error('wave-status: cannot enter review from current state');
-    };
+    });
     const result = await handler.execute({});
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);
