@@ -54,7 +54,7 @@ const waveFinalizeHandler: HandlerDef = {
       const adapter = getAdapter();
       // Idempotency first (per devspec §5.1.1 step 1). Covers the post-merge
       // edge case where the kahuna branch was deleted after the MR was opened.
-      const existing = await adapter.findExistingPr({ head: args.kahuna_branch, base: args.target_branch, state: 'open' });
+      const existing = await adapter.findExistingPr({ head: args.kahuna_branch, base: args.target_branch, state: 'open', cwd });
       if ('platform_unsupported' in existing) return envelope({ ok: false, error: `findExistingPr unsupported: ${existing.hint}` });
       if (!existing.ok) return envelope({ ok: false, error: existing.error });
       if (existing.data !== null) {
@@ -67,7 +67,7 @@ const waveFinalizeHandler: HandlerDef = {
       const { body, issueCount } = await composeBody();
       if (issueCount === 0) return envelope({ ok: false, error: 'no_artifacts' });
       const title = `plan(#${args.plan_id}): ${epicSlugFromBranch(args.kahuna_branch)} — kahuna to ${args.target_branch}`;
-      const created = await adapter.prCreate({ title, body, base: args.target_branch, head: args.kahuna_branch });
+      const created = await adapter.prCreate({ title, body, base: args.target_branch, head: args.kahuna_branch, cwd });
       if ('platform_unsupported' in created) return envelope({ ok: false, error: `prCreate unsupported: ${created.hint}` });
       if (!created.ok) return envelope({ ok: false, error: created.error });
       return envelope({ ok: true, number: created.data.number, url: created.data.url, state: 'open', created: true, body_sha: hashBody(body) });

@@ -12,13 +12,15 @@ interface ThrowableError extends Error {
 
 let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
 let execCalls: string[] = [];
+let execOpts: Array<{ cwd?: string } | undefined> = [];
 
 function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
+const mockExecSync = mock((cmd: string, opts?: { cwd?: string }) => {
   execCalls.push(cmd);
+  execOpts.push(opts);
   const flat = unquote(cmd);
   for (const { match, respond } of execRegistry) {
     if (cmd.includes(match) || flat.includes(match)) {
@@ -61,9 +63,15 @@ function findCall(needle: string): string {
   return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
 
+function optsForCall(needle: string): { cwd?: string } | undefined {
+  const idx = execCalls.findIndex((c) => c.includes(needle) || unquote(c).includes(needle));
+  return idx >= 0 ? execOpts[idx] : undefined;
+}
+
 beforeEach(() => {
   execRegistry = [];
   execCalls = [];
+  execOpts = [];
 });
 
 describe('prCreateGitlab — subprocess boundary', () => {
@@ -107,6 +115,26 @@ describe('prCreateGitlab — subprocess boundary', () => {
     // Regression guard for #383: post-create lookup MUST NOT use
     // `glab mr view -F json` (the broken pre-#383 form).
     expect(execCalls.some((c) => c.includes('mr view') && c.includes('-F'))).toBe(false);
+  });
+
+  test('runs glab in args.cwd when supplied (#453)', async () => {
+    on('git branch --show-current', 'feature/rooted\n');
+    on('glab mr create', 'created\n');
+    on(
+      'merge_requests?source_branch',
+      JSON.stringify([{
+        iid: 21,
+        web_url: 'https://gitlab.com/o/r/-/merge_requests/21',
+        state: 'opened',
+        source_branch: 'feature/rooted',
+        target_branch: 'main',
+      }]),
+    );
+
+    await prCreateGitlab({ title: 't', body: 'b', base: 'main', cwd: '/work/tree' });
+    expect(optsForCall('git branch --show-current')?.cwd).toBe('/work/tree');
+    expect(optsForCall('glab mr create')?.cwd).toBe('/work/tree');
+    expect(optsForCall('merge_requests?source_branch')?.cwd).toBe('/work/tree');
   });
 
   test('parses post-create MR lookup response into PrCreateResponse', async () => {

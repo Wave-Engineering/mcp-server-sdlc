@@ -69,13 +69,18 @@ export function findExistingPrGithubSync(
   base: string,
   state: GhState,
   repo?: string,
+  cwd?: string,
 ): NormalizedPr | null {
   validateBranch('head', head);
   validateBranch('base', base);
+  // `cwd` defaults to undefined, which leaves execSync on `process.cwd()` —
+  // identical to pre-#453 behavior. When the caller threads an explicit cwd
+  // (e.g. wave_finalize against a worktree != CLAUDE_PROJECT_DIR), `gh` runs
+  // there so the lookup hits the right repo.
   const raw = execSync(
     `gh pr list --head ${head} --base ${base} --state ${state} ` +
       `--json number,url,state,headRefName,baseRefName,title --limit 1${repoFlag(repo)}`,
-    { encoding: 'utf8' },
+    { encoding: 'utf8', cwd },
   );
   const parsed = JSON.parse(raw) as GithubPrListEntry[];
   if (!Array.isArray(parsed) || parsed.length === 0) return null;
@@ -111,6 +116,7 @@ export async function findExistingPrGithub(
       args.base,
       args.state,
       args.repo,
+      args.cwd,
     );
     return { ok: true, data };
   } catch (err) {

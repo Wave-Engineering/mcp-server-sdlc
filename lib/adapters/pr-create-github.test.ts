@@ -14,13 +14,15 @@ interface ThrowableError extends Error {
 
 let execRegistry: Array<{ match: string; respond: string | (() => string) }> = [];
 let execCalls: string[] = [];
+let execOpts: Array<{ cwd?: string } | undefined> = [];
 
 function unquote(cmd: string): string {
   return cmd.replace(/'([^']*)'/g, '$1');
 }
 
-const mockExecSync = mock((cmd: string, _opts?: unknown) => {
+const mockExecSync = mock((cmd: string, opts?: { cwd?: string }) => {
   execCalls.push(cmd);
+  execOpts.push(opts);
   const flat = unquote(cmd);
   for (const { match, respond } of execRegistry) {
     if (cmd.includes(match) || flat.includes(match)) {
@@ -64,9 +66,15 @@ function findCall(needle: string): string {
   return execCalls.find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
 }
 
+function optsForCall(needle: string): { cwd?: string } | undefined {
+  const idx = execCalls.findIndex((c) => c.includes(needle) || unquote(c).includes(needle));
+  return idx >= 0 ? execOpts[idx] : undefined;
+}
+
 beforeEach(() => {
   execRegistry = [];
   execCalls = [];
+  execOpts = [];
 });
 
 describe('prCreateGithub — subprocess boundary', () => {
@@ -216,6 +224,27 @@ describe('prCreateGithub — subprocess boundary', () => {
     const view = findCall('gh pr view');
     expect(view).toContain('--repo');
     expect(view).toContain('Org/Other');
+  });
+
+  test('runs gh in args.cwd when supplied (#453)', async () => {
+    on('git branch --show-current', 'feature/rooted\n');
+    on('gh pr create', 'https://github.com/o/r/pull/77\n');
+    on(
+      'gh pr view',
+      JSON.stringify({
+        number: 77,
+        url: 'https://github.com/o/r/pull/77',
+        state: 'OPEN',
+        headRefName: 'feature/rooted',
+        baseRefName: 'main',
+      }),
+    );
+
+    await prCreateGithub({ title: 't', body: 'b', base: 'main', cwd: '/work/tree' });
+    // Every subprocess (branch probe, create, view) runs in the threaded cwd.
+    expect(optsForCall('git branch --show-current')?.cwd).toBe('/work/tree');
+    expect(optsForCall('gh pr create')?.cwd).toBe('/work/tree');
+    expect(optsForCall('gh pr view')?.cwd).toBe('/work/tree');
   });
 
   test('default-branch resolution via gh repo view when args.base is undefined', async () => {

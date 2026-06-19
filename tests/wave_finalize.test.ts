@@ -14,9 +14,13 @@ type Responder = string | (() => string);
 
 let execRegistry: Array<{ match: string; respond: Responder }> = [];
 let execCalls: string[] = [];
+// Parallel to execCalls (same index): the opts object each execSync call received,
+// so a test can assert the subprocess `cwd` (the #453 PR-op rooting threading).
+let execOpts: Array<unknown> = [];
 
-function mockExec(cmd: string): string {
+function mockExec(cmd: string, opts?: unknown): string {
   execCalls.push(cmd);
+  execOpts.push(opts);
   for (const { match, respond } of execRegistry) {
     if (cmd.includes(match)) {
       return typeof respond === 'function' ? respond() : respond;
@@ -26,7 +30,7 @@ function mockExec(cmd: string): string {
 }
 
 mock.module('child_process', () => ({
-  execSync: (cmd: string, _opts?: unknown) => mockExec(cmd),
+  execSync: (cmd: string, opts?: unknown) => mockExec(cmd, opts),
 }));
 
 let currentPlatform: 'github' | 'gitlab' = 'github';
@@ -73,6 +77,7 @@ function mockGithubCreate(prNumber: number, headRef: string, baseRef = 'main') {
 beforeEach(() => {
   execRegistry = [];
   execCalls = [];
+  execOpts = [];
   currentPlatform = 'github';
   tmpRoot = makeTmpRoot();
   execRegistry.push({
@@ -86,6 +91,7 @@ beforeEach(() => {
 afterEach(() => {
   execRegistry = [];
   execCalls = [];
+  execOpts = [];
   // Tmp files in /tmp are reaped by the OS; explicit cleanup intentionally
   // skipped to avoid depending on fs.rmSync (mock leakage risk).
 });
@@ -274,6 +280,32 @@ describe('wave_finalize handler', () => {
     expect(data.state).toBe('open');
     expect(typeof data.body_sha).toBe('string');
     expect((data.body_sha as string).length).toBe(64);
+  });
+
+  test('#453: handler threads `root` into BOTH the find and create PR subprocess cwd', async () => {
+    // The wave-status read + branch probe were already rooted; this pins that the PR
+    // find/create subprocesses ALSO run in `root`, not the session project (finding #8).
+    await writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md',
+      '# Results\n\nAdded widget.\nPR: https://github.com/o/r/pull/100\n');
+    mockGithubCreate(555, 'kahuna/42-foo');
+
+    const result = await handler.execute({
+      plan_id: 42,
+      kahuna_branch: 'kahuna/42-foo',
+      body_artifacts_dir: tmpRoot,
+      root: tmpRoot, // the wave's target repo root
+    });
+    const data = parseResult(result);
+    expect(data.ok).toBe(true);
+    expect(data.created).toBe(true);
+
+    // findExistingPr (`gh pr list`) and prCreate (`'pr' 'create'`) must both have run with cwd=root.
+    const findIdx = execCalls.findIndex((c) => c.includes('gh pr list'));
+    const createIdx = execCalls.findIndex((c) => c.includes("'pr' 'create'"));
+    expect(findIdx).toBeGreaterThanOrEqual(0);
+    expect(createIdx).toBeGreaterThanOrEqual(0);
+    expect((execOpts[findIdx] as { cwd?: string } | undefined)?.cwd).toBe(tmpRoot);
+    expect((execOpts[createIdx] as { cwd?: string } | undefined)?.cwd).toBe(tmpRoot);
   });
 
   test('title uses plan(#N): <slug> — kahuna to <target_branch>', async () => {

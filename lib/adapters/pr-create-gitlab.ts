@@ -106,7 +106,7 @@ export async function prCreateGitlab(
   args: PrCreateArgs,
 ): Promise<AdapterResult<PrCreateResponse>> {
   try {
-    const cwd = projectDir();
+    const cwd = args.cwd ?? projectDir();
     const head = args.head ?? getCurrentBranch(cwd);
     const base = args.base && args.base.length > 0
       ? args.base

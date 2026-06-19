@@ -98,7 +98,7 @@ export async function prCreateGithub(
   // Bound any exception that escapes the helpers below into a typed result —
   // adapter callers must not have to try/catch.
   try {
-    const cwd = projectDir();
+    const cwd = args.cwd ?? projectDir();
     const head = args.head ?? getCurrentBranch(cwd);
     const base = args.base && args.base.length > 0
       ? args.base

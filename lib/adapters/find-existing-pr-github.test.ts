@@ -22,9 +22,11 @@ function expectErr(
 }
 
 let execCalls: string[] = [];
+let execOpts: Array<{ cwd?: string } | undefined> = [];
 let execMockFn: (cmd: string) => string = () => '';
-const mockExecSync = mock((cmd: string) => {
+const mockExecSync = mock((cmd: string, opts?: { cwd?: string }) => {
   execCalls.push(cmd);
+  execOpts.push(opts);
   return execMockFn(cmd);
 });
 mock.module('child_process', () => ({ execSync: mockExecSync }));
@@ -35,6 +37,7 @@ const { findExistingPrGithub, findExistingPrGithubSync } = await import(
 
 beforeEach(() => {
   execCalls = [];
+  execOpts = [];
   execMockFn = () => '';
   mockExecSync.mockClear();
 });
@@ -84,6 +87,29 @@ describe('find-existing-pr-github — argv', () => {
     execMockFn = () => '[]';
     findExistingPrGithubSync('kahuna/42-foo', 'main', 'open');
     expect(execCalls[0]).not.toContain('--repo');
+  });
+
+  test('runs gh in args.cwd when supplied (#453)', () => {
+    execMockFn = () => '[]';
+    findExistingPrGithubSync('kahuna/42-foo', 'main', 'open', undefined, '/work/tree');
+    expect(execOpts[0]?.cwd).toBe('/work/tree');
+  });
+
+  test('leaves cwd undefined when not supplied (env default unchanged)', () => {
+    execMockFn = () => '[]';
+    findExistingPrGithubSync('kahuna/42-foo', 'main', 'open');
+    expect(execOpts[0]?.cwd).toBeUndefined();
+  });
+
+  test('async wrapper threads args.cwd through to gh', async () => {
+    execMockFn = () => '[]';
+    await findExistingPrGithub({
+      head: 'kahuna/42-foo',
+      base: 'main',
+      state: 'open',
+      cwd: '/work/tree',
+    });
+    expect(execOpts[0]?.cwd).toBe('/work/tree');
   });
 
   test('rejects malicious repo slug at adapter boundary (no exec)', () => {

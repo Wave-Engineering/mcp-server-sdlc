@@ -20,9 +20,13 @@ import { execSync } from 'child_process';
  * GitLab group paths (e.g. `org/sub/group/repo`). Returns `null` if the
  * origin cannot be read or the URL does not match the expected pattern.
  */
-export function parseRepoSlug(): string | null {
+export function parseRepoSlug(cwd?: string): string | null {
   try {
-    const url = execSync('git remote get-url origin', { encoding: 'utf8' }).trim();
+    // `cwd` defaults to undefined → `process.cwd()`, identical to pre-#453
+    // behavior for every existing caller. Callers that thread an explicit cwd
+    // resolve the slug from THAT repo's origin (e.g. wave_finalize against a
+    // worktree != CLAUDE_PROJECT_DIR).
+    const url = execSync('git remote get-url origin', { encoding: 'utf8', cwd }).trim();
     const m = /(?:git@[^:]+:|https?:\/\/[^/]+\/)(.+?)(?:\.git)?$/.exec(url);
     if (m) return m[1];
     return null;
