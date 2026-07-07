@@ -137,6 +137,58 @@ describe('commutativity_verify → metric(collision)', () => {
     expect(body.ok).toBe(false);
     expect(readLines()).toHaveLength(0);
   });
+
+  test('pairwise mode: a pair MISSING an overlap array does NOT throw; emit stays safe', async () => {
+    // Raw probe output for a pairwise call whose single pair omits the
+    // `import_overlaps` array entirely (partial/malformed probe JSON). The
+    // collision-count reduce must total the present arrays and treat the missing
+    // one as 0 rather than dereferencing `undefined.length` and throwing a
+    // TypeError that turns a valid WEAK verdict into an uncaught handler error.
+    setExecMock((cmd) =>
+      cmd.includes('commutativity-probe')
+        ? JSON.stringify({
+            changesets: ['feature/1', 'feature/2'],
+            flight_verdict: 'WEAK',
+            pairs: [
+              {
+                a: 'feature/1',
+                b: 'feature/2',
+                verdict: 'WEAK',
+                reason: 'symbol cross-reference',
+                file_overlaps: ['lib/shared.ts'],
+                symbol_collisions: ['handlers/order.ts::processOrder'],
+                // import_overlaps intentionally absent
+              },
+            ],
+          })
+        : '',
+    );
+    const res = await commutativityVerify.execute({
+      repo_path: '/tmp/some-repo',
+      base_ref: 'main',
+      changesets: [
+        { id: 'cs1', head_ref: 'feature/1' },
+        { id: 'cs2', head_ref: 'feature/2' },
+      ],
+    });
+    // Handler returns its normal verdict (did NOT throw).
+    const body = JSON.parse(res.content[0].text);
+    expect(body.ok).toBe(true);
+    expect(body.mode).toBe('pairwise');
+    expect(body.verdict).toBe('WEAK');
+    expect(body.group_verdict).toBe('WEAK');
+
+    // Emit is safe: one collision metric, value = present overlaps only
+    // (1 file + 1 symbol + 0 missing-import = 2).
+    const lines = readLines();
+    expect(lines).toHaveLength(1);
+    const ev = lines[0];
+    expectScoped(ev);
+    expect(ev.kind).toBe('metric');
+    expect(ev.metric).toBe('collision');
+    expect(ev.value).toBe(2);
+    expect(ev.label).toBe('WEAK');
+  });
 });
 
 // ---------------------------------------------------------------------------

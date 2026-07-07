@@ -16,7 +16,7 @@ import {
   type WaitResult,
 } from '../lib/ci-wait-run-poll.js';
 import { repoOptionalSchema } from '../lib/schemas/repo.js';
-import { emitStateEvent } from '../lib/flightdeck_emit.js';
+import { emitStateEvent, scopeRoot } from '../lib/flightdeck_emit.js';
 
 const inputSchema = z
   .object({
@@ -74,8 +74,10 @@ const ciWaitRunHandler: HandlerDef = {
       { adapter: getAdapter({ repo: args.repo }), sleep: sleepFn, now: Date.now },
     );
     // FlightDeck emit (S1.5, additive) — a ci_wait event records the terminal
-    // status of the blocked wait. Fire-and-forget; envelope unchanged.
-    emitStateEvent(process.cwd(), 'ci_wait', {
+    // status of the blocked wait. Scope to the handler's explicit repo (else a
+    // guarded project dir) so scope resolution can't throw outside the emit
+    // guard. Fire-and-forget; envelope unchanged.
+    emitStateEvent(scopeRoot(args.repo), 'ci_wait', {
       label: String((result as { final_status?: string }).final_status ?? 'unknown'),
       detail: { ref: args.ref, workflow_name: args.workflow_name },
     });

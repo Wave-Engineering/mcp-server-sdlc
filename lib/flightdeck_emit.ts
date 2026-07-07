@@ -124,6 +124,26 @@ function offsetPath(buffer: string): string {
 }
 
 /**
+ * Resolve an emit scope root WITHOUT ever throwing. `process.cwd()` raises
+ * ENOENT when the working directory was removed; evaluated inline as an argument
+ * to emitStateEvent it would throw OUTSIDE emit's guard, turning fire-and-forget
+ * instrumentation into a handler failure. Prefer the handler's explicit repo /
+ * root; else CLAUDE_PROJECT_DIR (mirrors the drift handlers' projectDir()); else
+ * a guarded cwd; else "unknown". Callers pass the result straight to
+ * emitStateEvent.
+ */
+export function scopeRoot(explicit?: string | null): string {
+  if (explicit) return explicit;
+  const envDir = process.env.CLAUDE_PROJECT_DIR;
+  if (envDir) return envDir;
+  try {
+    return process.cwd();
+  } catch {
+    return 'unknown';
+  }
+}
+
+/**
  * Derive a stable activityId for a repo `root`.
  * FLIGHTDECK_ACTIVITY_ID wins; else the repo directory name; else "unknown".
  * Never throws.
