@@ -10,6 +10,7 @@ import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { getAdapter } from '../lib/adapters/index.js';
 import { repoOptionalSchema } from '../lib/schemas/repo.js';
+import { emitStateEvent } from '../lib/flightdeck_emit.js';
 
 const inputSchema = z.object({
   number: z.number().int().positive('number must be a positive integer'),
@@ -52,6 +53,24 @@ const prMergeHandler: HandlerDef = {
       return envelope({ ok: true, platform_unsupported: true, hint: result.hint });
     }
     if (!result.ok) return envelope({ ok: false, error: result.error });
+    // FlightDeck emit (S1.5, additive) — a promote step for the merge, plus a
+    // coded gate-override concern when skip_train bypassed the merge-train gate
+    // (only meaningful when the queue was NOT enforced; enforced repos silently
+    // drop the flag, surfaced in warnings). Fire-and-forget; response unchanged.
+    const data = result.data;
+    emitStateEvent(process.cwd(), 'step', {
+      action: 'promote',
+      label: 'pr_merge',
+      detail: { number: args.number, merged: data.merged, enrolled: data.enrolled },
+    });
+    if (args.skip_train) {
+      emitStateEvent(process.cwd(), 'concern', {
+        concernKind: 'gate-override',
+        source: 'coded',
+        label: 'skip_train merge-queue bypass',
+        detail: { number: args.number, merged: data.merged },
+      });
+    }
     return envelope({ ok: true, ...result.data });
   },
 };

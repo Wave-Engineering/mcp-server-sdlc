@@ -2,6 +2,7 @@ import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { log } from '../logger.js';
+import { emitStateEvent } from '../lib/flightdeck_emit.js';
 
 const changesetSchema = z.object({
   id: z.string().min(1),
@@ -274,6 +275,20 @@ const commutativityVerifyHandler: HandlerDef = {
         head_ref: cs.head_ref,
       } satisfies SingleTargetResult;
     }
+
+    // FlightDeck emit (S1.5, additive) — collision metric for the flight/gate
+    // decision. Fire-and-forget; never alters the response or control flow.
+    const collisionCount = pairs.reduce(
+      (n, p) => n + p.file_overlaps.length + p.symbol_collisions.length + p.import_overlaps.length,
+      0,
+    );
+    emitStateEvent(args.repo_path, 'metric', {
+      metric: 'collision',
+      value: collisionCount,
+      unit: 'count',
+      label: verdict,
+      detail: { mode, verdict, pairs: pairs.length },
+    });
 
     return {
       content: [{ type: 'text' as const, text: JSON.stringify(body) }],

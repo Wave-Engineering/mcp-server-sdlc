@@ -16,6 +16,7 @@ import {
 } from '../lib/pr-wait-ci-poll.js';
 import { snapshotGithub, classifyRollupItem } from '../lib/adapters/pr-wait-ci-github.js';
 import { repoOptionalSchema } from '../lib/schemas/repo.js';
+import { emitStateEvent } from '../lib/flightdeck_emit.js';
 
 const inputSchema = z
   .object({
@@ -89,6 +90,12 @@ const prWaitCiHandler: HandlerDef = {
       return envelope({ ok: true, platform_unsupported: true, hint: result.hint });
     }
     if (!result.ok) return envelope({ ok: false, error: result.error });
+    // FlightDeck emit (S1.5, additive) — ci_wait for the terminal check state.
+    // Fire-and-forget; the envelope and control flow are unchanged.
+    emitStateEvent(process.cwd(), 'ci_wait', {
+      label: String((result.data as { final_state?: string }).final_state ?? 'complete'),
+      detail: { number: args.number },
+    });
     return envelope({ ok: true, ...result.data });
   },
 };
