@@ -1,6 +1,7 @@
 import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
+import { emitStateEvent } from '../lib/flightdeck_emit.js';
 
 const inputSchema = z.object({
   from_ref: z.string().min(1, 'from_ref must be a non-empty string'),
@@ -40,6 +41,14 @@ const driftFilesChangedHandler: HandlerDef = {
         .split('\n')
         .map(s => s.trim())
         .filter(s => s.length > 0);
+      // FlightDeck emit (S1.5, additive) — drift magnitude = files changed.
+      emitStateEvent(projectDir(), 'metric', {
+        metric: 'drift',
+        value: files.length,
+        unit: 'count',
+        label: `${files.length} file(s) changed`,
+        detail: { from_ref: args.from_ref, to_ref: args.to_ref },
+      });
       return {
         content: [
           {

@@ -10,6 +10,7 @@ import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { parseRepoSlug } from '../lib/shared/parse-repo-slug.js';
 import { getAdapter } from '../lib/adapters/index.js';
+import { emitStateEvent } from '../lib/flightdeck_emit.js';
 
 const inputSchema = z.object({}).strict();
 
@@ -58,6 +59,14 @@ const waveCiTrustLevelHandler: HandlerDef = {
       const key = projectRoot();
       let result = cache.get(key);
       if (!result) { result = await computeTrust(); cache.set(key, result); }
+      // FlightDeck emit (S1.5, additive) — a gate step recording the CI trust
+      // classification that gates pre- vs post-merge verification. Fire-and-
+      // forget; the envelope and control flow are unchanged.
+      emitStateEvent(key, 'step', {
+        action: 'gate',
+        label: result.level,
+        detail: { reason: result.reason },
+      });
       return envelope({ ok: true, ...result });
     } catch (err) {
       return envelope({ ok: false, error: err instanceof Error ? err.message : String(err) });

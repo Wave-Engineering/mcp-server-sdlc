@@ -35,6 +35,19 @@ echo "--- unit tests ---"
 # is tracked separately.)
 bun test --path-ignore-patterns='**/integration/**'
 
+echo "--- flightdeck emit suite (isolated process) ---"
+# The FlightDeck emit tests mutate SHARED process.env (FLIGHTDECK_EMIT_DISABLED /
+# FLIGHTDECK_EVENTS_PATH) per-test to opt into emit against an isolated temp
+# buffer. Bun runs all discovered *.test.ts files CONCURRENTLY in ONE process, so
+# when the FD tests lived in two sibling *.test.ts files they raced on that shared
+# env (one file's afterEach restore clobbered the other mid-test → emit no-op →
+# ENOENT; CI-only, #464). They now live in a single non-*.test.ts suite that the
+# default `bun test` above does NOT discover, and run here alone in their own
+# process — no concurrent FD file to race the env. NOTE the leading `./`: bun
+# treats a bare arg without .test/.spec in the name as a NAME filter (matches no
+# files); the `./` prefix forces it to be read as an explicit file path.
+bun test ./tests/flightdeck-emit.suite.ts
+
 echo "--- integration tests ---"
 # Real-CLI integration tests — verify flag shapes our handlers depend on.
 # Skips cleanly when gh/glab aren't installed (local dev + CI runners without both).

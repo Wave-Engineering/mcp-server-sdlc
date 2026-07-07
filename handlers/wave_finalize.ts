@@ -7,6 +7,7 @@ import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { getAdapter } from '../lib/adapters/index.js';
 import { branchExistsOnRemote } from '../lib/shared/git-remote.js';
+import { emitStateEvent } from '../lib/flightdeck_emit.js';
 import {
   assembleBody, assembleBodyFromState, defaultArtifactsDir, epicSlugFromBranch, hashBody,
   projectDir, resolveArtifactsDir,
@@ -61,6 +62,13 @@ const waveFinalizeHandler: HandlerDef = {
         // body_sha is empty when neither bus nor durable state has issues —
         // legitimate post-cleanup state on a brand-new PR.
         const { body, issueCount } = await composeBody();
+        // FlightDeck emit (S1.5, additive) — promote step for the existing
+        // kahuna finalize MR. Fire-and-forget; response unchanged.
+        emitStateEvent(cwd, 'step', {
+          action: 'promote',
+          label: 'wave_finalize',
+          detail: { number: existing.data.number, plan_id: args.plan_id, target: args.target_branch, created: false },
+        });
         return envelope({ ok: true, number: existing.data.number, url: existing.data.url, state: 'open', created: false, body_sha: issueCount > 0 ? hashBody(body) : '' });
       }
       if (!branchExistsOnRemote(cwd, args.kahuna_branch)) return envelope({ ok: false, error: 'kahuna_branch_not_found' });
@@ -70,6 +78,21 @@ const waveFinalizeHandler: HandlerDef = {
       const created = await adapter.prCreate({ title, body, base: args.target_branch, head: args.kahuna_branch, cwd });
       if ('platform_unsupported' in created) return envelope({ ok: false, error: `prCreate unsupported: ${created.hint}` });
       if (!created.ok) return envelope({ ok: false, error: created.error });
+      // FlightDeck emit (S1.5, additive) — promote step for the newly-opened
+      // kahuna→target MR, plus a coded self-approval concern: the epic opens its
+      // own promotion MR (the KAHUNA sandbox self-approval shape). Fire-and-
+      // forget; response and control flow are unchanged.
+      emitStateEvent(cwd, 'step', {
+        action: 'promote',
+        label: 'wave_finalize',
+        detail: { number: created.data.number, plan_id: args.plan_id, target: args.target_branch, created: true },
+      });
+      emitStateEvent(cwd, 'concern', {
+        concernKind: 'self-approval',
+        source: 'coded',
+        label: 'kahuna epic-final MR opened',
+        detail: { number: created.data.number, plan_id: args.plan_id, target: args.target_branch },
+      });
       return envelope({ ok: true, number: created.data.number, url: created.data.url, state: 'open', created: true, body_sha: hashBody(body) });
     } catch (err) {
       return envelope({ ok: false, error: err instanceof Error ? err.message : String(err) });

@@ -1,6 +1,7 @@
 import { isAbsolute, join, extname } from 'path';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
+import { emitStateEvent } from '../lib/flightdeck_emit.js';
 
 const LANGS = ['python', 'typescript', 'javascript', 'go', 'rust', 'bash', 'auto'] as const;
 type Lang = (typeof LANGS)[number];
@@ -137,6 +138,16 @@ const driftCheckSymbolExistsHandler: HandlerDef = {
           break;
         }
       }
+
+      // FlightDeck emit (S1.5, additive) — drift=1 when an expected symbol is
+      // absent, else 0. Fire-and-forget; response and control flow unchanged.
+      emitStateEvent(projectDir(), 'metric', {
+        metric: 'drift',
+        value: foundLine !== null ? 0 : 1,
+        unit: 'count',
+        label: foundLine !== null ? 'symbol-present' : 'symbol-missing',
+        detail: { file_path: args.file_path, symbol_name: args.symbol_name, language: lang },
+      });
 
       return {
         content: [

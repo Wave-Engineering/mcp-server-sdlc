@@ -16,6 +16,7 @@ import {
 } from '../lib/pr-wait-ci-poll.js';
 import { snapshotGithub, classifyRollupItem } from '../lib/adapters/pr-wait-ci-github.js';
 import { repoOptionalSchema } from '../lib/schemas/repo.js';
+import { emitStateEvent, scopeRoot } from '../lib/flightdeck_emit.js';
 
 const inputSchema = z
   .object({
@@ -89,6 +90,14 @@ const prWaitCiHandler: HandlerDef = {
       return envelope({ ok: true, platform_unsupported: true, hint: result.hint });
     }
     if (!result.ok) return envelope({ ok: false, error: result.error });
+    // FlightDeck emit (S1.5, additive) — ci_wait for the terminal check state.
+    // Scope to the handler's explicit repo (else a guarded project dir) so scope
+    // resolution can't throw outside the emit guard. Fire-and-forget; the
+    // envelope and control flow are unchanged.
+    emitStateEvent(scopeRoot(args.repo), 'ci_wait', {
+      label: String((result.data as { final_state?: string }).final_state ?? 'complete'),
+      detail: { number: args.number },
+    });
     return envelope({ ok: true, ...result.data });
   },
 };

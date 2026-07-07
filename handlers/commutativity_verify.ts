@@ -2,6 +2,7 @@ import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { log } from '../logger.js';
+import { emitStateEvent } from '../lib/flightdeck_emit.js';
 
 const changesetSchema = z.object({
   id: z.string().min(1),
@@ -25,9 +26,13 @@ interface ProbePair {
   b: string;
   verdict: string;
   reason: string;
-  file_overlaps: string[];
-  symbol_collisions: string[];
-  import_overlaps: string[];
+  // Overlap arrays are OPTIONAL: they come from unchecked `JSON.parse(raw) as
+  // ProbeOutput`, so a malformed/partial probe pair may omit (or null) any of
+  // them. Typing them as optional keeps every dereference honest — callers must
+  // total the length (`?.length ?? 0`) rather than assuming an array is present.
+  file_overlaps?: string[];
+  symbol_collisions?: string[];
+  import_overlaps?: string[];
 }
 
 interface ProbeOutput {
@@ -274,6 +279,27 @@ const commutativityVerifyHandler: HandlerDef = {
         head_ref: cs.head_ref,
       } satisfies SingleTargetResult;
     }
+
+    // FlightDeck emit (S1.5, additive) — collision metric for the flight/gate
+    // decision. Fire-and-forget; never alters the response or control flow.
+    // The overlap arrays derive from unchecked probe JSON, so total each length
+    // defensively (`?.length ?? 0`): a partial/null pair must never throw a
+    // TypeError here and turn a valid verdict into an uncaught handler error.
+    const collisionCount = pairs.reduce(
+      (n, p) =>
+        n +
+        (p.file_overlaps?.length ?? 0) +
+        (p.symbol_collisions?.length ?? 0) +
+        (p.import_overlaps?.length ?? 0),
+      0,
+    );
+    emitStateEvent(args.repo_path, 'metric', {
+      metric: 'collision',
+      value: collisionCount,
+      unit: 'count',
+      label: verdict,
+      detail: { mode, verdict, pairs: pairs.length },
+    });
 
     return {
       content: [{ type: 'text' as const, text: JSON.stringify(body) }],

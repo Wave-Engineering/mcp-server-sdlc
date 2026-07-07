@@ -2,6 +2,7 @@ import { execSync } from 'child_process';
 import { isAbsolute, join } from 'path';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
+import { emitStateEvent } from '../lib/flightdeck_emit.js';
 
 const inputSchema = z.object({
   path: z.string().min(1, 'path must be a non-empty string'),
@@ -61,6 +62,16 @@ const driftCheckPathExistsHandler: HandlerDef = {
         // Path exists but of the wrong kind — return exists=false to match spec.
         exists = false;
       }
+
+      // FlightDeck emit (S1.5, additive) — drift=1 when an expected path is
+      // absent (or wrong kind), else 0. Fire-and-forget; response unchanged.
+      emitStateEvent(projectDir(), 'metric', {
+        metric: 'drift',
+        value: exists ? 0 : 1,
+        unit: 'count',
+        label: exists ? 'path-present' : 'path-missing',
+        detail: { path: args.path, exists, requested_kind: args.kind },
+      });
 
       return {
         content: [

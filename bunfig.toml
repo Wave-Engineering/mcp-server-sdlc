@@ -1,0 +1,14 @@
+# Bun runtime + test config.
+#
+# [test].preload runs before every `bun test` file. We disable FlightDeck emit
+# by default across the whole suite so that handlers now wired with emit() (S1.5)
+# do NOT write to the real durable buffer (~/.claude/status/events.jsonl) or POST
+# during unrelated handler tests — the "test drives a live side-effect" spam
+# class (cf. claudecode-workflow lesson_validate_sh_hook_notify_spam). The
+# FlightDeck suite (tests/flightdeck-emit.suite.ts) opts back in per-test by
+# deleting FLIGHTDECK_EMIT_DISABLED and pointing FLIGHTDECK_EVENTS_PATH at an
+# isolated temp file. That suite is deliberately NOT a *.test.ts: the default
+# `bun test` does not discover it, and validate.sh runs it alone in its own bun
+# process so the shared-process env mutation can't race a sibling file (#464).
+[test]
+preload = ["./tests/setup-flightdeck-emit.ts"]
