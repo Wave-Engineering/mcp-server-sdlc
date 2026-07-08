@@ -9,6 +9,7 @@ import { execSync } from 'child_process';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { getAdapter } from '../lib/adapters/index.js';
+import { PROTECTED_BRANCH_PATTERN } from '../lib/shared/protected-branch.js';
 
 const inputSchema = z.object({ branch: z.string().optional() });
 
@@ -22,7 +23,6 @@ const inputSchema = z.object({ branch: z.string().optional() });
 const BRANCH_PREFIXES = ['feature', 'fix', 'chore', 'doc', 'bug', 'kahuna'] as const;
 const BRANCH_PATTERN = new RegExp(`^(${BRANCH_PREFIXES.join('|')})\\/(\\d+)-`);
 const BRANCH_FORMAT_HINT = `(${BRANCH_PREFIXES.join('|')})/NNN-description (prefixes are singular — e.g. 'doc/' not 'docs/')`;
-const PROTECTED_PATTERN = /^(main|release\/.+)$/;
 
 function envelope(payload: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
@@ -41,7 +41,7 @@ const ibmHandler: HandlerDef = {
     const args = inputSchema.parse(rawArgs);
     const branch = args.branch ?? getCurrentBranch();
 
-    if (PROTECTED_PATTERN.test(branch)) {
+    if (PROTECTED_BRANCH_PATTERN.test(branch)) {
       return envelope({
         ok: false,
         error: `Branch '${branch}' is protected — create a branch from main named ${BRANCH_FORMAT_HINT}`,

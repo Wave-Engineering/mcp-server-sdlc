@@ -1,19 +1,22 @@
-// branch_guard — catch "based-on / merging-into the wrong mainline" (#465).
+// branch_guard — catch "based-on / merging-into the wrong mainline" (#465, #470).
 //
-// Queries the git HOST LIVE for (a) the default branch and (b) whether a branch
-// is protected, then verdicts a base/target branch. Never trusts a cached
+// Resolves the git host's LIVE default branch (a basic read any token can do)
+// and determines whether a branch is "protected" by NAME convention (#470):
+// `main` or `release/*`. It never asks the host whether a branch is protected —
+// that name convention IS the protected set. It never trusts a cached
 // `.claude-project.md` value and never uses `git symbolic-ref origin/HEAD` — a
 // stale cached default is exactly the failure this tool exists to catch.
 //
 // Adapter-dispatching shell, mirroring handlers/pr_create.ts: platform-specific
-// work lives in the adapter (`resolveDefaultBranch`, `checkBranchProtected`,
-// `prList`); this handler owns only the platform-agnostic verdict logic.
+// work lives in the adapter (`resolveDefaultBranch`, `prList`); this handler
+// owns only the platform-agnostic verdict logic.
 
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { getAdapter } from '../lib/adapters/index.js';
 import { repoOptionalSchema } from '../lib/schemas/repo.js';
 import { runArgv } from '../lib/shared/error-norm.js';
+import { PROTECTED_BRANCH_PATTERN } from '../lib/shared/protected-branch.js';
 
 // Kahuna per-wave integration branches (e.g. `kahuna/854-flightdeck`). These
 // are themselves protected, so the sandbox carve-out MUST be applied before the
@@ -46,7 +49,7 @@ function currentBranch(cwd: string): string {
 const branchGuardHandler: HandlerDef = {
   name: 'branch_guard',
   description:
-    "Guard against basing on / merging into the wrong mainline. Queries the git host LIVE for the default branch and branch-protection status, then verdicts a base/target branch. Protection is detected across exact-name AND wildcard/ruleset rules — GitHub via classic branch protection plus repository rulesets (gh api rules/branches/<branch>); GitLab via wildcard-aware matching of the protected_branches list — so an LTS branch protected only by a glob like release/* is caught. Returns {verdict: 'pass'|'warn', reason, default_branch, checked_branch, is_protected, is_sandbox}. A protected branch that is neither the live default nor a kahuna/* sandbox → warn.",
+    "Guard against basing on / merging into the wrong mainline. Resolves the git host's LIVE default branch, then verdicts a base/target branch. A branch is 'protected' by NAME convention — main or release/* — not by any host protection query. Returns {verdict: 'pass'|'warn', reason, default_branch, checked_branch, is_protected, is_sandbox}. A protected-by-name branch that is neither the live default nor a kahuna/* sandbox → warn (e.g. an old release/0.0.1 when the default is release/1.0.0).",
   inputSchema,
   async execute(rawArgs: unknown) {
     let args;
@@ -114,37 +117,31 @@ const branchGuardHandler: HandlerDef = {
 
     // -- Verdict (ORDER IS LOAD-BEARING) --------------------------------------
     const B = checked_branch;
+    const is_sandbox = KAHUNA_SANDBOX.test(B);
+    // Protection is a NAME convention (#470): main | release/*. No host query —
+    // that name pattern IS the protected set.
+    const is_protected = PROTECTED_BRANCH_PATTERN.test(B);
 
-    // (2) Sandbox carve-out — BEFORE the protected gate. Kahuna sandbox branches
-    //     are legitimate integration bases/targets and are themselves protected,
-    //     so applying the protected gate first would falsely warn.
-    if (KAHUNA_SANDBOX.test(B)) {
+    // (1) Sandbox carve-out — BEFORE the protected gate. Kahuna sandbox branches
+    //     are legitimate integration bases/targets, so they always pass.
+    if (is_sandbox) {
       return envelope({
         ok: true,
         verdict: 'pass',
         reason: `Branch '${B}' is a kahuna/* sandbox integration branch — always a legitimate base/target.`,
         default_branch,
         checked_branch: B,
-        // Kahuna sandbox branches are protected by policy; reported without a
-        // live query because the sandbox carve-out short-circuits the gate.
-        is_protected: true,
+        is_protected,
         is_sandbox: true,
       });
     }
 
-    // (3) Protected gate — resolve is_protected LIVE from the host.
-    const protRes = await adapter.checkBranchProtected({ branch: B, repo: args.repo, cwd });
-    if ('platform_unsupported' in protRes) {
-      return envelope({ ok: false, error: `protected-branch check unsupported: ${protRes.hint}` });
-    }
-    if (!protRes.ok) return envelope({ ok: false, error: protRes.error });
-    const is_protected = protRes.data.protected;
-
+    // (2) Not a protected branch name → no mainline-guard opinion.
     if (!is_protected) {
       return envelope({
         ok: true,
         verdict: 'pass',
-        reason: `Branch '${B}' is not a protected branch — no mainline-guard opinion (feature→feature / stacked branches are legitimate).`,
+        reason: `Branch '${B}' is not a protected branch name (main | release/*) — no mainline-guard opinion (feature→feature / stacked branches are legitimate).`,
         default_branch,
         checked_branch: B,
         is_protected: false,
@@ -152,7 +149,7 @@ const branchGuardHandler: HandlerDef = {
       });
     }
 
-    // (4) Protected AND the live default → pass.
+    // (3) Protected by name AND the live default → pass.
     if (B === default_branch) {
       return envelope({
         ok: true,
@@ -165,11 +162,11 @@ const branchGuardHandler: HandlerDef = {
       });
     }
 
-    // (5) Protected, non-default, non-sandbox → warn.
+    // (4) Protected by name, non-default, non-sandbox → warn.
     return envelope({
       ok: true,
       verdict: 'warn',
-      reason: `Branch '${B}' is a protected branch but not the live default '${default_branch}' and not a kahuna/* sandbox — likely a stale or renamed base/target. Confirm before proceeding.`,
+      reason: `Branch '${B}' matches the protected-branch convention (main | release/*) but is not the live default '${default_branch}' and not a kahuna/* sandbox — likely a stale or renamed base/target. Confirm before proceeding.`,
       default_branch,
       checked_branch: B,
       is_protected: true,

@@ -6,17 +6,13 @@ import {
   execCalls,
 } from '../lib/test-support/mock-child-process.ts';
 
-// branch_guard handler tests (#465). Drives the REAL adapters through the shared
-// child_process mock — same convention as tests/pr_create.test.ts. Each test
-// registers substring → responder mappings via `onExec`; an unmatched call
-// throws, so a missing stub (e.g. an unexpected protection query on a sandbox
-// branch) surfaces loudly as a failure.
-
-interface ThrowableError extends Error {
-  stderr?: string;
-  stdout?: string;
-  status?: number;
-}
+// branch_guard handler tests (#465, #470). Drives the REAL adapters through the
+// shared child_process mock — same convention as tests/pr_create.test.ts.
+//
+// #470: protection is a NAME convention (main | release/*), resolved in the
+// handler — so verdict tests need NO protection-endpoint mocking. The only host
+// call in the target-role path is resolveDefaultBranch (gh repo view / glab api
+// projects/:id). An unmatched exec throws, so a stray host query surfaces loudly.
 
 installChildProcessMock();
 
@@ -24,15 +20,6 @@ const { default: handler } = await import('../handlers/branch_guard.ts');
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
   return JSON.parse(result.content[0].text) as Record<string, unknown>;
-}
-
-function fail404(match: string): void {
-  onExec(match, () => {
-    const err = new Error('not found') as ThrowableError;
-    err.stderr = 'gh: Not Found (HTTP 404)';
-    err.status = 1;
-    throw err;
-  });
 }
 
 const GITHUB_ORIGIN = 'git@github.com:org/repo.git\n';
@@ -64,11 +51,10 @@ describe('branch_guard handler — shape', () => {
   });
 });
 
-describe('branch_guard verdicts — GitHub', () => {
-  test('default branch → pass', async () => {
+describe('branch_guard verdicts — GitHub (name-based protection)', () => {
+  test('default branch (main) → pass', async () => {
     onExec('git remote get-url origin', GITHUB_ORIGIN);
     onExec('gh repo view', 'main\n');
-    onExec('branches/main/protection', JSON.stringify({ required_status_checks: { strict: true } }));
 
     const data = parseResult(await handler.execute({ role: 'target', branch: 'main' }));
     expect(data.ok).toBe(true);
@@ -79,65 +65,66 @@ describe('branch_guard verdicts — GitHub', () => {
     expect(data.is_sandbox).toBe(false);
   });
 
-  test('kahuna/12-foo → pass (is_sandbox true, protection NOT queried)', async () => {
+  test('old release/0.0.1 while default is release/1.0.0 → warn (LTS scenario)', async () => {
+    onExec('git remote get-url origin', GITHUB_ORIGIN);
+    onExec('gh repo view', 'release/1.0.0\n');
+
+    const data = parseResult(await handler.execute({ role: 'target', branch: 'release/0.0.1' }));
+    expect(data.ok).toBe(true);
+    expect(data.verdict).toBe('warn');
+    expect(data.default_branch).toBe('release/1.0.0');
+    expect(data.checked_branch).toBe('release/0.0.1');
+    expect(data.is_protected).toBe(true);
+    expect(data.is_sandbox).toBe(false);
+  });
+
+  test('release/1.0.0 when it IS the default → pass', async () => {
+    onExec('git remote get-url origin', GITHUB_ORIGIN);
+    onExec('gh repo view', 'release/1.0.0\n');
+
+    const data = parseResult(await handler.execute({ role: 'target', branch: 'release/1.0.0' }));
+    expect(data.ok).toBe(true);
+    expect(data.verdict).toBe('pass');
+    expect(data.is_protected).toBe(true);
+  });
+
+  test('main when the default is a release branch → warn (protected by name, not default)', async () => {
+    onExec('git remote get-url origin', GITHUB_ORIGIN);
+    onExec('gh repo view', 'release/1.0.0\n');
+
+    const data = parseResult(await handler.execute({ role: 'target', branch: 'main' }));
+    expect(data.ok).toBe(true);
+    expect(data.verdict).toBe('warn');
+    expect(data.default_branch).toBe('release/1.0.0');
+    expect(data.checked_branch).toBe('main');
+    expect(data.is_protected).toBe(true);
+  });
+
+  test('kahuna/12-x → pass (is_sandbox true)', async () => {
     onExec('git remote get-url origin', GITHUB_ORIGIN);
     onExec('gh repo view', 'main\n');
-    // No protection stub: if the handler queries it, the unmatched-call guard
-    // throws — asserting the sandbox carve-out short-circuits before the gate.
 
-    const data = parseResult(await handler.execute({ role: 'target', branch: 'kahuna/12-foo' }));
+    const data = parseResult(await handler.execute({ role: 'target', branch: 'kahuna/12-x' }));
     expect(data.ok).toBe(true);
     expect(data.verdict).toBe('pass');
     expect(data.is_sandbox).toBe(true);
-    expect(data.checked_branch).toBe('kahuna/12-foo');
+    expect(data.checked_branch).toBe('kahuna/12-x');
   });
 
-  test('unprotected non-default branch → pass', async () => {
+  test('feature/x → pass (not a protected branch name)', async () => {
     onExec('git remote get-url origin', GITHUB_ORIGIN);
     onExec('gh repo view', 'main\n');
-    fail404('branches/develop/protection');
-    onExec('rules/branches/develop', '[]'); // no rulesets apply either
 
-    const data = parseResult(await handler.execute({ role: 'target', branch: 'develop' }));
+    const data = parseResult(await handler.execute({ role: 'target', branch: 'feature/x' }));
     expect(data.ok).toBe(true);
     expect(data.verdict).toBe('pass');
     expect(data.is_protected).toBe(false);
     expect(data.is_sandbox).toBe(false);
   });
 
-  test('protected non-default non-kahuna branch → warn', async () => {
-    onExec('git remote get-url origin', GITHUB_ORIGIN);
-    onExec('gh repo view', 'main\n');
-    onExec('branches/release-1.0/protection', JSON.stringify({ required_status_checks: { strict: true } }));
-
-    const data = parseResult(await handler.execute({ role: 'target', branch: 'release-1.0' }));
-    expect(data.ok).toBe(true);
-    expect(data.verdict).toBe('warn');
-    expect(data.is_protected).toBe(true);
-    expect(data.is_sandbox).toBe(false);
-    expect(String(data.reason)).toContain('stale or renamed');
-  });
-
-  test('branch protected ONLY by a wildcard ruleset → warn (LTS scenario)', async () => {
-    // No classic protection on release/0.0.1, but a `release/*` ruleset applies.
-    // Classic 404 → the effective-rules fallback returns a non-empty array.
-    onExec('git remote get-url origin', GITHUB_ORIGIN);
-    onExec('gh repo view', 'release/1.0.0\n');
-    fail404('branches/release/0.0.1/protection');
-    onExec('rules/branches/release/0.0.1', JSON.stringify([{ type: 'pull_request' }]));
-
-    const data = parseResult(await handler.execute({ role: 'target', branch: 'release/0.0.1' }));
-    expect(data.ok).toBe(true);
-    expect(data.verdict).toBe('warn');
-    expect(data.default_branch).toBe('release/1.0.0');
-    expect(data.is_protected).toBe(true);
-    expect(data.is_sandbox).toBe(false);
-  });
-
   test('target with base omitted → the live default (pass)', async () => {
     onExec('git remote get-url origin', GITHUB_ORIGIN);
     onExec('gh repo view', 'main\n');
-    onExec('branches/main/protection', JSON.stringify({}));
 
     const data = parseResult(await handler.execute({ role: 'target' }));
     expect(data.ok).toBe(true);
@@ -146,11 +133,10 @@ describe('branch_guard verdicts — GitHub', () => {
   });
 });
 
-describe('branch_guard verdicts — GitLab', () => {
-  test('default branch → pass', async () => {
+describe('branch_guard verdicts — GitLab (name-based protection)', () => {
+  test('default branch (main) → pass', async () => {
     onExec('git remote get-url origin', GITLAB_ORIGIN);
     onExec('projects/:id', JSON.stringify({ default_branch: 'main' }));
-    onExec('protected_branches', JSON.stringify([{ name: 'main' }]));
 
     const data = parseResult(await handler.execute({ role: 'target', branch: 'main' }));
     expect(data.ok).toBe(true);
@@ -159,7 +145,18 @@ describe('branch_guard verdicts — GitLab', () => {
     expect(data.is_protected).toBe(true);
   });
 
-  test('kahuna/9-foo → pass (is_sandbox true, protection NOT queried)', async () => {
+  test('old release/0.0.1 while default is release/1.0.0 → warn (LTS scenario)', async () => {
+    onExec('git remote get-url origin', GITLAB_ORIGIN);
+    onExec('projects/:id', JSON.stringify({ default_branch: 'release/1.0.0' }));
+
+    const data = parseResult(await handler.execute({ role: 'target', branch: 'release/0.0.1' }));
+    expect(data.ok).toBe(true);
+    expect(data.verdict).toBe('warn');
+    expect(data.default_branch).toBe('release/1.0.0');
+    expect(data.is_protected).toBe(true);
+  });
+
+  test('kahuna/9-foo → pass (is_sandbox true)', async () => {
     onExec('git remote get-url origin', GITLAB_ORIGIN);
     onExec('projects/:id', JSON.stringify({ default_branch: 'main' }));
 
@@ -169,49 +166,22 @@ describe('branch_guard verdicts — GitLab', () => {
     expect(data.is_sandbox).toBe(true);
   });
 
-  test('unprotected non-default branch → pass', async () => {
+  test('feature/x → pass (not a protected branch name)', async () => {
     onExec('git remote get-url origin', GITLAB_ORIGIN);
     onExec('projects/:id', JSON.stringify({ default_branch: 'main' }));
-    onExec('protected_branches', '[]');
 
-    const data = parseResult(await handler.execute({ role: 'target', branch: 'develop' }));
+    const data = parseResult(await handler.execute({ role: 'target', branch: 'feature/x' }));
     expect(data.ok).toBe(true);
     expect(data.verdict).toBe('pass');
     expect(data.is_protected).toBe(false);
   });
-
-  test('protected non-default non-kahuna branch → warn', async () => {
-    onExec('git remote get-url origin', GITLAB_ORIGIN);
-    onExec('projects/:id', JSON.stringify({ default_branch: 'main' }));
-    onExec('protected_branches', JSON.stringify([{ name: 'release-1.0' }]));
-
-    const data = parseResult(await handler.execute({ role: 'target', branch: 'release-1.0' }));
-    expect(data.ok).toBe(true);
-    expect(data.verdict).toBe('warn');
-    expect(data.is_protected).toBe(true);
-    expect(String(data.reason)).toContain('stale or renamed');
-  });
-
-  test('branch protected ONLY by a wildcard entry → warn (LTS scenario)', async () => {
-    // release/0.0.1 is not listed by exact name, but a `release/*` entry covers
-    // it. The wildcard-aware list match reports it as protected.
-    onExec('git remote get-url origin', GITLAB_ORIGIN);
-    onExec('projects/:id', JSON.stringify({ default_branch: 'release/1.0.0' }));
-    onExec('protected_branches', JSON.stringify([{ name: 'release/*' }]));
-
-    const data = parseResult(await handler.execute({ role: 'target', branch: 'release/0.0.1' }));
-    expect(data.ok).toBe(true);
-    expect(data.verdict).toBe('warn');
-    expect(data.default_branch).toBe('release/1.0.0');
-    expect(data.is_protected).toBe(true);
-  });
 });
 
 describe('branch_guard role=base — base detection via open PR', () => {
-  test('open PR base resolves to the live default → pass', async () => {
+  test('open PR base is the live default → pass', async () => {
     onExec('git remote get-url origin', GITHUB_ORIGIN);
     onExec('gh repo view', 'main\n');
-    onExec('git branch --show-current', 'feature/465-branch-guard\n');
+    onExec('git branch --show-current', 'feature/470-name-based\n');
     onExec(
       'gh pr list',
       JSON.stringify([
@@ -219,13 +189,12 @@ describe('branch_guard role=base — base detection via open PR', () => {
           number: 5,
           title: 't',
           state: 'OPEN',
-          headRefName: 'feature/465-branch-guard',
+          headRefName: 'feature/470-name-based',
           baseRefName: 'main',
           url: 'https://github.com/org/repo/pull/5',
         },
       ]),
     );
-    onExec('branches/main/protection', JSON.stringify({ required_status_checks: { strict: true } }));
 
     const data = parseResult(await handler.execute({ role: 'base' }));
     expect(data.ok).toBe(true);
@@ -233,17 +202,41 @@ describe('branch_guard role=base — base detection via open PR', () => {
     expect(data.checked_branch).toBe('main');
   });
 
+  test('open PR based on an OLD release branch → warn', async () => {
+    onExec('git remote get-url origin', GITHUB_ORIGIN);
+    onExec('gh repo view', 'release/1.0.0\n');
+    onExec('git branch --show-current', 'feature/470-name-based\n');
+    onExec(
+      'gh pr list',
+      JSON.stringify([
+        {
+          number: 6,
+          title: 't',
+          state: 'OPEN',
+          headRefName: 'feature/470-name-based',
+          baseRefName: 'release/0.0.1',
+          url: 'https://github.com/org/repo/pull/6',
+        },
+      ]),
+    );
+
+    const data = parseResult(await handler.execute({ role: 'base' }));
+    expect(data.ok).toBe(true);
+    expect(data.verdict).toBe('warn');
+    expect(data.checked_branch).toBe('release/0.0.1');
+    expect(data.is_protected).toBe(true);
+  });
+
   test('no open PR → pass (base undetermined pre-PR, never a false warn)', async () => {
     onExec('git remote get-url origin', GITHUB_ORIGIN);
     onExec('gh repo view', 'main\n');
-    onExec('git branch --show-current', 'feature/465-branch-guard\n');
+    onExec('git branch --show-current', 'feature/470-name-based\n');
     onExec('gh pr list', '[]');
-    // No protection stub: the no-PR path must early-return before any gate.
 
     const data = parseResult(await handler.execute({ role: 'base' }));
     expect(data.ok).toBe(true);
     expect(data.verdict).toBe('pass');
-    expect(data.checked_branch).toBe('feature/465-branch-guard');
+    expect(data.checked_branch).toBe('feature/470-name-based');
     expect(data.is_protected).toBe(false);
     expect(String(data.reason)).toContain('No open PR');
   });
