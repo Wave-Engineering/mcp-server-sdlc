@@ -811,6 +811,7 @@ describe('handler_emit (wired handlers → emit)', () => {
       const headRef = 'kahuna/42-demo';
       setExecMock((cmd) => {
         const c = unquote(cmd);
+        if (c.includes('defaultBranchRef')) return 'main'; // #472: target_branch resolves to live default
         if (c.includes('ls-remote')) return `abc123\trefs/heads/${headRef}`;
         if (c.includes('pr list')) return '[]'; // no existing PR
         if (c.includes('pr create')) return 'https://github.com/o/r/pull/555';

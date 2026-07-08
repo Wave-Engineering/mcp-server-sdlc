@@ -71,7 +71,7 @@ const waveInitHandler: HandlerDef = {
   description:
     'Initialize a wave plan from structured JSON; supports --extend mode. ' +
     'Optional `kahuna` argument bootstraps a `kahuna/<plan_id>-<slug>` branch ' +
-    'off the plan\'s base_branch (default `main`) and records it in wave state. ' +
+    'off the plan\'s base_branch (default: the repo\'s live default branch) and records it in wave state. ' +
     'Atomic across kahuna bootstrap + plan persist (#378): kahuna failure does ' +
     'not persist the plan; plan-persist failure leaves the branch claimable on retry.',
   inputSchema,
@@ -96,12 +96,27 @@ const waveInitHandler: HandlerDef = {
       let kahunaPreviouslyRecorded = false;
       if (args.kahuna !== undefined) {
         const slug = args.repo ?? parseRepoSlug() ?? undefined;
-        const baseBranch = typeof plan.base_branch === 'string' && plan.base_branch.length > 0 ? plan.base_branch : 'main';
+        const adapter = getAdapter({ repo: slug });
+        // Base branch: the plan's explicit base_branch wins; otherwise resolve
+        // the LIVE default branch from the host (never hardcode 'main' — a repo
+        // whose default is e.g. release/1.0.0 would otherwise cut the kahuna
+        // branch from the wrong place). Mirrors how pr_create defaults its base.
+        let baseBranch: string;
+        if (typeof plan.base_branch === 'string' && plan.base_branch.length > 0) {
+          baseBranch = plan.base_branch;
+        } else {
+          const defRes = await adapter.resolveDefaultBranch({ repo: slug, cwd });
+          if ('platform_unsupported' in defRes) {
+            return envelope({ ok: false, error: `default-branch resolution unsupported: ${defRes.hint}` });
+          }
+          if (!defRes.ok) return envelope({ ok: false, error: defRes.error });
+          baseBranch = defRes.data.default_branch;
+        }
         const statePath = join(await statusDir(cwd), 'state.json');
         const remote = await bootstrapKahunaBranchRemote(cwd, args.kahuna, baseBranch,
           () => readStateOrDefault(statePath),
           {
-            adapter: getAdapter({ repo: slug }), slug,
+            adapter, slug,
             branchPresentOnRemote: (b) => branchExistsOnRemote(cwd, b),
           });
         if (!remote.ok) return envelope({ ok: false, error: remote.error });

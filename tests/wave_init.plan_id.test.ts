@@ -63,6 +63,10 @@ function setExecRoutes(routes: Array<{ match: string; respond: string | (() => s
         return typeof r.respond === 'function' ? r.respond() : r.respond;
       }
     }
+    // #472: kahuna path resolves the live default branch when base_branch is
+    // omitted — answer the default-branch lookup with 'main' so the existing
+    // `heads/main` SHA route still hits.
+    if (flat.includes('defaultBranchRef')) return 'main';
     return 'wave plan initialized\n';
   });
 }

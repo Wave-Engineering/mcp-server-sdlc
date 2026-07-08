@@ -60,6 +60,16 @@ beforeEach(() => {
       ? 'git@gitlab.com:o/r.git'
       : 'git@github.com:o/r.git',
   );
+  // #472: target_branch now resolves to the LIVE default branch when omitted
+  // (previously a static zod .default('main')). Stub both platforms' default
+  // lookup to 'main' so the existing "default → main" assertions still hold.
+  // GitHub: `gh repo view --json defaultBranchRef ...` (runArgv-escaped, matched
+  // on the unique field token). GitLab: `glab api projects/:id`.
+  onExec('defaultBranchRef', 'main');
+  // Quote-bounded token so this matches ONLY `glab api projects/:id` (the
+  // default-branch resolve) and NOT `projects/:id/merge_requests?...` (the
+  // prCreate post-create lookup, which uses the same `:id` placeholder).
+  onExec("'projects/:id'", JSON.stringify({ default_branch: 'main' }));
 });
 
 afterEach(() => {

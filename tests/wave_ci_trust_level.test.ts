@@ -56,6 +56,7 @@ describe('wave_ci_trust_level handler', () => {
       if (cmd.includes('rulesets') && !cmd.match(/rulesets\/\d+/)) {
         return JSON.stringify([]);
       }
+      if (cmd.includes('defaultBranchRef')) return 'main'; // #472: default-branch resolve
       if (cmd.includes('branches/main/protection')) {
         return JSON.stringify({ required_status_checks: { strict: true } });
       }
@@ -75,6 +76,7 @@ describe('wave_ci_trust_level handler', () => {
       if (cmd.includes('rulesets') && !cmd.match(/rulesets\/\d+/)) {
         return JSON.stringify([]);
       }
+      if (cmd.includes('defaultBranchRef')) return 'main'; // #472: default-branch resolve
       if (cmd.includes('branches/main/protection')) {
         return JSON.stringify({ required_status_checks: { strict: false } });
       }
