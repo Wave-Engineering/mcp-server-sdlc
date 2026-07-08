@@ -908,6 +908,43 @@ export interface CiTrustSignal {
   reason: string;
 }
 
+/**
+ * `branch_guard` host queries (#465). Two live probes that back the base/target
+ * mainline guard:
+ *
+ *  - `resolveDefaultBranch` promotes the private `getDefaultBranch()` helper
+ *    that both `pr-create-{github,gitlab}.ts` carried (GitHub:
+ *    `gh repo view --json defaultBranchRef`; GitLab: `glab api projects/:id` →
+ *    `default_branch`) into a shared method — removing the duplication and
+ *    giving `branch_guard` a LIVE default-branch source (never `origin/HEAD`,
+ *    never a cached `.claude-project.md` value).
+ *
+ *  - `checkBranchProtected` is the genuinely-new part: is a branch protected on
+ *    the host? GitHub `gh api repos/<slug>/branches/<branch>/protection`; GitLab
+ *    `glab api projects/:id/protected_branches/<branch>` — 200 ⇒ protected,
+ *    404 ⇒ not protected on both.
+ */
+export interface ResolveDefaultBranchArgs {
+  repo?: string;
+  /** Working directory for the gh|glab invocation; defaults to CLAUDE_PROJECT_DIR ?? process.cwd(). */
+  cwd?: string;
+}
+
+export interface ResolveDefaultBranchResponse {
+  default_branch: string;
+}
+
+export interface CheckBranchProtectedArgs {
+  branch: string;
+  repo?: string;
+  /** Working directory for the gh|glab invocation; defaults to CLAUDE_PROJECT_DIR ?? process.cwd(). */
+  cwd?: string;
+}
+
+export interface CheckBranchProtectedResponse {
+  protected: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // The interface
 // ---------------------------------------------------------------------------
@@ -980,6 +1017,14 @@ export interface PlatformAdapter {
   fetchCiTrustSignal(
     args: FetchCiTrustSignalArgs,
   ): Promise<AdapterResult<CiTrustSignal>>;
+
+  // branch_guard host queries (#465).
+  resolveDefaultBranch(
+    args: ResolveDefaultBranchArgs,
+  ): Promise<AdapterResult<ResolveDefaultBranchResponse>>;
+  checkBranchProtected(
+    args: CheckBranchProtectedArgs,
+  ): Promise<AdapterResult<CheckBranchProtectedResponse>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1026,6 +1071,8 @@ export const PLATFORM_ADAPTER_METHODS = [
   'createBranch',
   'findExistingPr',
   'fetchCiTrustSignal',
+  'resolveDefaultBranch',
+  'checkBranchProtected',
 ] as const;
 
 export type PlatformAdapterMethod = (typeof PLATFORM_ADAPTER_METHODS)[number];

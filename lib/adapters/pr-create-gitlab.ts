@@ -17,6 +17,7 @@
 
 import { execSync } from 'child_process';
 import { runArgv } from '../shared/error-norm.js';
+import { resolveDefaultBranchGitlabSync } from './resolve-default-branch-gitlab.js';
 import type {
   AdapterResult,
   PrCreateArgs,
@@ -33,26 +34,6 @@ function getCurrentBranch(cwd: string): string {
     throw new Error(`git branch --show-current failed: ${result.stderr.trim()}`);
   }
   return result.stdout.trim();
-}
-
-/**
- * Resolve the repo's default branch via `glab api projects/<encoded>`.
- * Use `:id` as the project segment when no slug is provided — `glab` resolves
- * that from the cwd remote.
- */
-function getDefaultBranch(repo: string | undefined, cwd: string): string {
-  const project = repo !== undefined ? repo.replace(/\//g, '%2F') : ':id';
-  const result = runArgv(['glab', 'api', `projects/${project}`], cwd);
-  if (result.exitCode !== 0 || result.stdout.trim().length === 0) {
-    throw new Error(
-      `failed to resolve GitLab default branch: ${result.stderr.trim() || 'empty response'}`,
-    );
-  }
-  const parsed = JSON.parse(result.stdout) as { default_branch?: string };
-  if (typeof parsed.default_branch !== 'string' || parsed.default_branch.length === 0) {
-    throw new Error('default_branch missing or empty in glab api response');
-  }
-  return parsed.default_branch;
 }
 
 function projectSlugEncoded(repo: string | undefined): string {
@@ -110,7 +91,7 @@ export async function prCreateGitlab(
     const head = args.head ?? getCurrentBranch(cwd);
     const base = args.base && args.base.length > 0
       ? args.base
-      : getDefaultBranch(args.repo, cwd);
+      : resolveDefaultBranchGitlabSync(args.repo, cwd);
 
     const createCmd = [
       'glab', 'mr', 'create',

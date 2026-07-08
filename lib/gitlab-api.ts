@@ -324,3 +324,37 @@ export function gitlabApiRepo(): GitlabRepo {
   const raw = execGlab(`glab api projects/${path}`);
   return JSON.parse(raw) as GitlabRepo;
 }
+
+/**
+ * Report whether a branch is protected on the host (#465).
+ *
+ * Endpoint: `GET /projects/:id/protected_branches/:name`
+ *  - HTTP 200 ⇒ the branch is protected (returns the protection record).
+ *  - HTTP 404 ⇒ the branch is not protected.
+ *
+ * `glab api` maps a 404 to a non-zero exit, which `execGlab` rethrows as a
+ * `glab failed (…)` error whose message carries the stderr. We interpret a
+ * 404 / "not found" message as "not protected" and return `false`; any other
+ * failure (auth, network) propagates so callers can surface a real error
+ * instead of silently reporting the branch as unprotected.
+ */
+export function gitlabApiProtectedBranch(
+  branch: string,
+  opts?: { owner?: string; repo?: string },
+  cwd?: string,
+): boolean {
+  const path = projectPath(opts, cwd);
+  try {
+    const raw = execGlab(
+      `glab api projects/${path}/protected_branches/${encodeURIComponent(branch)}`,
+      cwd,
+    );
+    // 200 returns the protection record; parse to fail loudly on garbage.
+    JSON.parse(raw);
+    return true;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : '';
+    if (/404|not found/i.test(msg)) return false;
+    throw err;
+  }
+}

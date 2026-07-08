@@ -118,6 +118,9 @@ describe('PlatformAdapter contract', () => {
     'createBranch',
     'findExistingPr',
     'fetchCiTrustSignal',
+    // #465: branch_guard host queries — real implementations, not stubs.
+    'resolveDefaultBranch',
+    'checkBranchProtected',
   ]);
 
   test('still-stubbed methods return platform_unsupported', async () => {

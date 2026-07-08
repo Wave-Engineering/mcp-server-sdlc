@@ -29,6 +29,8 @@ import { fetchPrStateGitlab } from './fetch-pr-state-gitlab.js';
 import { findExistingPrGitlab } from './find-existing-pr-gitlab.js';
 import { findMergedPrForBranchPrefixGitlab } from './find-merged-pr-for-branch-prefix-gitlab.js';
 import { resolveBranchShaGitlab } from './resolve-branch-sha-gitlab.js';
+import { resolveDefaultBranchGitlab } from './resolve-default-branch-gitlab.js';
+import { checkBranchProtectedGitlab } from './check-branch-protected-gitlab.js';
 import { labelCreateGitlab } from './label-create-gitlab.js';
 import { labelListGitlab } from './label-list-gitlab.js';
 import { prCommentGitlab } from './pr-comment-gitlab.js';
@@ -83,4 +85,6 @@ export const gitlabAdapter: PlatformAdapter = {
   createBranch: createBranchGitlab,
   findExistingPr: findExistingPrGitlab,
   fetchCiTrustSignal: fetchCiTrustSignalGitlab,
+  resolveDefaultBranch: resolveDefaultBranchGitlab,
+  checkBranchProtected: checkBranchProtectedGitlab,
 };
