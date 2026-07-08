@@ -29,7 +29,6 @@ import { findExistingPrGithub } from './find-existing-pr-github.js';
 import { findMergedPrForBranchPrefixGithub } from './find-merged-pr-for-branch-prefix-github.js';
 import { resolveBranchShaGithub } from './resolve-branch-sha-github.js';
 import { resolveDefaultBranchGithub } from './resolve-default-branch-github.js';
-import { checkBranchProtectedGithub } from './check-branch-protected-github.js';
 import { labelCreateGithub } from './label-create-github.js';
 import { labelListGithub } from './label-list-github.js';
 import { prCommentGithub } from './pr-comment-github.js';
@@ -85,5 +84,4 @@ export const githubAdapter: PlatformAdapter = {
   findExistingPr: findExistingPrGithub,
   fetchCiTrustSignal: fetchCiTrustSignalGithub,
   resolveDefaultBranch: resolveDefaultBranchGithub,
-  checkBranchProtected: checkBranchProtectedGithub,
 };
