@@ -11,6 +11,7 @@
 
 import { execSync } from 'child_process';
 import { runArgv, type RunResult } from '../shared/error-norm.js';
+import { resolveDefaultBranchGithubSync } from './resolve-default-branch-github.js';
 import type {
   AdapterResult,
   PrCreateArgs,
@@ -25,23 +26,6 @@ function getCurrentBranch(cwd: string): string {
   const result = runArgv(['git', 'branch', '--show-current'], cwd);
   if (result.exitCode !== 0) {
     throw new Error(`git branch --show-current failed: ${result.stderr.trim()}`);
-  }
-  return result.stdout.trim();
-}
-
-/**
- * Resolve the repo's default branch via `gh repo view`.
- * GitHub-specific path; mirror in `pr-create-gitlab.ts` uses `glab api projects/<encoded>`.
- */
-function getDefaultBranch(repo: string | undefined, cwd: string): string {
-  const cmd = ['gh', 'repo', 'view'];
-  if (repo !== undefined) cmd.push(repo);
-  cmd.push('--json', 'defaultBranchRef', '--jq', '.defaultBranchRef.name');
-  const result = runArgv(cmd, cwd);
-  if (result.exitCode !== 0 || result.stdout.trim().length === 0) {
-    throw new Error(
-      `failed to resolve GitHub default branch: ${result.stderr.trim() || 'empty response'}`,
-    );
   }
   return result.stdout.trim();
 }
@@ -102,7 +86,7 @@ export async function prCreateGithub(
     const head = args.head ?? getCurrentBranch(cwd);
     const base = args.base && args.base.length > 0
       ? args.base
-      : getDefaultBranch(args.repo, cwd);
+      : resolveDefaultBranchGithubSync(args.repo, cwd);
 
     const createCmd = [
       'gh', 'pr', 'create',

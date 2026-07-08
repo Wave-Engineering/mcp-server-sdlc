@@ -908,6 +908,49 @@ export interface CiTrustSignal {
   reason: string;
 }
 
+/**
+ * `branch_guard` host queries (#465). Two live probes that back the base/target
+ * mainline guard:
+ *
+ *  - `resolveDefaultBranch` promotes the private `getDefaultBranch()` helper
+ *    that both `pr-create-{github,gitlab}.ts` carried (GitHub:
+ *    `gh repo view --json defaultBranchRef`; GitLab: `glab api projects/:id` →
+ *    `default_branch`) into a shared method — removing the duplication and
+ *    giving `branch_guard` a LIVE default-branch source (never `origin/HEAD`,
+ *    never a cached `.claude-project.md` value).
+ *
+ *  - `checkBranchProtected` is the genuinely-new part: is a branch protected on
+ *    the host? Protection is detected across BOTH the exact-name AND
+ *    wildcard/ruleset surfaces — not exact-name only:
+ *      - GitHub: classic `gh api repos/<slug>/branches/<branch>/protection`
+ *        (200 ⇒ protected) OR, on 404, the effective rulesets for the branch via
+ *        `gh api repos/<slug>/rules/branches/<branch>` (non-empty array ⇒
+ *        protected). Catches wildcard rulesets like `release/*`.
+ *      - GitLab: LIST `glab api projects/:id/protected_branches` and match the
+ *        branch name client-side against each entry's `name` (which may be a
+ *        glob like `release/*`). Catches wildcard protection entries.
+ */
+export interface ResolveDefaultBranchArgs {
+  repo?: string;
+  /** Working directory for the gh|glab invocation; defaults to CLAUDE_PROJECT_DIR ?? process.cwd(). */
+  cwd?: string;
+}
+
+export interface ResolveDefaultBranchResponse {
+  default_branch: string;
+}
+
+export interface CheckBranchProtectedArgs {
+  branch: string;
+  repo?: string;
+  /** Working directory for the gh|glab invocation; defaults to CLAUDE_PROJECT_DIR ?? process.cwd(). */
+  cwd?: string;
+}
+
+export interface CheckBranchProtectedResponse {
+  protected: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // The interface
 // ---------------------------------------------------------------------------
@@ -980,6 +1023,14 @@ export interface PlatformAdapter {
   fetchCiTrustSignal(
     args: FetchCiTrustSignalArgs,
   ): Promise<AdapterResult<CiTrustSignal>>;
+
+  // branch_guard host queries (#465).
+  resolveDefaultBranch(
+    args: ResolveDefaultBranchArgs,
+  ): Promise<AdapterResult<ResolveDefaultBranchResponse>>;
+  checkBranchProtected(
+    args: CheckBranchProtectedArgs,
+  ): Promise<AdapterResult<CheckBranchProtectedResponse>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1026,6 +1077,8 @@ export const PLATFORM_ADAPTER_METHODS = [
   'createBranch',
   'findExistingPr',
   'fetchCiTrustSignal',
+  'resolveDefaultBranch',
+  'checkBranchProtected',
 ] as const;
 
 export type PlatformAdapterMethod = (typeof PLATFORM_ADAPTER_METHODS)[number];
