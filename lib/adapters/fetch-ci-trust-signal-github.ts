@@ -10,22 +10,32 @@
  * Two-step dispatch:
  *   1. `gh api repos/<slug>/rulesets` — merge queue lives in a ruleset; a
  *      `merge_queue` rule flips the signal to `pre_merge_authoritative`.
- *   2. `gh api repos/<slug>/branches/main/protection` — `required_status_checks.strict`
- *      on main is the secondary pre-merge-authoritative signal; any other
- *      branch-protection shape is `post_merge_required`.
+ *   2. `gh api repos/<slug>/branches/<default>/protection` — the LIVE default
+ *      branch's `required_status_checks.strict` is the secondary
+ *      pre-merge-authoritative signal; any other branch-protection shape is
+ *      `post_merge_required`. The default branch is resolved via
+ *      `resolveDefaultBranchGithubSync` (never hardcoded 'main' — #472: a repo
+ *      whose default is e.g. release/1.0.0 would otherwise read the wrong
+ *      branch's protection).
  *
- * A subprocess failure on the branch-protection call surfaces as
- * `{ok: false, …}` — the handler folds that into `level: 'unknown'`.
- * A clean rulesets fetch followed by a failed protection fetch is the only
- * real "API error" path we preserve from the pre-migration handler.
+ * A subprocess failure on the default-branch resolution or the branch-protection
+ * call surfaces as `{ok: false, …}` — the handler folds that into
+ * `level: 'unknown'`. A clean rulesets fetch followed by a failed protection
+ * fetch is the only real "API error" path we preserve from the pre-migration
+ * handler.
  */
 
 import { execSync } from 'child_process';
+import { resolveDefaultBranchGithubSync } from './resolve-default-branch-github.js';
 import type {
   AdapterResult,
   CiTrustSignal,
   FetchCiTrustSignalArgs,
 } from './types.js';
+
+function projectDir(): string {
+  return process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
+}
 
 // Same charset as fetch-pr-state-github / fetch-issue-closure-github —
 // GitHub's owner/repo grammar. Defended at the adapter boundary.
@@ -84,14 +94,17 @@ function probeRulesets(slug: string): CiTrustSignal | null {
 }
 
 function probeBranchProtection(slug: string): CiTrustSignal {
-  const raw = execSync(`gh api repos/${slug}/branches/main/protection`, {
+  // Resolve the LIVE default branch first — the CI-trust signal must read the
+  // default branch's protection, which is not necessarily `main` (#472).
+  const defaultBranch = resolveDefaultBranchGithubSync(slug, projectDir());
+  const raw = execSync(`gh api repos/${slug}/branches/${defaultBranch}/protection`, {
     encoding: 'utf8',
   });
   const prot = JSON.parse(raw) as GhBranchProtection;
   if (prot.required_status_checks?.strict === true) {
     return {
       level: 'pre_merge_authoritative',
-      reason: 'github branch protection strict=true on main',
+      reason: `github branch protection strict=true on ${defaultBranch}`,
     };
   }
   return {

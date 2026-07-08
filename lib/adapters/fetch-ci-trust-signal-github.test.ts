@@ -62,6 +62,7 @@ describe('fetchCiTrustSignalGithubSync — subprocess boundary', () => {
       if (cmd.includes('/rulesets/1')) {
         return JSON.stringify({ rules: [{ type: 'other_rule' }] });
       }
+      if (cmd.includes('defaultBranchRef')) return 'main';
       if (cmd.includes('/branches/main/protection')) {
         return JSON.stringify({ required_status_checks: { strict: true } });
       }
@@ -72,11 +73,33 @@ describe('fetchCiTrustSignalGithubSync — subprocess boundary', () => {
     expect(signal.reason).toContain('strict');
   });
 
+  test('probes the LIVE default branch protection, not a hardcoded main (#472)', () => {
+    let protectionCmd = '';
+    setExecMock((cmd: string) => {
+      if (cmd.includes('/rulesets') && !cmd.match(/rulesets\/\d+/)) {
+        return JSON.stringify([]);
+      }
+      if (cmd.includes('defaultBranchRef')) return 'release/1.0.0';
+      if (cmd.includes('/protection')) {
+        protectionCmd = cmd;
+        return JSON.stringify({ required_status_checks: { strict: true } });
+      }
+      return '{}';
+    });
+    const signal = fetchCiTrustSignalGithubSync('org/repo');
+    expect(signal.level).toBe('pre_merge_authoritative');
+    // The protection probe targets the resolved default, NOT `main`.
+    expect(protectionCmd).toContain('branches/release/1.0.0/protection');
+    expect(protectionCmd).not.toContain('branches/main/protection');
+    expect(signal.reason).toContain('release/1.0.0');
+  });
+
   test('branch protection without strict → post_merge_required', () => {
     setExecMock((cmd: string) => {
       if (cmd.includes('/rulesets') && !cmd.match(/rulesets\/\d+/)) {
         return JSON.stringify([]);
       }
+      if (cmd.includes('defaultBranchRef')) return 'main';
       if (cmd.includes('/branches/main/protection')) {
         return JSON.stringify({ required_status_checks: { strict: false } });
       }
@@ -91,6 +114,7 @@ describe('fetchCiTrustSignalGithubSync — subprocess boundary', () => {
       if (cmd.includes('/rulesets') && !cmd.match(/rulesets\/\d+/)) {
         return JSON.stringify([]);
       }
+      if (cmd.includes('defaultBranchRef')) return 'main';
       if (cmd.includes('/branches/main/protection')) {
         return JSON.stringify({});
       }
@@ -105,6 +129,7 @@ describe('fetchCiTrustSignalGithubSync — subprocess boundary', () => {
       if (cmd.includes('/rulesets') && !cmd.match(/rulesets\/\d+/)) {
         throw new Error('gh api: 403');
       }
+      if (cmd.includes('defaultBranchRef')) return 'main';
       if (cmd.includes('/branches/main/protection')) {
         return JSON.stringify({ required_status_checks: { strict: true } });
       }
@@ -153,6 +178,7 @@ describe('fetchCiTrustSignalGithub — AdapterResult wrapper', () => {
       if (cmd.includes('/rulesets') && !cmd.match(/rulesets\/\d+/)) {
         return JSON.stringify([]);
       }
+      if (cmd.includes('defaultBranchRef')) return 'main';
       if (cmd.includes('/branches/main/protection')) {
         return JSON.stringify({ required_status_checks: { strict: true } });
       }

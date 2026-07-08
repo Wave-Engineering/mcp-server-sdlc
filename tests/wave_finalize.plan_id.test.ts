@@ -47,6 +47,9 @@ beforeEach(() => {
   resetExecMock();
   tmpRoot = makeTmpRoot();
   onExec('git remote get-url origin', () => 'git@github.com:o/r.git');
+  // #472: target_branch resolves to the live default when omitted. Stub the
+  // GitHub default-branch lookup to 'main' so title/base assertions still hold.
+  onExec('defaultBranchRef', 'main');
 });
 
 afterEach(() => {

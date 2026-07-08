@@ -296,6 +296,12 @@ describe('wave_init handler', () => {
           return typeof r.respond === 'function' ? r.respond() : r.respond;
         }
       }
+      // #472: when the plan omits base_branch, the kahuna path now resolves the
+      // LIVE default branch (previously hardcoded 'main'). Answer both platforms'
+      // default-branch lookup with 'main' — unless a test overrides it via an
+      // explicit route above — so the existing `heads/main` SHA routes still hit.
+      if (flat.includes('defaultBranchRef')) return 'main';                          // github: gh repo view
+      if (/glab api projects\/[^/]+$/.test(flat)) return JSON.stringify({ default_branch: 'main' }); // gitlab: bare projects/<id>
       return 'wave plan initialized\n';
     });
   }

@@ -882,8 +882,9 @@ export interface FindMergedPrForBranchPrefixArgs {
  * Two-step dispatch diverges per platform:
  * - GitHub: `gh api repos/<slug>/rulesets` is queried first (merge queue
  *   lives in a ruleset); on cache miss the adapter falls back to
- *   `gh api repos/<slug>/branches/main/protection` and checks the
- *   `required_status_checks.strict` flag.
+ *   `gh api repos/<slug>/branches/<default>/protection` — the LIVE default
+ *   branch resolved via `resolveDefaultBranch` (never hardcoded 'main', #472) —
+ *   and checks the `required_status_checks.strict` flag.
  * - GitLab: `glab api projects/<path>` via `gitlabApiRepo()` (imported from
  *   `lib/gitlab-api.ts`); `merge_trains_enabled` is the lone
  *   pre-merge-authoritative signal — merge pipelines alone are not sufficient
