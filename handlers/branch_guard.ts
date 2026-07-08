@@ -46,7 +46,7 @@ function currentBranch(cwd: string): string {
 const branchGuardHandler: HandlerDef = {
   name: 'branch_guard',
   description:
-    "Guard against basing on / merging into the wrong mainline. Queries the git host LIVE for the default branch and branch-protection status, then verdicts a base/target branch. Returns {verdict: 'pass'|'warn', reason, default_branch, checked_branch, is_protected, is_sandbox}. A protected branch that is neither the live default nor a kahuna/* sandbox → warn.",
+    "Guard against basing on / merging into the wrong mainline. Queries the git host LIVE for the default branch and branch-protection status, then verdicts a base/target branch. Protection is detected across exact-name AND wildcard/ruleset rules — GitHub via classic branch protection plus repository rulesets (gh api rules/branches/<branch>); GitLab via wildcard-aware matching of the protected_branches list — so an LTS branch protected only by a glob like release/* is caught. Returns {verdict: 'pass'|'warn', reason, default_branch, checked_branch, is_protected, is_sandbox}. A protected branch that is neither the live default nor a kahuna/* sandbox → warn.",
   inputSchema,
   async execute(rawArgs: unknown) {
     let args;

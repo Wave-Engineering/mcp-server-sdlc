@@ -2,11 +2,13 @@
  * GitLab `checkBranchProtected` adapter implementation (#465).
  *
  * Sibling of `check-branch-protected-github.ts`. Delegates to the
- * `gitlabApiProtectedBranch()` wrapper (in `lib/gitlab-api.ts`) which speaks
- * `glab api projects/:id/protected_branches/<branch>` and maps 200 ⇒ protected,
- * 404 ⇒ not protected. A non-404 failure propagates out of the wrapper and is
- * bounded here into `{ok: false}` rather than being misreported as
- * "not protected".
+ * `gitlabApiProtectedBranch()` wrapper (in `lib/gitlab-api.ts`) which LISTS
+ * `glab api projects/:id/protected_branches` and matches the branch name
+ * client-side against each entry's `name` — a wildcard-aware check so a branch
+ * protected only by a glob rule (e.g. `release/0.0.1` under `release/*`) is
+ * correctly reported as protected. A real API failure propagates out of the
+ * wrapper and is bounded here into `{ok: false}` rather than being misreported
+ * as "not protected".
  */
 
 import { execSync } from 'child_process';

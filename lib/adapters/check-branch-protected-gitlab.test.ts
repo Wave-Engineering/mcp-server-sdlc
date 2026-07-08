@@ -34,10 +34,10 @@ beforeEach(() => {
 });
 
 describe('checkBranchProtectedGitlab — subprocess boundary', () => {
-  test('HTTP 200 ⇒ protected', async () => {
+  test('exact-name entry in the list ⇒ protected', async () => {
     setExecMock((cmd: string) => {
       if (cmd.includes('git remote get-url origin')) return GITLAB_ORIGIN;
-      if (cmd.includes('protected_branches')) return JSON.stringify({ name: 'main' });
+      if (cmd.includes('protected_branches')) return JSON.stringify([{ name: 'main' }]);
       return '';
     });
 
@@ -46,24 +46,46 @@ describe('checkBranchProtectedGitlab — subprocess boundary', () => {
     expect(r.data.protected).toBe(true);
   });
 
-  test('HTTP 404 ⇒ not protected', async () => {
+  test('WILDCARD entry matches ⇒ protected (release/* covers release/0.0.1)', async () => {
     setExecMock((cmd: string) => {
       if (cmd.includes('git remote get-url origin')) return GITLAB_ORIGIN;
       if (cmd.includes('protected_branches')) {
-        const e = new Error('nf') as ThrowableError;
-        e.stderr = '{"message":"404 Not Found"}';
-        e.status = 1;
-        throw e;
+        return JSON.stringify([{ name: 'main' }, { name: 'release/*' }]);
       }
       return '';
     });
 
-    const r = await checkBranchProtectedGitlab({ branch: 'release/legacy' });
+    const r = await checkBranchProtectedGitlab({ branch: 'release/0.0.1' });
+    expectOk(r);
+    expect(r.data.protected).toBe(true);
+  });
+
+  test('empty list ⇒ not protected', async () => {
+    setExecMock((cmd: string) => {
+      if (cmd.includes('git remote get-url origin')) return GITLAB_ORIGIN;
+      if (cmd.includes('protected_branches')) return '[]';
+      return '';
+    });
+
+    const r = await checkBranchProtectedGitlab({ branch: 'develop' });
     expectOk(r);
     expect(r.data.protected).toBe(false);
   });
 
-  test('non-404 failure ⇒ ok:false (does NOT collapse to unprotected)', async () => {
+  test('no matching entry ⇒ not protected (glob does not over-match)', async () => {
+    setExecMock((cmd: string) => {
+      if (cmd.includes('git remote get-url origin')) return GITLAB_ORIGIN;
+      if (cmd.includes('protected_branches')) return JSON.stringify([{ name: 'release/*' }]);
+      return '';
+    });
+
+    // `release/*` must NOT match `feature/release-notes`.
+    const r = await checkBranchProtectedGitlab({ branch: 'feature/release-notes' });
+    expectOk(r);
+    expect(r.data.protected).toBe(false);
+  });
+
+  test('real API failure ⇒ ok:false (does NOT collapse to unprotected)', async () => {
     setExecMock((cmd: string) => {
       if (cmd.includes('git remote get-url origin')) return GITLAB_ORIGIN;
       if (cmd.includes('protected_branches')) {
@@ -80,12 +102,12 @@ describe('checkBranchProtectedGitlab — subprocess boundary', () => {
     expect((r as { code: string }).code).toBe('glab_protection_check_failed');
   });
 
-  test('URL-encodes an explicit slug into the protected_branches path', async () => {
+  test('URL-encodes an explicit slug into the protected_branches list path', async () => {
     let seen = '';
     setExecMock((cmd: string) => {
       if (cmd.includes('protected_branches')) {
         seen = cmd;
-        return JSON.stringify({ name: 'main' });
+        return JSON.stringify([{ name: 'main' }]);
       }
       if (cmd.includes('git remote get-url origin')) return GITLAB_ORIGIN;
       return '';
@@ -93,7 +115,7 @@ describe('checkBranchProtectedGitlab — subprocess boundary', () => {
 
     const r = await checkBranchProtectedGitlab({ branch: 'main', repo: 'org/repo' });
     expectOk(r);
-    expect(seen).toContain('projects/org%2Frepo/protected_branches/main');
+    expect(seen).toContain('projects/org%2Frepo/protected_branches');
   });
 
   test('rejects invalid branch characters (no exec)', async () => {

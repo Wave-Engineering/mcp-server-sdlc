@@ -326,17 +326,31 @@ export function gitlabApiRepo(): GitlabRepo {
 }
 
 /**
+ * Convert a GitLab protected-branch name (which may be a glob like `release/*`)
+ * into an anchored regex that full-matches a concrete branch name. Every regex
+ * metachar is escaped; the glob `*` (GitLab's only wildcard) becomes `.*`.
+ */
+function protectedNameGlobToRegExp(glob: string): RegExp {
+  const escaped = glob.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = escaped.replace(/\\\*/g, '.*');
+  return new RegExp(`^${pattern}$`);
+}
+
+/**
  * Report whether a branch is protected on the host (#465).
  *
- * Endpoint: `GET /projects/:id/protected_branches/:name`
- *  - HTTP 200 ⇒ the branch is protected (returns the protection record).
- *  - HTTP 404 ⇒ the branch is not protected.
+ * Endpoint: `GET /projects/:id/protected_branches` (LIST) — matched client-side.
  *
- * `glab api` maps a 404 to a non-zero exit, which `execGlab` rethrows as a
- * `glab failed (…)` error whose message carries the stderr. We interpret a
- * 404 / "not found" message as "not protected" and return `false`; any other
- * failure (auth, network) propagates so callers can surface a real error
- * instead of silently reporting the branch as unprotected.
+ * GitLab's exact-name endpoint (`/protected_branches/:name`) 404s for a branch
+ * protected only by a WILDCARD entry (e.g. `release/0.0.1` guarded by a
+ * `release/*` rule) — the exact LTS-release false-negative this guard exists to
+ * catch. Instead we list every protection entry and full-match the branch name
+ * against each entry's `name` (converting a glob like `release/*` to an anchored
+ * regex). Exact entries still match. The list endpoint returns `[]` (HTTP 200)
+ * for a project with no protected branches, so a genuinely unprotected branch
+ * yields `false` without any error path. Real API failures (auth, network)
+ * propagate out of `execGlab` so callers surface them instead of silently
+ * reporting the branch as unprotected.
  */
 export function gitlabApiProtectedBranch(
   branch: string,
@@ -344,17 +358,9 @@ export function gitlabApiProtectedBranch(
   cwd?: string,
 ): boolean {
   const path = projectPath(opts, cwd);
-  try {
-    const raw = execGlab(
-      `glab api projects/${path}/protected_branches/${encodeURIComponent(branch)}`,
-      cwd,
-    );
-    // 200 returns the protection record; parse to fail loudly on garbage.
-    JSON.parse(raw);
-    return true;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : '';
-    if (/404|not found/i.test(msg)) return false;
-    throw err;
-  }
+  const raw = execGlab(`glab api projects/${path}/protected_branches`, cwd);
+  const entries = JSON.parse(raw) as Array<{ name?: string }>;
+  return entries.some(
+    (e) => typeof e.name === 'string' && protectedNameGlobToRegExp(e.name).test(branch),
+  );
 }

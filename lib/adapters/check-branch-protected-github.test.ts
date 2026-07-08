@@ -61,18 +61,48 @@ describe('checkBranchProtectedGithub — subprocess boundary', () => {
     expect(call).toContain('repos/org/repo/branches/main/protection');
   });
 
-  test('HTTP 404 ⇒ not protected', async () => {
+  test('classic 404 + empty rulesets ⇒ not protected', async () => {
     fail404('/protection');
+    onExec('rules/branches/release-legacy', '[]');
 
     const r = await checkBranchProtectedGithub({ branch: 'release-legacy', repo: 'org/repo' });
     expectOk(r);
     expect(r.data.protected).toBe(false);
   });
 
-  test('non-404 failure ⇒ ok:false (does NOT collapse to unprotected)', async () => {
+  test('classic 404 + NON-empty rulesets ⇒ protected (wildcard/ruleset)', async () => {
+    // The LTS false-negative: no classic protection, but a `release/*` ruleset
+    // applies. The effective-rules endpoint returns a non-empty array.
+    fail404('/protection');
+    onExec('rules/branches/release-0.0.1', JSON.stringify([{ type: 'pull_request' }]));
+
+    const r = await checkBranchProtectedGithub({ branch: 'release-0.0.1', repo: 'org/repo' });
+    expectOk(r);
+    expect(r.data.protected).toBe(true);
+
+    const call = findCall('rules/branches/release-0.0.1');
+    expect(call).toContain('gh api');
+    expect(call).toContain('repos/org/repo/rules/branches/release-0.0.1');
+  });
+
+  test('non-404 failure on classic ⇒ ok:false (does NOT collapse to unprotected)', async () => {
     onExec('/protection', () => {
       const e = new Error('bad creds') as ThrowableError;
       e.stderr = 'gh: Bad credentials (HTTP 401)';
+      e.status = 1;
+      throw e;
+    });
+
+    const r = await checkBranchProtectedGithub({ branch: 'main', repo: 'org/repo' });
+    expect('ok' in r && r.ok).toBe(false);
+    expect((r as { code: string }).code).toBe('gh_protection_check_failed');
+  });
+
+  test('non-404 failure on the rulesets fallback ⇒ ok:false', async () => {
+    fail404('/protection');
+    onExec('rules/branches/main', () => {
+      const e = new Error('server error') as ThrowableError;
+      e.stderr = 'gh: HTTP 500';
       e.status = 1;
       throw e;
     });

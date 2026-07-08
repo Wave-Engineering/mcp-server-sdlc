@@ -35,15 +35,6 @@ function fail404(match: string): void {
   });
 }
 
-function failGlab404(match: string): void {
-  onExec(match, () => {
-    const err = new Error('nf') as ThrowableError;
-    err.stderr = '{"message":"404 Not Found"}';
-    err.status = 1;
-    throw err;
-  });
-}
-
 const GITHUB_ORIGIN = 'git@github.com:org/repo.git\n';
 const GITLAB_ORIGIN = 'git@gitlab.com:org/repo.git\n';
 
@@ -105,6 +96,7 @@ describe('branch_guard verdicts — GitHub', () => {
     onExec('git remote get-url origin', GITHUB_ORIGIN);
     onExec('gh repo view', 'main\n');
     fail404('branches/develop/protection');
+    onExec('rules/branches/develop', '[]'); // no rulesets apply either
 
     const data = parseResult(await handler.execute({ role: 'target', branch: 'develop' }));
     expect(data.ok).toBe(true);
@@ -126,6 +118,22 @@ describe('branch_guard verdicts — GitHub', () => {
     expect(String(data.reason)).toContain('stale or renamed');
   });
 
+  test('branch protected ONLY by a wildcard ruleset → warn (LTS scenario)', async () => {
+    // No classic protection on release/0.0.1, but a `release/*` ruleset applies.
+    // Classic 404 → the effective-rules fallback returns a non-empty array.
+    onExec('git remote get-url origin', GITHUB_ORIGIN);
+    onExec('gh repo view', 'release/1.0.0\n');
+    fail404('branches/release/0.0.1/protection');
+    onExec('rules/branches/release/0.0.1', JSON.stringify([{ type: 'pull_request' }]));
+
+    const data = parseResult(await handler.execute({ role: 'target', branch: 'release/0.0.1' }));
+    expect(data.ok).toBe(true);
+    expect(data.verdict).toBe('warn');
+    expect(data.default_branch).toBe('release/1.0.0');
+    expect(data.is_protected).toBe(true);
+    expect(data.is_sandbox).toBe(false);
+  });
+
   test('target with base omitted → the live default (pass)', async () => {
     onExec('git remote get-url origin', GITHUB_ORIGIN);
     onExec('gh repo view', 'main\n');
@@ -142,7 +150,7 @@ describe('branch_guard verdicts — GitLab', () => {
   test('default branch → pass', async () => {
     onExec('git remote get-url origin', GITLAB_ORIGIN);
     onExec('projects/:id', JSON.stringify({ default_branch: 'main' }));
-    onExec('protected_branches/main', JSON.stringify({ name: 'main' }));
+    onExec('protected_branches', JSON.stringify([{ name: 'main' }]));
 
     const data = parseResult(await handler.execute({ role: 'target', branch: 'main' }));
     expect(data.ok).toBe(true);
@@ -164,7 +172,7 @@ describe('branch_guard verdicts — GitLab', () => {
   test('unprotected non-default branch → pass', async () => {
     onExec('git remote get-url origin', GITLAB_ORIGIN);
     onExec('projects/:id', JSON.stringify({ default_branch: 'main' }));
-    failGlab404('protected_branches/develop');
+    onExec('protected_branches', '[]');
 
     const data = parseResult(await handler.execute({ role: 'target', branch: 'develop' }));
     expect(data.ok).toBe(true);
@@ -175,13 +183,27 @@ describe('branch_guard verdicts — GitLab', () => {
   test('protected non-default non-kahuna branch → warn', async () => {
     onExec('git remote get-url origin', GITLAB_ORIGIN);
     onExec('projects/:id', JSON.stringify({ default_branch: 'main' }));
-    onExec('protected_branches/release-1.0', JSON.stringify({ name: 'release-1.0' }));
+    onExec('protected_branches', JSON.stringify([{ name: 'release-1.0' }]));
 
     const data = parseResult(await handler.execute({ role: 'target', branch: 'release-1.0' }));
     expect(data.ok).toBe(true);
     expect(data.verdict).toBe('warn');
     expect(data.is_protected).toBe(true);
     expect(String(data.reason)).toContain('stale or renamed');
+  });
+
+  test('branch protected ONLY by a wildcard entry → warn (LTS scenario)', async () => {
+    // release/0.0.1 is not listed by exact name, but a `release/*` entry covers
+    // it. The wildcard-aware list match reports it as protected.
+    onExec('git remote get-url origin', GITLAB_ORIGIN);
+    onExec('projects/:id', JSON.stringify({ default_branch: 'release/1.0.0' }));
+    onExec('protected_branches', JSON.stringify([{ name: 'release/*' }]));
+
+    const data = parseResult(await handler.execute({ role: 'target', branch: 'release/0.0.1' }));
+    expect(data.ok).toBe(true);
+    expect(data.verdict).toBe('warn');
+    expect(data.default_branch).toBe('release/1.0.0');
+    expect(data.is_protected).toBe(true);
   });
 });
 
