@@ -7,6 +7,7 @@
 **BREAKING CHANGE (#363, Story 2.2):** `wave_finalize` no longer accepts `epic_id`. Callers must pass `plan_id`. The assembled kahuna→target MR title changes from `epic(#N): <slug> — kahuna to <target>` to `plan(#N): <slug> — kahuna to <target>`. No legacy-compat fallback; the old parameter name fails schema validation with a clear error. Part of the Plan/Phase/Epic taxonomy lock (cc-workflow#499).
 
 ### Features
+- **deploy-freshness check**: the `sdlc-server` binary now embeds its build commit SHA (via `bun build --define`) and, once at startup, emits a `warn`-level `deploy_freshness` log line when that commit is **behind** this repo's latest GitHub release — naming both and the remedy (`redeploy with ./install --mcps`). Uses GitHub's commit-compare API for an **exact** ancestry check, not a date heuristic. **Network-optional**: offline / unauthenticated / no-releases all degrade to silence; it never blocks startup, never spams, and never warns on a build that is newer than the latest release or on an uncompiled dev build. Motivated by a stale deploy that lagged the latest release by four merged fixes with no signal anywhere. [#447]
 - **work_item**: `type: "plan"` is now a first-class type, applying the `type::plan` label. `/issue plan` previously could not create a Plan issue at all — the enum had no `plan` — and callers worked around it with `type: "epic"` plus an explicit `type::plan` label. [#477]
 
 ### Fixes

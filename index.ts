@@ -5,6 +5,8 @@ import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError } fr
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { handlers } from './handlers/_registry';
 import { log } from './logger';
+import { checkDeployFreshness } from './lib/deploy_freshness.js';
+import { ghFreshnessDeps } from './lib/deploy_freshness_gh.js';
 
 const SERVER_VERSION = '1.0.0';
 
@@ -42,3 +44,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 const transport = new StdioServerTransport();
 await server.connect(transport);
 log.info('startup', { version: SERVER_VERSION, config: { handler_count: handlers.length } });
+
+// #447 — one-time deploy-freshness check. Fire-and-forget: it must not block the
+// transport, and it swallows every failure internally, so a bare .catch() here is
+// belt-and-suspenders against an unexpected throw.
+void checkDeployFreshness(ghFreshnessDeps).catch(() => {});

@@ -47,6 +47,39 @@ Two CI gate-greps (`scripts/ci/gate-greps.sh`) enforce the dispatch model: Gate 
 
 3. **Restart Claude Code** to activate the server.
 
+### Staying current — the deploy-freshness warning (#447)
+
+The running binary and the latest release can silently drift apart. A stale
+deploy once lagged the latest release by four merged fixes with **no signal
+anywhere** — the only symptom was a confusing downstream failure miles from the
+root cause.
+
+To make that visible, the binary embeds its build commit SHA (via
+`bun build --define` in `scripts/ci/build.sh`) and, **once at startup**, asks
+GitHub whether that commit is behind this repo's latest release. If it is, it
+emits a single `warn` line to stderr:
+
+```json
+{"level":"warn","event":"deploy_freshness","binary_sha":"081433d…",
+ "latest_release":"v2.0.3","msg":"sdlc-server binary … is BEHIND the latest release v2.0.3 — redeploy with ./install --mcps"}
+```
+
+Seeing that line means: **redeploy.** Re-run the install command above (or
+`./install --mcps` from the kit) to pull the current release binary.
+
+Properties, by design:
+- **Exact, not a date guess** — it uses GitHub's commit-compare API, so a
+  same-day build that is genuinely current does not warn.
+- **Network-optional** — offline, unauthenticated, or no-releases all degrade to
+  **silence**. It never blocks startup and never spams.
+- **No false alarms** — a build that is *newer* than the latest release (a local
+  dev build) does not warn; neither does a dev build with no embedded SHA.
+- **Self-scoped** — it checks the server against *its own* releases, independent
+  of whichever project you are operating on.
+
+If you build locally with `scripts/ci/build.sh`, the SHA is your working-tree
+`HEAD`; a dev build ahead of the last release is silent, which is correct.
+
 ## Handler Registry
 
 Tools are auto-discovered at build time via a glob pattern over `handlers/`. To add a tool, drop a file in `handlers/` that exports a `HandlerDef` default. No other files need to change.

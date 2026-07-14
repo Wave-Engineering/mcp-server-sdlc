@@ -13,6 +13,14 @@ cd "$(dirname "$0")/../.."
 
 mkdir -p dist
 
+# #447 — embed build provenance so a running binary can tell whether it is behind
+# its own latest release. `bun build --define` replaces these identifiers at compile
+# time; in dev/test (uncompiled) they are absent and the freshness check treats the
+# build as a dev build and skips. Degrade gracefully if git metadata is unavailable.
+BUILD_SHA="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+BUILD_REF="$(git describe --tags --always --dirty 2>/dev/null || echo unknown)"
+BUILD_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
 TARGETS=("${1:-}")
 if [[ -z "${1:-}" ]]; then
     TARGETS=(bun-linux-x64 bun-darwin-arm64 bun-darwin-x64)
@@ -20,6 +28,9 @@ fi
 
 for TARGET in "${TARGETS[@]}"; do
     SUFFIX="${TARGET#bun-}"
-    bun build --compile --target="$TARGET" index.ts --outfile "dist/sdlc-server-${SUFFIX}"
+    bun build --compile --target="$TARGET" index.ts --outfile "dist/sdlc-server-${SUFFIX}" \
+        --define "__BUILD_SHA__=\"${BUILD_SHA}\"" \
+        --define "__BUILD_REF__=\"${BUILD_REF}\"" \
+        --define "__BUILD_AT__=\"${BUILD_AT}\""
     echo "Built dist/sdlc-server-${SUFFIX}"
 done
