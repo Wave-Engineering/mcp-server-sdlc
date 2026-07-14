@@ -74,7 +74,32 @@ beforeEach(() => {
 });
 
 describe('ciListRunsGitlab — subprocess boundary', () => {
-  test('argv: calls glab api pipelines with ref query; normalizes with event=null', async () => {
+  test('a merged-results pipeline surfaces as event=merge_request_event (#476)', async () => {
+    onExec(
+      'glab api projects/org%2Frepo/pipelines',
+      JSON.stringify([
+        {
+          ...glPipeline(),
+          id: 1001,
+          source: 'merge_request_event',
+          // The REAL shape (verified on live GitLab): a merged-results pipeline
+          // lives on refs/merge-requests/<iid>/merge, never on the branch.
+          ref: 'refs/merge-requests/108/merge',
+        },
+      ]),
+    );
+
+    const result = await ciListRunsGitlab({ ref: 'kahuna/1-x', limit: 20 });
+    expectOk(result);
+    // Without this, ci_wait_run cannot tell a merge-result pipeline from a
+    // branch pipeline, and the trust gate grades the wrong commit.
+    expect(result.data[0].event).toBe('merge_request_event');
+    // `ref` -> head_branch is what lets ci_wait_run tell a /merge (merged-results)
+    // pipeline from a /head (detached) one — both carry source=merge_request_event.
+    expect(result.data[0].head_branch).toBe('refs/merge-requests/108/merge');
+  });
+
+  test('argv: calls glab api pipelines with ref query; maps `source` → `event`', async () => {
     onExec('glab api projects/org%2Frepo/pipelines', JSON.stringify([glPipeline()]));
 
     const result = await ciListRunsGitlab({ ref: 'feature/1-demo', limit: 20 });
@@ -86,8 +111,12 @@ describe('ciListRunsGitlab — subprocess boundary', () => {
     expect(run.status).toBe('running');
     expect(run.head_sha).toBe('1234567890abcdef1234567890abcdef12345678');
     expect(run.head_branch).toBe('feature/1-demo');
-    // GitLab has no event concept — always null (R-03 asymmetry signal).
-    expect(run.event).toBeNull();
+    // GitLab's `source` IS the trigger event, and it is the ONLY field that
+    // distinguishes a merged-results pipeline (`merge_request_event`) from a
+    // branch pipeline (`push`). It used to be hardcoded null, which is what let
+    // the wave gate grade a branch pipeline as if it had validated the merge
+    // (#476). Pinning it here so it cannot be discarded again.
+    expect(run.event).toBe('push');
 
     const call = findCall('glab api');
     expect(call).toContain('projects/org%2Frepo/pipelines');

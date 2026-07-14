@@ -9,7 +9,6 @@ import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { getAdapter } from '../lib/adapters/index.js';
 import { detectPlatform } from '../lib/shared/detect-platform.js';
-import { parseRepoSlug } from '../lib/shared/parse-repo-slug.js';
 import {
   waitForRun,
   defaultSleep,
@@ -30,8 +29,16 @@ const inputSchema = z
       .string()
       .regex(/^[0-9a-f]{40}$/i, 'expected_sha must be a 40-char hex commit SHA')
       .optional(),
+    require_merge_result: z.boolean().optional(),
+    /** PR number (GitHub) / MR iid (GitLab). Required with require_merge_result. */
+    pr_number: z.number().int().positive().optional(),
   })
-  .strict();
+  .strict()
+  .refine((a) => !a.require_merge_result || a.pr_number !== undefined, {
+    message:
+      'require_merge_result needs pr_number: without the PR/MR number there is no way to prove the merge-result run belongs to the CURRENT head, so a green run for a previous commit could satisfy the gate.',
+    path: ['pr_number'],
+  });
 
 // --- injectable sleep (tests replace with a no-op) ---
 let sleepFn: (ms: number) => Promise<void> = defaultSleep;
@@ -59,7 +66,7 @@ function resultToEnvelope(result: WaitResult) {
 const ciWaitRunHandler: HandlerDef = {
   name: 'ci_wait_run',
   description:
-    "Block on a CI workflow/pipeline run for a commit SHA or branch ref, polling server-side until it completes or times out. Returns the final status without burning agent tokens in a busy-wait loop. Merge-queue-only GitHub repos (workflows gated on `merge_group`/`pull_request` with no `push` trigger) are handled specially: if no push-triggered runs exist for the ref but a `merge_group` run matches its HEAD SHA, returns `final_status: \"not_applicable\"` with `reason: \"merge_group_validated\"` — distinguishable from a real failure.",
+    "Block on a CI workflow/pipeline run for a commit SHA or branch ref, polling server-side until it completes or times out. Returns the final status without burning agent tokens in a busy-wait loop. Set `require_merge_result: true` to accept ONLY a run that validated the merge result AND belongs to the PR/MR\u2019s current head (requires `pr_number`). GitHub: a `pull_request` run whose head_sha is the PR head. GitLab: a `refs/merge-requests/N/merge` pipeline that GitLab reports as the MR\u2019s `head_pipeline` \u2014 a detached (`/head`) or merge-train (`/train`) pipeline is NOT a merge result — a branch pipeline, or a skipped one, then yields `final_status: \"not_merge_result\"` instead of a misleading success. Use it for merge gates; leave it off when you legitimately want the branch pipeline (e.g. watching `main` after a merge).",
   inputSchema,
   async execute(rawArgs: unknown) {
     let args: z.infer<typeof inputSchema>;
@@ -70,7 +77,7 @@ const ciWaitRunHandler: HandlerDef = {
     }
     const platform = detectPlatform();
     const result = await waitForRun(
-      { ...args, cwd_repo_slug: args.repo ?? parseRepoSlug(), platform },
+      { ...args, platform },
       { adapter: getAdapter({ repo: args.repo }), sleep: sleepFn, now: Date.now },
     );
     // FlightDeck emit (S1.5, additive) — a ci_wait event records the terminal

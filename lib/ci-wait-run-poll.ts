@@ -1,5 +1,5 @@
 /**
- * Platform-agnostic polling loop + merge-queue pre-flight for `ci_wait_run`
+ * Platform-agnostic polling loop for `ci_wait_run`
  * (Story 2.19, #313).
  *
  * Lifted out of `handlers/ci_wait_run.ts` so the phased state machine isn't
@@ -9,12 +9,7 @@
  * so this module remains free of `gh`/`glab` invocations and platform
  * branching.
  *
- * Phases preserved verbatim from the pre-migration handler:
- * - Phase 0 (GitHub-only): merge-queue pre-flight. If the ref has NO
- *   push-triggered runs but DOES have a `merge_group` run matching its HEAD
- *   SHA, return `final_status: 'not_applicable'` with
- *   `reason: 'merge_group_validated'`. No push-triggered runs AND no
- *   matching merge_group → structured `not_applicable` error.
+ * Phases:
  * - Phase 1: wait for a run to appear (no-run-yet window). When
  *   `expected_sha` is set the window equals `timeout_sec`; otherwise a
  *   60s floor.
@@ -24,10 +19,33 @@
  * Injectable `now`/`sleep` makes tests instant. The adapter object is
  * injectable too (`deps.adapter`) so tests can drive it directly without
  * going through `getAdapter()`.
+ *
+ * ## `require_merge_result` — the wave trust gate's contract (#476, #452)
+ *
+ * The gate is specified to grade the **merge result** (the pipeline run against
+ * the result of merging source into target), never the source branch HEAD. It
+ * had no way to tell those apart, so it accepted whichever run it happened to
+ * find. Three ways that silently graded the wrong commit:
+ *
+ *   1. GitLab merged-results pipelines disabled → only a branch pipeline exists.
+ *   2. A `.gitlab-ci.yml` that admits no merge-request pipelines → same.
+ *   3. Conflicting branches → GitLab silently falls back to a branch pipeline.
+ *
+ * And worst: a GitLab merge commit's branch pipeline is `skipped`, which this
+ * module mapped to `conclusion: 'success'` — so the gate could return **success
+ * for a pipeline that never ran**.
+ *
+ * With `require_merge_result: true` the wait only ever grades a merge-result
+ * run, and returns the structured `not_merge_result` failure when it cannot get
+ * one. It is conservative by construction: it can HOLD a wave that should have
+ * passed, but it can never PASS a wave on a pipeline that did not validate the
+ * merge. Callers that legitimately watch a branch pipeline (e.g. the post-merge
+ * `ci_wait_run(ref: 'main')` in /mmr) leave it off and are unaffected.
  */
 
 import type {
   CiListRunsArgs,
+  MergeAnchor,
   NormalizedCiRun,
   PlatformAdapter,
   ResolveBranchShaArgs,
@@ -47,7 +65,13 @@ export type FinalStatus =
   | 'failure'
   | 'cancelled'
   | 'timed_out'
-  | 'not_applicable';
+  | 'not_applicable'
+  /**
+   * The run available for this ref is NOT a merge-result run, and the caller
+   * required one (#476). Never a pass — the gate must HOLD rather than grade a
+   * branch pipeline as if it validated the merge.
+   */
+  | 'not_merge_result';
 
 export interface WaitArgs {
   ref: string;
@@ -56,13 +80,31 @@ export interface WaitArgs {
   timeout_sec?: number;
   repo?: string;
   expected_sha?: string;
-  /** Original cwd-derived slug for branch→SHA resolution when `repo` is omitted. */
-  cwd_repo_slug?: string | null;
   platform: 'github' | 'gitlab';
+  /**
+   * Only accept a MERGE-RESULT run (#476). GitHub: a `pull_request` run
+   * (evaluated against `refs/pull/N/merge`). GitLab: a `merge_request_event`
+   * pipeline (a merged-results pipeline). Anything else — including a green
+   * branch pipeline — yields `final_status: 'not_merge_result'`.
+   *
+   * Defaults to `false` so existing callers that legitimately watch a branch
+   * pipeline are unchanged. The wave trust gate passes `true`.
+   */
+  require_merge_result?: boolean;
+  /**
+   * PR (GitHub) / MR iid (GitLab). REQUIRED alongside `require_merge_result`:
+   * it is what lets us prove the run we grade belongs to the CURRENT head.
+   * Filtering to merge-result runs is necessary but not sufficient — a GREEN
+   * merge-result run for a PREVIOUS commit is still sitting in the list.
+   */
+  pr_number?: number;
 }
 
 export interface WaitDeps {
-  adapter: Pick<PlatformAdapter, 'ciListRuns' | 'resolveBranchSha'>;
+  adapter: Pick<
+    PlatformAdapter,
+    'ciListRuns' | 'resolveBranchSha' | 'resolveMergeAnchor'
+  >;
   sleep: (ms: number) => Promise<void>;
   now: () => number;
 }
@@ -71,8 +113,8 @@ export type WaitResult =
   | {
       ok: true;
       final_status: FinalStatus;
-      /** Present only on merge_group_validated path. */
-      reason?: 'merge_group_validated';
+      /** Machine-readable qualifier for a non-graded terminal state. */
+      reason?: 'not_merge_result';
       run_id?: number;
       workflow_name?: string;
       url?: string;
@@ -85,6 +127,8 @@ export type WaitResult =
       ok: false;
       error: string;
       final_status?: FinalStatus;
+      /** Machine-readable qualifier for a structured (non-CI) failure. */
+      reason?: 'not_merge_result';
       run_id?: number;
       workflow_name?: string;
       url?: string;
@@ -179,6 +223,60 @@ function snapshotFromRun(
   };
 }
 
+/**
+ * GitLab merged-results pipelines live on `refs/merge-requests/<iid>/merge`.
+ *
+ * VERIFIED against live GitLab (analogicdev, 2026-07-13) — across real projects,
+ * `source == "merge_request_event"` covers THREE distinct ref shapes:
+ *
+ *   refs/merge-requests/N/merge   146x  merged-results — validates the MERGE   <-- the only one we want
+ *   refs/merge-requests/N/train    74x  merge-train pipeline
+ *   refs/merge-requests/N/head     27x  DETACHED — validates the BRANCH HEAD   <-- must NOT satisfy the gate
+ *
+ * So `source` alone does NOT discriminate. A detached pipeline is exactly the
+ * false-pass #476 exists to prevent: it is green, it is a `merge_request_event`,
+ * and it never looked at the merge. The ref suffix is the discriminator.
+ */
+const GITLAB_MERGE_RESULT_REF = /^refs\/merge-requests\/\d+\/merge$/;
+
+/**
+ * Is this run a MERGE-RESULT run — i.e. did CI evaluate the result of merging the
+ * source into the target, rather than the source branch HEAD? (#476)
+ *
+ * - GitLab: the pipeline's ref must be `refs/merge-requests/<iid>/merge`. The
+ *   adapter maps `pipeline.ref` onto `head_branch`. (`merge_group` is not
+ *   considered on either platform: the fleet is queue-less.)
+ * - GitHub: a `pull_request` run is checked out at `refs/pull/N/merge` — the
+ *   merge result. A `push` run is the branch HEAD.
+ */
+export function isMergeResultRun(
+  run: NormalizedCiRun,
+  platform: 'github' | 'gitlab',
+): boolean {
+  if (platform === 'gitlab') {
+    return (
+      run.event === 'merge_request_event' &&
+      GITLAB_MERGE_RESULT_REF.test(run.head_branch ?? '')
+    );
+  }
+  return run.event === 'pull_request';
+}
+
+/**
+ * A run that validated nothing. Never a pass under `require_merge_result`.
+ *
+ * - GitLab: `status: 'skipped'` — and note `normalizeGitlabStatus` maps that to
+ *   conclusion `success`, which is how the gate could return success for a
+ *   pipeline that never ran.
+ * - GitHub: `conclusion: 'skipped' | 'neutral'` (every job gated off by `if:`),
+ *   which `normalizeConclusion` likewise folds into `success`.
+ */
+function validatedNothing(run: NormalizedCiRun): boolean {
+  if (run.status === 'skipped') return true;
+  const c = run.conclusion?.toLowerCase();
+  return c === 'skipped' || c === 'neutral';
+}
+
 function pickRun(
   runs: NormalizedCiRun[],
   workflowName: string | undefined,
@@ -249,96 +347,117 @@ async function resolveBranch(
   return result.data ? result.data.sha : null;
 }
 
-/**
- * Phase 0: GitHub-only merge-queue pre-flight.
- *
- * Returns a terminal `WaitResult` when the merge-queue path is hit
- * (either `merge_group_validated` success or the structured
- * `not_applicable` error); returns `null` to fall through to Phase 1.
- */
-async function mergeQueuePreflight(
-  args: WaitArgs,
-  deps: WaitDeps,
-  expectedSha: string | undefined,
-  elapsedSec: () => number,
-): Promise<WaitResult | null> {
-  if (args.platform !== 'github') return null;
+/** What `fetchSnapshot` found. Distinguishes "nothing yet" from "wrong kind". */
+type Fetched =
+  | { kind: 'run'; snapshot: RunSnapshot }
+  | { kind: 'none' }
+  /** Runs exist, but none is a merge-result run and the caller demanded one. */
+  | { kind: 'not_merge_result'; sawBranchRun: boolean; skippedOnly: boolean }
+  /**
+   * A merge-result run exists but is STALE — a newer branch run proves the
+   * current HEAD's merge-result pipeline has not been created yet. Grading the
+   * stale one would pass the gate on code CI never saw.
+   */
+  | { kind: 'awaiting_fresh_merge_result' };
 
-  const initialRuns = await listRuns(deps, {
-    ref: args.ref,
-    workflow_name: args.workflow_name,
-    repo: args.repo,
-    expected_sha: expectedSha,
-    limit: LIST_LIMIT,
-  });
-  if (initialRuns.length === 0) return null;
+/** Same head? Field-wise, so a platform mismatch can never read as equal. */
+function anchorsEqual(a: MergeAnchor, b: MergeAnchor): boolean {
+  return a.head_sha === b.head_sha && a.head_pipeline_id === b.head_pipeline_id;
+}
 
-  const anyPush = initialRuns.some((r) => r.event === 'push');
-  if (anyPush) return null;
-
-  // No push-triggered runs. Resolve head SHA to compare against merge_group
-  // runs. When expected_sha is set, that IS the head SHA; when ref is itself
-  // a SHA, use it directly.
-  let headSha: string | null =
-    expectedSha ?? (isSha(args.ref) ? args.ref.toLowerCase() : null);
-  if (!headSha) {
-    const slug = args.repo ?? args.cwd_repo_slug ?? undefined;
-    if (slug) {
-      headSha = await resolveBranch(deps, { branch: args.ref, repo: slug });
-      if (headSha) headSha = headSha.toLowerCase();
-    }
+/** Does this run belong to the commit the PR/MR currently points at? */
+function matchesAnchor(
+  run: NormalizedCiRun,
+  anchor: MergeAnchor,
+  platform: 'github' | 'gitlab',
+): boolean {
+  if (platform === 'gitlab') {
+    // A merged-results pipeline's sha is the ephemeral merge commit, so a SHA
+    // match is impossible by construction. GitLab publishes `head_pipeline` —
+    // its own statement of which pipeline is current for the MR head.
+    return (
+      anchor.head_pipeline_id !== undefined &&
+      run.run_id === anchor.head_pipeline_id
+    );
   }
-
-  const mergeGroupMatch = initialRuns.find(
-    (r) =>
-      r.event === 'merge_group' &&
-      headSha !== null &&
-      r.head_sha?.toLowerCase() === headSha,
+  // GitHub: a pull_request run's head_sha IS the PR head SHA (verified live).
+  return (
+    anchor.head_sha !== undefined &&
+    run.head_sha?.toLowerCase() === anchor.head_sha.toLowerCase()
   );
-  if (mergeGroupMatch) {
-    return {
-      ok: true,
-      final_status: 'not_applicable',
-      reason: 'merge_group_validated',
-      run_id: mergeGroupMatch.run_id,
-      workflow_name: mergeGroupMatch.workflow_name,
-      url: mergeGroupMatch.url,
-      ref: args.ref,
-      sha: mergeGroupMatch.head_sha,
-      waited_sec: 0,
-    };
-  }
-
-  // No push-triggered runs and no matching merge_group run. Structured
-  // `not_applicable` error — distinguishable from a real CI failure.
-  return {
-    ok: false,
-    final_status: 'not_applicable',
-    error: `ref '${args.ref}' has no push-triggered workflows and no matching merge_group run found`,
-    ref: args.ref,
-    waited_sec: elapsedSec(),
-  };
 }
 
 async function fetchSnapshot(
   args: WaitArgs,
   deps: WaitDeps,
   expectedSha: string | undefined,
-): Promise<RunSnapshot | null> {
+  anchor: MergeAnchor,
+): Promise<Fetched> {
   const runs = await listRuns(deps, {
     ref: args.ref,
     workflow_name: args.workflow_name,
     repo: args.repo,
-    expected_sha: expectedSha,
+    // A merge-result run's head_sha is the EPHEMERAL MERGE COMMIT, never the
+    // branch HEAD — so an expected_sha filter would discard exactly the run we
+    // are looking for. Don't send it when a merge result is required (#452).
+    expected_sha: args.require_merge_result ? undefined : expectedSha,
     limit: LIST_LIMIT,
   });
+
+  if (args.require_merge_result) {
+    if (runs.length === 0) return { kind: 'none' };
+
+    const mergeResults = runs
+      .filter((r) => isMergeResultRun(r, args.platform))
+      .filter((r) => !validatedNothing(r));
+
+    if (mergeResults.length === 0) {
+      // Runs exist for this ref, but none of them validated the merge. Never
+      // grade a branch pipeline (or a skipped one) in its place — that is the
+      // silent false-pass #476 exists to kill.
+      return {
+        kind: 'not_merge_result',
+        sawBranchRun: runs.some((r) => r.event === 'push'),
+        skippedOnly: runs.every(validatedNothing),
+      };
+    }
+
+    // POSITIVE FRESHNESS ANCHOR (#476).
+    //
+    // Filtering to merge-result runs is necessary but NOT sufficient. Nothing in
+    // a run list binds a run to the CURRENT head: push commit A (green), push
+    // commit B, and B's merge-result run may not exist yet — the newest one in
+    // the list is still A's GREEN run. Grading it merges code CI never saw.
+    //
+    // An earlier attempt used a NEGATIVE heuristic ("hold if a branch run is
+    // newer"). It fails OPEN: it only fires when a sibling push run exists, and
+    // the two commonest configurations produce none — GitHub `on: pull_request`
+    // -only workflows, and GitLab's own recommended dedup rule. Absence of
+    // evidence is not proof of freshness.
+    //
+    // So: freshness must be PROVEN, per platform, against the PR/MR itself.
+    const anchored = mergeResults.filter((r) => matchesAnchor(r, anchor, args.platform));
+    if (anchored.length === 0) {
+      // Merge-result runs exist, but none belongs to the current head. The run
+      // for HEAD has not been created yet (or CI is misconfigured). HOLD.
+      return { kind: 'awaiting_fresh_merge_result' };
+    }
+
+    const picked = pickRun(anchored, args.workflow_name, args.platform);
+    if (!picked) return { kind: 'awaiting_fresh_merge_result' };
+
+    return { kind: 'run', snapshot: snapshotFromRun(picked, args.platform) };
+  }
+
   // Defense-in-depth: drop runs whose head_sha doesn't match expected_sha.
   // Covers server-side filter quirks that let non-matching runs slip through.
   const filtered = expectedSha
     ? runs.filter((r) => r.head_sha?.toLowerCase() === expectedSha.toLowerCase())
     : runs;
   const picked = pickRun(filtered, args.workflow_name, args.platform);
-  return picked ? snapshotFromRun(picked, args.platform) : null;
+  return picked
+    ? { kind: 'run', snapshot: snapshotFromRun(picked, args.platform) }
+    : { kind: 'none' };
 }
 
 /** The full `ci_wait_run` state machine. Handler is a thin dispatcher around this. */
@@ -350,30 +469,139 @@ export async function waitForRun(
   const pollIntervalSec = Math.max(requestedInterval, MIN_POLL_INTERVAL_SEC);
   const timeoutSec = args.timeout_sec ?? DEFAULT_TIMEOUT_SEC;
   const expectedSha = args.expected_sha?.toLowerCase();
-  const noRunYetWindowSec = expectedSha ? timeoutSec : NO_RUN_YET_WINDOW_SEC;
+  // #452: honour timeout_sec instead of bailing at the 60s floor whenever the
+  // caller has genuinely asked us to WAIT. `expected_sha` meant that before; a
+  // merge-gate caller means it too — the merged-results pipeline is created a
+  // beat after the branch pipeline and routinely takes >60s to appear, which is
+  // the premature bail #452 was filed for.
+  const noRunYetWindowSec =
+    expectedSha || args.require_merge_result ? timeoutSec : NO_RUN_YET_WINDOW_SEC;
 
   const startMs = deps.now();
   const elapsedSec = (): number => Math.floor((deps.now() - startMs) / 1000);
 
   try {
-    // --- Phase 0 (GitHub only): merge-queue pre-flight ---
-    const preflight = await mergeQueuePreflight(
-      args,
-      deps,
-      expectedSha,
-      elapsedSec,
-    );
-    if (preflight) return preflight;
+    // --- Phase 0: resolve the freshness anchor (require_merge_result only) ---
+    // Fail CLOSED. If we cannot prove which run belongs to the current head, we
+    // must not grade any run at all — that is the whole point of #476.
+    let anchor: MergeAnchor = {};
+    if (args.require_merge_result) {
+      if (args.pr_number === undefined) {
+        return {
+          ok: false,
+          final_status: 'not_merge_result',
+          reason: 'not_merge_result',
+          error:
+            `require_merge_result needs pr_number: without the PR/MR number there is no way to prove the ` +
+            `merge-result run belongs to the CURRENT head. A green merge-result run for a PREVIOUS commit ` +
+            `would otherwise satisfy the gate.`,
+          ref: args.ref,
+          waited_sec: 0,
+          platform: args.platform,
+        };
+      }
+      const res = await deps.adapter.resolveMergeAnchor({
+        number: args.pr_number,
+        repo: args.repo,
+      });
+      if ('platform_unsupported' in res || !res.ok) {
+        const why = 'platform_unsupported' in res ? res.hint : res.error;
+        return {
+          ok: false,
+          final_status: 'not_merge_result',
+          reason: 'not_merge_result',
+          error: `could not resolve the merge-result freshness anchor for #${args.pr_number}: ${why}`,
+          ref: args.ref,
+          waited_sec: elapsedSec(),
+          platform: args.platform,
+        };
+      }
+      anchor = res.data;
+    }
 
     // --- Phase 1: wait for a run to appear (no-run-yet window) ---
     let snapshot: RunSnapshot | null = null;
+    let wrongKind: Extract<Fetched, { kind: 'not_merge_result' }> | null = null;
+    let sawStale = false;
+
     while (elapsedSec() < noRunYetWindowSec) {
-      snapshot = await fetchSnapshot(args, deps, expectedSha);
-      if (snapshot) break;
-      logPoll(args.ref, elapsedSec(), 'no_run_yet');
+      const fetched = await fetchSnapshot(args, deps, expectedSha, anchor);
+      if (fetched.kind === 'run') {
+        snapshot = fetched.snapshot;
+        wrongKind = null;
+        break;
+      }
+      if (fetched.kind === 'awaiting_fresh_merge_result') {
+        // Merge-result runs exist but none belongs to the current head. Do NOT
+        // grade the stale one. Remember it, so an expired window terminates as a
+        // classified `not_merge_result` rather than a generic "no run found".
+        sawStale = true;
+        logPoll(args.ref, elapsedSec(), 'awaiting_fresh_merge_result');
+      } else if (fetched.kind === 'not_merge_result') {
+        // Keep waiting — the merge-result pipeline may not have been created
+        // yet (GitLab creates it a beat after the branch pipeline). But REMEMBER
+        // that we only ever saw the wrong kind, so that if the window expires we
+        // fail as `not_merge_result` rather than as a generic "no run found".
+        wrongKind = fetched;
+        logPoll(args.ref, elapsedSec(), 'awaiting_merge_result');
+      } else {
+        logPoll(args.ref, elapsedSec(), 'no_run_yet');
+      }
       if (elapsedSec() >= timeoutSec) break;
-      const sleepSec = expectedSha ? pollIntervalSec : NO_RUN_YET_POLL_SEC;
+      // Fast 5s probing is for the short 60s window only. Once the window IS the
+      // full timeout, poll at the normal cadence — otherwise a 1800s wait costs
+      // 360 API calls.
+      const sleepSec =
+        expectedSha || args.require_merge_result ? pollIntervalSec : NO_RUN_YET_POLL_SEC;
       await deps.sleep(sleepSec * 1000);
+    }
+
+    // Runs exist for this ref, but not one that validates the merge. This is a
+    // conservative HARD FAIL, never a pass: grading a branch pipeline as though
+    // it validated the merge is the exact silent false-pass #476 exists to kill.
+    if (!snapshot && sawStale && !wrongKind) {
+      const waited = elapsedSec();
+      return {
+        ok: false,
+        final_status: 'not_merge_result',
+        reason: 'not_merge_result',
+        error:
+          `ci_wait_run found merge-result run(s) for ref '${args.ref}', but none belongs to the CURRENT head of ` +
+          `#${String(args.pr_number)} after waiting ${waited}s. Refusing to grade a run for a previous commit — ` +
+          `that would pass the gate on code CI never saw. The head's pipeline may still be pending, or CI may not ` +
+          `produce one for it.`,
+        waited_sec: waited,
+        ref: args.ref,
+        platform: args.platform,
+      };
+    }
+
+    if (!snapshot && wrongKind) {
+      const waited = elapsedSec();
+      // Three distinct causes → three distinct messages. `sawBranchRun` exists to
+      // tell the detached-pipeline case apart from the branch-pipeline case: a
+      // /head pipeline has event=merge_request_event, NOT push, so calling it a
+      // "branch pipeline" would send the operator chasing the wrong config.
+      const why = wrongKind.skippedOnly
+        ? `the only run(s) for this ref were SKIPPED — nothing was actually validated`
+        : wrongKind.sawBranchRun
+          ? `the only run(s) for this ref are branch pipelines (CI against the branch HEAD), not the merge result`
+          : `the only merge-request run(s) for this ref are DETACHED or merge-train pipelines — a detached pipeline validates the source branch HEAD, not the merge result`;
+      const hint =
+        args.platform === 'gitlab'
+          ? `Verify the project has merged-results pipelines enabled (merge_pipelines_enabled) AND that .gitlab-ci.yml admits merge-request pipelines ($CI_PIPELINE_SOURCE == "merge_request_event"). Note GitLab silently falls back to a branch pipeline when the branches conflict.`
+          : `Verify a workflow is triggered on 'pull_request' for this branch — a 'push'-triggered run evaluates the branch HEAD, not refs/pull/N/merge.`;
+      return {
+        ok: false,
+        final_status: 'not_merge_result',
+        reason: 'not_merge_result',
+        error:
+          `ci_wait_run required a MERGE-RESULT run for ref '${args.ref}', but ${why}. ` +
+          `Refusing to report success on a run that did not validate the merge. ${hint}`,
+        waited_sec: waited,
+        ref: args.ref,
+        platform: args.platform,
+      };
     }
 
     if (!snapshot) {
@@ -415,13 +643,52 @@ export async function waitForRun(
         };
       }
       await deps.sleep(pollIntervalSec * 1000);
-      const next = await fetchSnapshot(args, deps, expectedSha);
+      const refetched = await fetchSnapshot(args, deps, expectedSha, anchor);
+      const next = refetched.kind === 'run' ? refetched.snapshot : null;
       if (!next) {
         logPoll(args.ref, elapsedSec(), `${snapshot.status}(stale,no_run_returned)`);
         continue;
       }
       snapshot = next;
       logPoll(args.ref, elapsedSec(), snapshot.status);
+    }
+
+    // --- Phase 2.5: RE-VALIDATE THE ANCHOR before grading (TOCTOU) ---
+    //
+    // The anchor was resolved at t=0 and we may have polled for up to timeout_sec
+    // (default 1800s). If the PR/MR head MOVED during the wait, the anchor now
+    // names the OLD head — and the run we are about to grade validated that old
+    // head, not what is about to be merged. That is the #476 bug re-entering
+    // through the back door. Re-resolve and HOLD if it changed.
+    if (args.require_merge_result && args.pr_number !== undefined) {
+      const recheck = await deps.adapter.resolveMergeAnchor({
+        number: args.pr_number,
+        repo: args.repo,
+      });
+      if ('platform_unsupported' in recheck || !recheck.ok) {
+        return {
+          ok: false,
+          final_status: 'not_merge_result',
+          reason: 'not_merge_result',
+          error: `could not re-confirm the freshness anchor for #${args.pr_number} before grading — refusing to grade`,
+          ref: args.ref,
+          waited_sec: elapsedSec(),
+          platform: args.platform,
+        };
+      }
+      if (!anchorsEqual(anchor, recheck.data)) {
+        return {
+          ok: false,
+          final_status: 'not_merge_result',
+          reason: 'not_merge_result',
+          error:
+            `#${args.pr_number} moved while ci_wait_run was waiting: the run that completed validated the PREVIOUS ` +
+            `head, not the current one. Refusing to grade it — that would pass the gate on code CI never saw.`,
+          ref: args.ref,
+          waited_sec: elapsedSec(),
+          platform: args.platform,
+        };
+      }
     }
 
     // --- Phase 3: completed — map conclusion to final_status ---

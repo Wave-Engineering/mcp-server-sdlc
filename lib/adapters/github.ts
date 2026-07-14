@@ -42,6 +42,7 @@ import { prStatusGithub } from './pr-status-github.js';
 import { prWaitCiGithub } from './pr-wait-ci-github.js';
 import { workItemGithub } from './work-item-github.js';
 import { workItemUpdateGithub } from './work-item-update-github.js';
+import { resolveMergeAnchorGithub } from './resolve-merge-anchor-github.js';
 
 const stubMethod = async (_args: unknown) => ({
   platform_unsupported: true as const,
@@ -80,6 +81,7 @@ export const githubAdapter: PlatformAdapter = {
   findMergedPrForBranchPrefix: findMergedPrForBranchPrefixGithub,
   ciListRuns: ciListRunsGithub,
   resolveBranchSha: resolveBranchShaGithub,
+  resolveMergeAnchor: resolveMergeAnchorGithub,
   createBranch: createBranchGithub,
   findExistingPr: findExistingPrGithub,
   fetchCiTrustSignal: fetchCiTrustSignalGithub,

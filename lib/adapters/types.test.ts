@@ -113,6 +113,7 @@ describe('PlatformAdapter contract', () => {
     'labelCreate',
     'labelList',
     'resolveBranchSha',
+  'resolveMergeAnchor',
     'workItem',
     'workItemUpdate',
     'createBranch',

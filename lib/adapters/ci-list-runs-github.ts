@@ -4,9 +4,9 @@
  *
  * Lifted from `handlers/ci_wait_run.ts`'s local `fetchGithubRuns` helper.
  * Returns a richer normalized record than `ciRunStatus` / `ciRunsForBranch` —
- * the `event` field (for `merge_group` detection) and `head_sha` (for the
+ * the `event` field (the merge-result discriminator, #476) and `head_sha` (for the
  * `expected_sha` anchor) are what set this sub-call apart from the existing
- * fully-migrated CI adapters. Those fields drive the Phase 0 merge-queue
+ * fully-migrated CI adapters. Those fields drive the merge-result
  * pre-flight inside `lib/ci-wait-run-poll.ts`.
  *
  * Argv composition:

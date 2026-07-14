@@ -153,15 +153,15 @@ describe('ciListRunsGithub — subprocess boundary', () => {
     expect(result.data).toEqual([]);
   });
 
-  test('normalizes merge_group event (feeds the pre-flight detector)', async () => {
+  test('passes the trigger event through (the merge-result discriminator, #476)', async () => {
     onExec(
       'gh run list',
-      JSON.stringify([ghRun({ event: 'merge_group', databaseId: 777 })]),
+      JSON.stringify([ghRun({ event: 'pull_request', databaseId: 777 })]),
     );
 
     const result = await ciListRunsGithub({ ref: 'main', limit: 20 });
     expectOk(result);
-    expect(result.data[0].event).toBe('merge_group');
+    expect(result.data[0].event).toBe('pull_request');
     expect(result.data[0].run_id).toBe(777);
   });
 
