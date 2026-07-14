@@ -182,3 +182,31 @@ describe('workItemGitlab — subprocess boundary', () => {
     expect(result.code).toBe('glab_mr_create_failed');
   });
 });
+
+describe('type::plan + the platform-independent auto-label (#477)', () => {
+  test('type: "plan" applies type::plan', async () => {
+    onExec('glab issue create', 'https://gitlab.com/org/repo/-/issues/167');
+    const r = await workItemGitlab({ type: 'plan', title: 'Plan: X' });
+    if (!('ok' in r) || !r.ok) throw new Error(`expected ok, got ${JSON.stringify(r)}`);
+    expect(execCalls().join(' ')).toContain('type::plan');
+  });
+
+  test('a caller-supplied type:: label suppresses the auto-label HERE TOO', async () => {
+    // GitLab hid this bug: scoped labels are mutually exclusive within the
+    // `type::` key, so the caller's later type::plan evicted our type::epic and
+    // nobody noticed. We now suppress it explicitly on BOTH platforms rather than
+    // depending on GitLab to clean up after us — the same call on GitHub carried
+    // both labels.
+    onExec('glab issue create', 'https://gitlab.com/org/repo/-/issues/167');
+    const r = await workItemGitlab({
+      type: 'epic',
+      title: 'Plan: X',
+      labels: ['type::plan'],
+    });
+    if (!('ok' in r) || !r.ok) throw new Error('expected ok');
+
+    const call = execCalls().join(' ');
+    expect(call).toContain('type::plan');
+    expect(call).not.toContain('type::epic');
+  });
+});

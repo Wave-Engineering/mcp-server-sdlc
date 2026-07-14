@@ -13,11 +13,12 @@
  *     pre-migration bug that #281 tracked).
  *
  * Argv composition:
- *   Issue types (epic | story | bug | chore | docs | feature | fix):
+ *   Issue types (plan | epic | story | bug | chore | docs | feature | fix):
  *     gh issue create
  *       --title <title>
  *       --body <body>
- *       [--label <label>]...          // repeated; includes auto `type::<type>`
+ *       [--label <label>]...          // auto `type::<type>` UNLESS the caller
+ *       //                               supplied a type::* label of their own
  *       [--repo <owner/repo>]
  *
  *   `type: 'pr'`:
@@ -44,6 +45,7 @@ function projectDir(): string {
 }
 
 const ISSUE_TYPE_LABELS: Record<string, string | null> = {
+  plan: 'type::plan',
   epic: 'type::epic',
   story: 'type::story',
   feature: 'type::feature',
@@ -54,6 +56,33 @@ const ISSUE_TYPE_LABELS: Record<string, string | null> = {
   pr: null,
   mr: null,
 };
+
+/**
+ * The auto `type::<type>` label, UNLESS the caller already supplied one.
+ *
+ * The auto-label used to be prepended unconditionally. That was only ever safe by
+ * ACCIDENT, and only on GitLab: `type::epic` and `type::plan` share the `type::`
+ * scope key, GitLab's scoped labels are mutually exclusive, and the caller's later
+ * label evicted ours. GitHub has NO scoped labels — so the same call produced an
+ * issue carrying BOTH, which is precisely the taxonomy leak Dev Spec R-19 forbids
+ * (a Plan is a pipeline artifact; an Epic is a PM-layer grouping the pipeline never
+ * reads).
+ *
+ * Relying on the target platform to clean up after us is not a contract. If the
+ * caller has stated the type explicitly, we do not second-guess it — on either
+ * platform.
+ */
+function autoTypeLabel(
+  type: string,
+  callerLabels: string[] | undefined,
+): string | null {
+  const auto = ISSUE_TYPE_LABELS[type];
+  if (!auto) return null;
+  const callerSetType = (callerLabels ?? []).some((l) =>
+    l.trim().toLowerCase().startsWith('type::'),
+  );
+  return callerSetType ? null : auto;
+}
 
 function isIssueType(type: string): boolean {
   return type !== 'pr' && type !== 'mr';
@@ -90,8 +119,15 @@ export async function workItemGithub(
 
     if (isIssueType(args.type)) {
       const cmd = ['gh', 'issue', 'create', '--title', args.title, '--body', body];
-      const autoLabel = ISSUE_TYPE_LABELS[args.type];
-      const labels = autoLabel ? [autoLabel, ...(args.labels ?? [])] : [...(args.labels ?? [])];
+      // Normalize ONCE, then feed BOTH the suppression check and the argv. If we
+      // only trim for detection, ' type::plan ' suppresses the auto-label and then
+      // goes to the platform verbatim — gh matches label names exactly and rejects
+      // the create, and GitLab happily mints a junk label. Handing the mess to the
+      // platform after taking responsibility for it is the very thing this function
+      // exists to stop.
+      const callerLabels = (args.labels ?? []).map((l) => l.trim()).filter(Boolean);
+      const autoLabel = autoTypeLabel(args.type, callerLabels);
+      const labels = autoLabel ? [autoLabel, ...callerLabels] : callerLabels;
       for (const label of labels) {
         cmd.push('--label', label);
       }
@@ -99,10 +135,18 @@ export async function workItemGithub(
 
       const result = runArgv(cmd, cwd);
       if (result.exitCode !== 0) {
+        const stderr = result.stderr.trim() || result.stdout.trim();
+        // `gh issue create --label X` FAILS (and creates nothing) when X does not
+        // already exist on the repo — unlike GitLab, which mints labels implicitly.
+        // Carry the remedy in the server rather than relying on every skill to
+        // remember it.
+        const missingLabel = /could not add label/i.test(stderr)
+          ? ` — the label must already exist on the repo: call label_create for it first (GitHub does not create labels implicitly; GitLab does)`
+          : '';
         return {
           ok: false,
           code: 'gh_issue_create_failed',
-          error: `gh issue create failed: ${result.stderr.trim() || result.stdout.trim()}`,
+          error: `gh issue create failed: ${stderr}${missingLabel}`,
         };
       }
       return { ok: true, data: parseGhOutput(result.stdout) };

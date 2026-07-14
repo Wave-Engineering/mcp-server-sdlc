@@ -202,3 +202,100 @@ describe('workItemGithub — subprocess boundary', () => {
     expect(call).toContain(`'it'\\''s a story'`);
   });
 });
+
+describe('type::plan + the platform-independent auto-label (#477)', () => {
+  test('type: "plan" applies type::plan', async () => {
+    onExec('gh issue create', 'https://github.com/org/repo/issues/167');
+    const r = await workItemGithub({ type: 'plan', title: 'Plan: X' });
+    if (!('ok' in r) || !r.ok) throw new Error(`expected ok, got ${JSON.stringify(r)}`);
+    const call = execCalls().join(' ');
+    expect(call).toContain('type::plan');
+    expect(call).not.toContain('type::epic');
+  });
+
+  test('THE TAXONOMY LEAK: a caller-supplied type:: label SUPPRESSES the auto-label', async () => {
+    // Before #477, work_item unconditionally PREPENDED type::<type>. On GitLab
+    // that was invisible — scoped labels are mutually exclusive within `type::`,
+    // so the caller's later label evicted ours. GitHub has NO scoped labels, so
+    // the issue carried BOTH type::epic and type::plan — a Plan mislabelled as an
+    // Epic, which the pipeline is specified never to read (Dev Spec R-19).
+    //
+    // Safe-by-accident on one platform is not safe. Never let the target platform
+    // clean up after us.
+    onExec('gh issue create', 'https://github.com/org/repo/issues/167');
+    const r = await workItemGithub({
+      type: 'epic',
+      title: 'Plan: X',
+      labels: ['type::plan', 'priority::critical'],
+    });
+    if (!('ok' in r) || !r.ok) throw new Error('expected ok');
+
+    const call = execCalls().join(' ');
+    expect(call).toContain('type::plan');
+    expect(call).toContain('priority::critical');
+    expect(call).not.toContain('type::epic'); // the leak
+  });
+
+  test('the auto-label still applies when the caller supplies NO type:: label', async () => {
+    onExec('gh issue create', 'https://github.com/org/repo/issues/9');
+    const r = await workItemGithub({
+      type: 'bug',
+      title: 'x',
+      labels: ['priority::high'],
+    });
+    if (!('ok' in r) || !r.ok) throw new Error('expected ok');
+    const call = execCalls().join(' ');
+    expect(call).toContain('type::bug');
+    expect(call).toContain('priority::high');
+  });
+});
+
+describe('#477 — suppression edges', () => {
+  test('a NON-type scoped label must NOT suppress the auto-label', async () => {
+    // Guards against someone loosening the check to `.includes('::')`, which would
+    // silently kill the auto-label on every `/issue <type> --epic N` call while
+    // every other test stayed green.
+    onExec('gh issue create', 'https://github.com/org/repo/issues/12');
+    const r = await workItemGithub({
+      type: 'feature',
+      title: 'x',
+      labels: ['epic::12', 'priority::high'],
+    });
+    if (!('ok' in r) || !r.ok) throw new Error('expected ok');
+    const call = execCalls().join(' ');
+    expect(call).toContain('type::feature'); // auto-label still applied
+    expect(call).toContain('epic::12');
+  });
+
+  test('messy caller labels are normalized before they reach the platform', async () => {
+    // ' type::plan ' must both (a) suppress the auto-label and (b) be TRIMMED —
+    // gh matches label names exactly and would reject the create outright.
+    onExec('gh issue create', 'https://github.com/org/repo/issues/13');
+    const r = await workItemGithub({
+      type: 'epic',
+      title: 'x',
+      labels: [' Type::Plan ', '', '  priority::high'],
+    });
+    if (!('ok' in r) || !r.ok) throw new Error('expected ok');
+    const call = execCalls().join(' ');
+    expect(call).not.toContain('type::epic'); // suppressed despite the mess
+    expect(call).toContain('Type::Plan'); // trimmed, not passed with spaces
+    expect(call).not.toContain(' Type::Plan '); // the untrimmed form never ships
+    expect(call).toContain('priority::high');
+  });
+
+  test('a missing label yields an ACTIONABLE error, not a bare gh dump', async () => {
+    // gh issue create --label X FAILS (and creates nothing) if X does not exist.
+    // GitLab mints labels implicitly; GitHub does not. The server should say so.
+    onExec('gh issue create', () => {
+      const err = new Error('boom') as ThrowableError;
+      err.stderr = "could not add label: 'type::plan' not found";
+      err.status = 1;
+      throw err;
+    });
+    const r = await workItemGithub({ type: 'plan', title: 'Plan: X' });
+    expectErr(r);
+    expect(r.error).toMatch(/label_create/);
+    expect(r.error).toMatch(/does not create labels implicitly|not create labels/i);
+  });
+});

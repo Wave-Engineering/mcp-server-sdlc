@@ -16,7 +16,7 @@ import { getAdapter } from '../lib/adapters/index.js';
 import { repoOptionalSchema } from '../lib/schemas/repo.js';
 
 const inputSchema = z.object({
-  type: z.enum(['epic', 'story', 'feature', 'bug', 'chore', 'docs', 'fix', 'pr', 'mr']),
+  type: z.enum(['plan', 'epic', 'story', 'feature', 'bug', 'chore', 'docs', 'fix', 'pr', 'mr']),
   title: z.string().min(1, 'title must be a non-empty string'),
   body: z.string().optional(),
   labels: z.array(z.string()).optional(),
