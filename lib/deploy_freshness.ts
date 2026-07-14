@@ -39,7 +39,7 @@ export interface BuildInfo {
   builtAt: string;
 }
 
-const DEV_SENTINEL = 'dev';
+export const DEV_SENTINEL = 'dev';
 
 export function getBuildInfo(): BuildInfo {
   return {

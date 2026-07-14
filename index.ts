@@ -5,10 +5,17 @@ import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError } fr
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { handlers } from './handlers/_registry';
 import { log } from './logger';
-import { checkDeployFreshness } from './lib/deploy_freshness.js';
+import { checkDeployFreshness, getBuildInfo, DEV_SENTINEL } from './lib/deploy_freshness.js';
 import { ghFreshnessDeps } from './lib/deploy_freshness_gh.js';
 
-const SERVER_VERSION = '1.0.0';
+// #459: report the release tag this binary was built at (e.g. "2.1.0"), injected
+// at compile time by scripts/ci/build.sh as __BUILD_REF__ (`git describe --tags`).
+// A hardcoded literal silently drifts from the tag — the old '1.0.0' made every
+// release's startup log indistinguishable and undercut #447's freshness diagnostic.
+// Uncompiled dev runs (ref === the 'dev' sentinel) report a dev marker rather than
+// claiming to be a release.
+const _build = getBuildInfo();
+const SERVER_VERSION = _build.ref === DEV_SENTINEL ? '0.0.0-dev' : _build.ref.replace(/^v/, '');
 
 const server = new Server(
   { name: 'sdlc-server', version: SERVER_VERSION },

@@ -80,6 +80,15 @@ Properties, by design:
 If you build locally with `scripts/ci/build.sh`, the SHA is your working-tree
 `HEAD`; a dev build ahead of the last release is silent, which is correct.
 
+### Changelog (#459)
+
+There is no maintained in-repo changelog. Release notes are auto-generated from
+merged PR titles on the **[GitHub Releases](https://github.com/Wave-Engineering/mcp-server-sdlc/releases)**
+page at tag time (`gh release create --generate-notes`), and the binary's startup
+`version` reports the release tag it was built at. `CHANGELOG.md` is retired to a
+pointer; pre-v2.1.0 hand-written history (including breaking-change migration notes)
+lives in that file's git history.
+
 ## Handler Registry
 
 Tools are auto-discovered at build time via a glob pattern over `handlers/`. To add a tool, drop a file in `handlers/` that exports a `HandlerDef` default. No other files need to change.
