@@ -240,4 +240,21 @@ describe('branch_guard role=base — base detection via open PR', () => {
     expect(data.is_protected).toBe(false);
     expect(String(data.reason)).toContain('No open PR');
   });
+
+  test('repo set + no branch → refuse, never a cwd-branch lookup in the wrong repo (#480)', async () => {
+    onExec('git remote get-url origin', GITHUB_ORIGIN);
+    onExec('git branch --show-current', 'feature/470-name-based\n');
+    // Deliberately NO `gh repo view` / `gh pr list` mocks: the guard must refuse
+    // BEFORE any base-resolution work. If the guard is removed the handler falls
+    // through to resolveDefaultBranch/prList (unmocked) and this assertion goes red.
+
+    const data = parseResult(
+      await handler.execute({ role: 'base', repo: 'someorg/unrelated' }),
+    );
+    expect(data.ok).toBe(false);
+    expect(String(data.error)).toContain("no 'branch'");
+    expect(String(data.error)).toContain('someorg/unrelated');
+    // The whole point: we never looked up the cwd branch's base in the foreign repo.
+    expect(execCalls().some((c) => c.includes('pr list'))).toBe(false);
+  });
 });

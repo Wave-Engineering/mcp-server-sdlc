@@ -62,6 +62,23 @@ const branchGuardHandler: HandlerDef = {
     const adapter = getAdapter({ repo: args.repo });
     const cwd = projectDir();
 
+    // #480: base-role with a foreign `repo` but no `branch`. The base-resolution
+    // path below reads the cwd's current branch and looks it up in `args.repo` —
+    // but the cwd branch may not belong to that repo (the same trap #475 fixed in
+    // `ibm`). If you name the repo, name the branch; do not let us infer one from
+    // the cwd and pair it with a repository it may not belong to. `target` role is
+    // exempt: an omitted target defaults to the repo's OWN default branch, never
+    // the cwd branch.
+    if (args.role === 'base' && args.repo !== undefined && args.branch === undefined) {
+      return envelope({
+        ok: false,
+        error:
+          `A 'repo' (${args.repo}) was given to branch_guard(role='base') but no 'branch'. Refusing to ` +
+          `infer this directory's current branch ('${currentBranch(cwd) || 'none'}') and resolve its base ` +
+          `in a different repository — the branch may not belong there. Pass the branch explicitly.`,
+      });
+    }
+
     // Live default branch — required for the envelope AND the B===default
     // comparison. Never a cached value.
     const defRes = await adapter.resolveDefaultBranch({ repo: args.repo, cwd });
