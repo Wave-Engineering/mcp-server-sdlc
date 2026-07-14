@@ -102,9 +102,11 @@ describe('ibm handler', () => {
   });
 
   // --- issue_open with explicit branch arg ---
-  test('issue_open — uses provided branch arg instead of git command', async () => {
+  test('issue_open — honours a provided branch arg (with explicit repo, the #475-safe form)', async () => {
+    // A branch that is not the current checkout must carry an explicit repo — else
+    // ibm refuses rather than resolve it against the wrong repository (#475).
     const branch = 'fix/99-some-fix';
-    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
+    execRegistry['git branch --show-current'] = 'main';
     execRegistry['gh issue view 99'] = JSON.stringify({
       state: 'OPEN',
       title: 'Some Fix',
@@ -112,7 +114,7 @@ describe('ibm handler', () => {
     });
     execRegistry['gh pr list --head'] = JSON.stringify([]);
 
-    const result = await ibmHandler.execute({ branch });
+    const result = await ibmHandler.execute({ branch, repo: 'org/repo' });
     const data = parseResult(result.content);
 
     expect(data.ok).toBe(true);
@@ -240,5 +242,124 @@ describe('ibm handler', () => {
     expect(data.ok).toBe(true);
     expect(data.issue_number).toBe(5);
     expect(data.issue_url).toBe('https://gitlab.com/org/repo/-/issues/5');
+  });
+});
+
+describe('#475 — the cross-repo FALSE PASS', () => {
+  // The bug, verbatim from the field (2026-07-13):
+  //
+  //   Session cwd = claudecode-workflow. Agent working in gitlab-settings-automation,
+  //   on branch chore/31-queue-less, linked to THAT repo's issue #31.
+  //
+  //   ibm({branch: 'chore/31-queue-less'}) parsed "31", looked it up in the CWD's
+  //   repo, matched claudecode-workflow#31 ("feat(dashboard): theme tokens") — an
+  //   entirely unrelated issue — and returned:
+  //
+  //     {"ok":true, ..., "message":"In order: issue #31 is open, branch is correctly linked"}
+  //
+  //   A confident FALSE PASS on the first gate of /precheck, which is a MANDATORY
+  //   compliance check. The gate was not enforcing; it only looked like it was.
+
+  test('a branch that is not checked out here, with no repo, is REFUSED — not guessed', async () => {
+    execRegistry['git branch --show-current'] = 'main'; // we are standing somewhere else
+
+    // Register a REAL open issue #31 in the cwd repo. This is what makes the
+    // assertion load-bearing: WITHOUT the guard, the handler parses "31" from the
+    // branch, looks it up here, finds this OPEN issue, and returns ok:true — the
+    // exact field false pass. With the guard it must refuse BEFORE any lookup.
+    execRegistry['gh issue view 31'] = JSON.stringify({
+      number: 31,
+      title: 'feat(dashboard): theme tokens', // the UNRELATED cwd-repo issue from the field
+      url: 'https://github.com/Wave-Engineering/claudecode-workflow/issues/31',
+      state: 'OPEN',
+    });
+    execRegistry['gh pr list --head'] = '[]';
+
+    const result = await ibmHandler.execute({ branch: 'chore/31-queue-less' });
+    const data = parseResult(result.content);
+
+    expect(data.ok).toBe(false); // <-- would be `true` (false pass) without the guard
+    expect(data.error as string).toMatch(/not the branch checked out here/i);
+    expect(data.error as string).toMatch(/repo=/);
+    // It must NOT have resolved the unrelated cwd-repo issue.
+    expect(data.issue_number).toBeUndefined();
+    expect(data.issue_title).toBeUndefined();
+    expect(data.message).toBeUndefined();
+  });
+
+  test('a repo with no branch is REFUSED too (the other axis of #475)', async () => {
+    // cwd is on feature/31-foo; caller names a DIFFERENT repo but no branch.
+    // Defaulting the branch from cwd and checking it against that repo is the same
+    // trap. An open #31 in the named repo would otherwise falsely pass.
+    execRegistry['git branch --show-current'] = 'feature/31-foo';
+    execRegistry['gh issue view 31'] = JSON.stringify({
+      number: 31,
+      title: 'unrelated issue in the other repo',
+      url: 'u',
+      state: 'OPEN',
+    });
+    execRegistry['gh pr list --head'] = '[]';
+
+    const result = await ibmHandler.execute({ repo: 'other/repo' });
+    const data = parseResult(result.content);
+
+    expect(data.ok).toBe(false);
+    expect(data.error as string).toMatch(/no 'branch'|but no 'branch'/i);
+    expect(data.issue_number).toBeUndefined();
+  });
+
+  test('the same branch WITH an explicit repo is checked against THAT repo', async () => {
+    execRegistry['git branch --show-current'] = 'main';
+    execRegistry['gh issue view'] = JSON.stringify({
+      number: 31,
+      title: 'chore(settings): go queue-less',
+      url: 'https://github.com/bakeb7j0/gitlab-settings-automation/issues/31',
+      state: 'OPEN',
+    });
+    execRegistry['gh pr list'] = '[]';
+
+    const result = await ibmHandler.execute({
+      branch: 'chore/31-queue-less',
+      repo: 'bakeb7j0/gitlab-settings-automation',
+    });
+    const data = parseResult(result.content);
+
+    expect(data.ok).toBe(true);
+    expect(data.issue_number).toBe(31);
+    // The envelope echoes the repo actually checked, so the caller can SEE which
+    // repository the verdict applies to rather than assuming it was theirs.
+    expect(data.repo).toBe('bakeb7j0/gitlab-settings-automation');
+  });
+
+  test('the ordinary case still works: no branch arg → the checked-out branch', async () => {
+    execRegistry['git branch --show-current'] = 'feature/900-x';
+    execRegistry['gh issue view'] = JSON.stringify({
+      number: 900,
+      title: 'x',
+      url: 'u',
+      state: 'OPEN',
+    });
+    execRegistry['gh pr list'] = '[]';
+
+    const result = await ibmHandler.execute({});
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(true);
+    expect(data.issue_number).toBe(900);
+  });
+
+  test('an explicitly-passed branch that MATCHES the checkout is allowed without repo', async () => {
+    execRegistry['git branch --show-current'] = 'fix/475-ibm-cwd-bound';
+    execRegistry['gh issue view'] = JSON.stringify({
+      number: 475,
+      title: 'x',
+      url: 'u',
+      state: 'OPEN',
+    });
+    execRegistry['gh pr list'] = '[]';
+
+    const result = await ibmHandler.execute({ branch: 'fix/475-ibm-cwd-bound' });
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(true); // cwd IS the right repo — nothing to guess
+    expect(data.issue_number).toBe(475);
   });
 });
