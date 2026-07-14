@@ -10,10 +10,14 @@
  * branching.
  *
  * Phases:
- * - Phase 1: wait for a run to appear (no-run-yet window). When
- *   `expected_sha` is set the window equals `timeout_sec`; otherwise a
- *   60s floor.
- * - Phase 2: poll the run until it completes or we time out.
+ * - Phase 1: wait for a run to APPEAR (no-run-yet window). The window depends on
+ *   the caller (#483): `require_merge_result` → full `timeout_sec` (merged-results
+ *   pipelines are created async and can take minutes to appear); `expected_sha` →
+ *   bounded `min(timeout_sec, FIRST_RUN_APPEARANCE_SEC)` (a branch pipeline appears
+ *   near-instantly, so a longer wait is silent hanging, not patience); neither →
+ *   a 60s floor.
+ * - Phase 2: poll the run (once it has appeared) until it completes or we hit the
+ *   FULL `timeout_sec` — the appearance bound never caps completion.
  * - Phase 3: completed — map conclusion to `final_status`.
  *
  * Injectable `now`/`sleep` makes tests instant. The adapter object is
@@ -58,6 +62,11 @@ export const MIN_POLL_INTERVAL_SEC = 5;
 export const DEFAULT_TIMEOUT_SEC = 1800;
 export const NO_RUN_YET_WINDOW_SEC = 60;
 export const NO_RUN_YET_POLL_SEC = 5;
+// Bounded first-appearance window for the expected_sha-only path (#483). After a
+// push the branch pipeline is created near-instantly; this buys margin for a
+// backed-up runner without approaching the full-timeout silence. Phase 2 (a run
+// that has appeared, polled to completion) is NOT bounded by this.
+export const FIRST_RUN_APPEARANCE_SEC = 180;
 export const LIST_LIMIT = 20;
 
 export type FinalStatus =
@@ -469,13 +478,28 @@ export async function waitForRun(
   const pollIntervalSec = Math.max(requestedInterval, MIN_POLL_INTERVAL_SEC);
   const timeoutSec = args.timeout_sec ?? DEFAULT_TIMEOUT_SEC;
   const expectedSha = args.expected_sha?.toLowerCase();
-  // #452: honour timeout_sec instead of bailing at the 60s floor whenever the
-  // caller has genuinely asked us to WAIT. `expected_sha` meant that before; a
-  // merge-gate caller means it too — the merged-results pipeline is created a
-  // beat after the branch pipeline and routinely takes >60s to appear, which is
-  // the premature bail #452 was filed for.
-  const noRunYetWindowSec =
-    expectedSha || args.require_merge_result ? timeoutSec : NO_RUN_YET_WINDOW_SEC;
+  // Phase-1 "no run has appeared yet" window. The THREE callers want three things,
+  // and collapsing them is the #483 bug:
+  //
+  //   require_merge_result → FULL timeout. A GitLab merged-results pipeline
+  //     (refs/merge-requests/N/merge) is created ASYNCHRONOUSLY after the MR
+  //     updates and routinely takes minutes to even appear; a short window here is
+  //     #452 in reverse (every wave HOLDs spuriously).
+  //
+  //   expected_sha (only) → BOUNDED (#483). This is the /scpmmr post-merge branch
+  //     wait: after a push the branch pipeline is created near-instantly, so if it
+  //     has not appeared in a few minutes it is not coming. Coupling this to the
+  //     full timeout meant a transient first-poll miss spun SILENTLY for the whole
+  //     30-minute ceiling (wintermute, blueshift #100/#101). Bound it so a miss
+  //     fails fast with an actionable message. Phase 2 (polling a run that HAS
+  //     appeared) still uses the full timeout — only first-appearance is bounded.
+  //
+  //   neither → the original 60s fail-fast floor.
+  const noRunYetWindowSec = args.require_merge_result
+    ? timeoutSec
+    : expectedSha
+      ? Math.min(timeoutSec, FIRST_RUN_APPEARANCE_SEC)
+      : NO_RUN_YET_WINDOW_SEC;
 
   const startMs = deps.now();
   const elapsedSec = (): number => Math.floor((deps.now() - startMs) / 1000);
@@ -548,9 +572,10 @@ export async function waitForRun(
         logPoll(args.ref, elapsedSec(), 'no_run_yet');
       }
       if (elapsedSec() >= timeoutSec) break;
-      // Fast 5s probing is for the short 60s window only. Once the window IS the
-      // full timeout, poll at the normal cadence — otherwise a 1800s wait costs
-      // 360 API calls.
+      // The fast 5s probe is only for the bare 60s no-args window (cheap: ≤12
+      // calls). The expected_sha (bounded, #483) and require_merge_result (full
+      // timeout) windows poll at the normal interval so a long wait does not cost
+      // hundreds of API calls.
       const sleepSec =
         expectedSha || args.require_merge_result ? pollIntervalSec : NO_RUN_YET_POLL_SEC;
       await deps.sleep(sleepSec * 1000);

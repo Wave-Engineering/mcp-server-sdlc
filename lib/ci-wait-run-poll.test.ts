@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { waitForRun } from './ci-wait-run-poll.ts';
+import { waitForRun, FIRST_RUN_APPEARANCE_SEC } from './ci-wait-run-poll.ts';
 import type {
   AdapterResult,
   CiListRunsArgs,
@@ -722,5 +722,78 @@ describe('require_merge_result — the wave trust gate contract (#476, #452)', (
       { adapter, sleep: c.sleep, now: c.now },
     );
     expect(r.final_status).toBe('success');
+  });
+});
+
+
+describe('first-run appearance window (#483)', () => {
+  // wintermute's bug: with expected_sha set, the "no run appeared yet" window was
+  // the ENTIRE timeout, so a transient first-poll miss spun SILENTLY for 30 min.
+  // The fix bounds ONLY the expected_sha-only path; the require_merge_result path
+  // must keep its long window (merge-result pipelines are async/slow to appear).
+
+  test('expected_sha: a run that never appears fails at ~180s, NOT the full timeout', async () => {
+    // Adapter never returns a matching run.
+    const adapter = makeAdapter(async () => ({ ok: true, data: [] }));
+    const clock = fakeClock();
+
+    const r = await waitForRun(
+      { ref: 'main', platform: 'github', expected_sha: 'a'.repeat(40), timeout_sec: 1800 },
+      { adapter, sleep: clock.sleep, now: clock.now },
+    );
+
+    expect(r.ok).toBe(false);
+    // The whole point: bounded, not 1800.
+    expect(r.waited_sec).toBeLessThanOrEqual(FIRST_RUN_APPEARANCE_SEC + 15);
+    expect(r.waited_sec).toBeLessThan(300);
+    if (!r.ok) expect(r.error).toMatch(/No CI run found/);
+  });
+
+  test('require_merge_result: the appearance window stays FULL timeout (no #452 regression)', async () => {
+    // No merge-result run ever appears. This path MUST keep waiting up to
+    // timeout_sec — a merged-results pipeline is created async and can take
+    // minutes to appear; bailing at 180s would HOLD every wave spuriously.
+    const adapter = makeAdapter(async () => ({ ok: true, data: [] }));
+    const clock = fakeClock();
+
+    const r = await waitForRun(
+      {
+        ref: 'kahuna/1-x',
+        platform: 'gitlab',
+        require_merge_result: true,
+        pr_number: 7,
+        timeout_sec: 900,
+      },
+      { adapter, sleep: clock.sleep, now: clock.now },
+    );
+
+    expect(r.ok).toBe(false);
+    // Waited far past the bounded expected_sha window — the long window is intact.
+    expect(r.waited_sec).toBeGreaterThan(FIRST_RUN_APPEARANCE_SEC * 2);
+  });
+
+  test('expected_sha: a run that appears LATE (within the bounded window) is still caught', async () => {
+    // Empty until ~120s, then the matching run appears → must be caught and polled
+    // to completion, not missed by an over-eager bail.
+    const clock = fakeClock();
+    const adapter = makeAdapter(async () => {
+      const elapsedMs = clock.now() - 1_700_000_000_000;
+      if (elapsedMs < 120_000) return { ok: true, data: [] };
+      return {
+        ok: true,
+        data: [ghRun({ status: 'completed', conclusion: 'success', event: 'push' })],
+      };
+    });
+
+    const r = await waitForRun(
+      { ref: 'main', platform: 'github', expected_sha: 'a'.repeat(40), timeout_sec: 1800 },
+      { adapter, sleep: clock.sleep, now: clock.now },
+    );
+
+    expect(r.ok).toBe(true);
+    expect(r.final_status).toBe('success');
+    // It appeared at ~120s — inside the bounded window, so it was NOT prematurely failed.
+    expect(r.waited_sec).toBeGreaterThanOrEqual(120);
+    expect(r.waited_sec).toBeLessThan(FIRST_RUN_APPEARANCE_SEC + 15);
   });
 });
