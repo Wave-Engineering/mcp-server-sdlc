@@ -43,6 +43,7 @@ import { prStatusGitlab } from './pr-status-gitlab.js';
 import { prWaitCiGitlab } from './pr-wait-ci-gitlab.js';
 import { workItemGitlab } from './work-item-gitlab.js';
 import { workItemUpdateGitlab } from './work-item-update-gitlab.js';
+import { resolveMergeAnchorGitlab } from './resolve-merge-anchor-gitlab.js';
 
 const stubMethod = async (_args: unknown) => ({
   platform_unsupported: true as const,
@@ -81,6 +82,7 @@ export const gitlabAdapter: PlatformAdapter = {
   findMergedPrForBranchPrefix: findMergedPrForBranchPrefixGitlab,
   ciListRuns: ciListRunsGitlab,
   resolveBranchSha: resolveBranchShaGitlab,
+  resolveMergeAnchor: resolveMergeAnchorGitlab,
   createBranch: createBranchGitlab,
   findExistingPr: findExistingPrGitlab,
   fetchCiTrustSignal: fetchCiTrustSignalGitlab,

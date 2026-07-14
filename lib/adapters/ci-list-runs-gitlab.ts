@@ -8,16 +8,7 @@
  * platform.
  *
  * GitLab divergences:
- * - `event` is always `null`. GitLab pipelines don't carry a trigger-event
- *   in the GitHub-Actions sense; merge-queue pre-flight never fires for
- *   GitLab (R-03 typed asymmetry).
- * - `workflow_name` filtering is client-side against the `source` field —
- *   GitLab pipelines have no "workflow name". When the caller passes a
- *   `workflow_name` we fetch more pipelines than requested and filter down.
- * - `expected_sha` threads through as the `?sha=` query param on the GitLab
- *   REST endpoint; `gitlabApiCiList` handles the encoding.
- *
- * `gitlabApiCiList` lives in `lib/gitlab-api.ts` and is shared across the
+ * - `event` carries the pipeline's `source` — the merge-result discriminator (#476).
  * CI family (`ci_wait_run`, `ci_run_status`, `ci_runs_for_branch`).
  */
 
@@ -48,9 +39,15 @@ function normalizeGl(pipeline: GitlabPipeline): NormalizedCiRun {
     head_sha: pipeline.sha,
     head_branch: pipeline.ref ?? null,
     created_at: pipeline.created_at ?? null,
-    // GitLab has no GitHub-Actions-style trigger-event. Always null — the
-    // merge-queue pre-flight skips on this signal (R-03 typed asymmetry).
-    event: null,
+    // GitLab's `source` IS the trigger event — `push`, `merge_request_event`,
+    // `schedule`, `web`, `api`, … (#476). It was previously hardcoded `null`,
+    // which discarded the only field that distinguishes a *merged-results*
+    // pipeline (`merge_request_event` — CI against the result of merging source
+    // into target) from a plain *branch* pipeline (`push` — CI against the
+    // source branch HEAD). The wave trust gate grades the merge result and must
+    // never accept a branch pipeline in its place; without this field it cannot
+    // tell them apart.
+    event: pipeline.source ?? null,
   };
 }
 

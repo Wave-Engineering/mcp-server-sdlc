@@ -4,7 +4,7 @@
  *
  * Lifted from `handlers/ci_wait_run.ts`'s local `resolveBranchToSha` helper.
  * Called by the polling loop ONLY when it needs to compare a branch ref
- * against a `run.headSha` (e.g., merge-queue Phase 0 pre-flight). When
+ * against a `run.headSha`. When
  * `expected_sha` is provided — or the ref is already a SHA — the call is
  * skipped entirely.
  *

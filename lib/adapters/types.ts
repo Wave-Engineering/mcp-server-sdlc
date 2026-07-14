@@ -319,14 +319,14 @@ export type CiWaitRunResponse = unknown;
 
 /**
  * Hybrid sub-call (Story 2.19, #313). `ciListRuns` is the slim per-ref CI-run
- * lister used by `ci_wait_run`'s polling loop and the Phase 0 merge-queue
+ * lister used by `ci_wait_run`'s polling loop and the merge-result
  * pre-flight. Narrower than `ciRunsForBranch` (which returns the full
  * `CiRunsForBranchRun[]` for a branch only, and never exposes `event`); this
  * call returns the shape the wait loop actually needs: `event` (for
- * `merge_group` detection) and `head_sha` (for the expected_sha anchor).
+ * the merge-result discriminator, #476) and `head_sha` (for the expected_sha anchor).
  *
  * GitLab pipelines don't carry a trigger-event in the way GitHub Actions runs
- * do, so `event` is always `null` on GitLab. `head_sha` is populated on both
+ * `event` carries GitLab's pipeline `source`. `head_sha` is populated on both
  * platforms.
  *
  * `workflow_name` / `expected_sha` filter behavior mirrors the pre-migration
@@ -353,11 +353,57 @@ export interface NormalizedCiRun {
   head_sha: string;
   head_branch: string | null;
   created_at: string | null;
-  /** GitHub: workflow event trigger (`push | pull_request | merge_group | …`). GitLab: always `null`. */
+  /**
+   * The run's trigger event — the field that distinguishes a MERGE-RESULT run
+   * from a plain BRANCH run (#476).
+   *
+   * - GitHub: workflow event (`push | pull_request | schedule | …`). A
+   *   `pull_request` run is evaluated against `refs/pull/N/merge` — the merge
+   *   result — whereas a `push` run is evaluated against the branch HEAD.
+   * - GitLab: the pipeline's `source` (`push | merge_request_event | web | …`).
+   *   `merge_request_event` is a merged-results pipeline (CI against the result
+   *   of merging source into target); `push` is a branch pipeline.
+   *
+   * `null` only when the platform genuinely did not report one.
+   */
   event: string | null;
 }
 
 export type CiListRunsResponse = NormalizedCiRun[];
+
+
+/**
+ * Args for `resolveMergeAnchor` — the POSITIVE binding between the run the wave
+ * trust gate grades and the commit actually under test (#476).
+ */
+export interface ResolveMergeAnchorArgs {
+  /** PR (GitHub) / MR iid (GitLab). */
+  number: number;
+  repo?: string;
+}
+
+/**
+ * The anchor. Filtering CI runs to "merge-result" runs is necessary but NOT
+ * sufficient: nothing in a run list binds a run to the CURRENT head. Push commit
+ * A (green), push commit B, and B's merge-result pipeline may not exist yet — the
+ * newest merge-result run is still A's green one. Grading it merges code CI never
+ * saw. Each platform states the binding differently:
+ *
+ * - GitHub: a `pull_request` run's `head_sha` IS the PR head SHA (verified on a
+ *   live PR — it is NOT the ephemeral merge commit; that is a GitLab-only fact).
+ *   So the anchor is the PR head SHA, matched against `run.head_sha`.
+ * - GitLab: a merged-results pipeline's `sha` is the ephemeral merge commit, so a
+ *   SHA match is impossible. GitLab instead publishes `mr.head_pipeline` — its own
+ *   statement of "the pipeline for this MR's current head". The anchor is that id.
+ *
+ * Absence of an anchor must HOLD, never pass. Freshness has to be PROVEN.
+ */
+export interface MergeAnchor {
+  /** GitHub: the PR head SHA a merge-result run must report. */
+  head_sha?: string;
+  /** GitLab: the id of the pipeline GitLab considers current for this MR. */
+  head_pipeline_id?: number;
+}
 
 /**
  * Hybrid sub-call (Story 2.19, #313). `resolveBranchSha` collapses the
@@ -981,7 +1027,7 @@ export interface PlatformAdapter {
   // by 10 handlers that all read the same normalized issue shape.
   // `ciListRuns` + `resolveBranchSha` (Story 2.19) are the `ci_wait_run`
   // keystone sub-calls — consumed by the polling loop in
-  // `lib/ci-wait-run-poll.ts` and the Phase 0 merge-queue pre-flight.
+  // `lib/ci-wait-run-poll.ts` and the merge-result discriminator (#476).
   fetchIssue(args: FetchIssueArgs): Promise<AdapterResult<AdapterIssue>>;
   fetchPrState(args: FetchPrStateArgs): Promise<AdapterResult<PrStateInfo>>;
   fetchPrForBranch(
@@ -999,6 +1045,10 @@ export interface PlatformAdapter {
   resolveBranchSha(
     args: ResolveBranchShaArgs,
   ): Promise<AdapterResult<ResolveBranchShaResponse | null>>;
+  /** #476 — the freshness anchor for the wave trust gate. See MergeAnchor. */
+  resolveMergeAnchor(
+    args: ResolveMergeAnchorArgs,
+  ): Promise<AdapterResult<MergeAnchor>>;
   createBranch(args: CreateBranchArgs): Promise<AdapterResult<void>>;
   findExistingPr(
     args: FindExistingPrArgs,
@@ -1054,6 +1104,7 @@ export const PLATFORM_ADAPTER_METHODS = [
   'findMergedPrForBranchPrefix',
   'ciListRuns',
   'resolveBranchSha',
+  'resolveMergeAnchor',
   'createBranch',
   'findExistingPr',
   'fetchCiTrustSignal',

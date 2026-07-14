@@ -420,55 +420,9 @@ describe('ci_wait_run handler', () => {
     expect(data.run_id).toBe(777);
   });
 
-  // Merge-queue-only repo + matching merge_group run → not_applicable success.
   // Pass ref as a 40-char SHA so the handler skips branch-to-SHA resolution
   // (no gh api call needed — exec registry is intentionally silent on it).
-  test('merge_group_only_sha_match — returns not_applicable success', async () => {
-    const sha = 'b'.repeat(40);
-    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
-    execRegistry['gh run list'] = JSON.stringify([
-      ghRun({
-        databaseId: 555,
-        status: 'completed',
-        conclusion: 'success',
-        event: 'merge_group',
-        headSha: sha,
-        url: 'https://github.com/org/repo/actions/runs/555',
-      }),
-    ]);
 
-    const result = await ciWaitRunHandler.execute({ ref: sha });
-    const data = parseResult(result.content);
-    expect(data.ok).toBe(true);
-    expect(data.final_status).toBe('not_applicable');
-    expect(data.reason).toBe('merge_group_validated');
-    expect(data.run_id).toBe(555);
-    expect(data.url).toBe('https://github.com/org/repo/actions/runs/555');
-    expect(data.waited_sec).toBe(0);
-  });
-
-  // Merge-queue-only repo + no matching merge_group run → not_applicable error.
-  test('merge_group_only_no_sha_match — returns not_applicable error', async () => {
-    const refSha = 'c'.repeat(40);
-    const otherSha = 'd'.repeat(40);
-    execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
-    execRegistry['gh run list'] = JSON.stringify([
-      ghRun({
-        databaseId: 444,
-        status: 'completed',
-        conclusion: 'success',
-        event: 'merge_group',
-        headSha: otherSha,
-      }),
-    ]);
-
-    const result = await ciWaitRunHandler.execute({ ref: refSha });
-    const data = parseResult(result.content);
-    expect(data.ok).toBe(false);
-    expect(data.final_status).toBe('not_applicable');
-    expect(data.error as string).toContain('no push-triggered workflows');
-    expect(data.ref).toBe(refSha);
-  });
 
   // Empty run list → existing "no CI run found" path must still fire.
   // The pre-flight must NOT mask this case; fall through to Phase 1 / error.
@@ -524,49 +478,6 @@ describe('ci_wait_run handler', () => {
   // (git remote get-url origin) and use `repo` directly when resolving branch
   // → SHA. Assert via the call log that only the allowed gh-subprocess calls
   // occur for SHA resolution.
-  test('github_explicit_repo_merge_queue_branch — SHA resolution uses explicit slug', async () => {
-    const targetSha = 'e'.repeat(40);
-    // Register the cwd remote URL (detectPlatform still reads it) AND the
-    // explicit-slug `gh api` endpoint. The key assertion below is that the
-    // SHA-resolution hit `gh api repos/other-org/other-repo/...`, NOT
-    // `gh api repos/cwd-org/cwd-repo/...`.
-    execRegistry['git remote get-url origin'] =
-      'https://github.com/cwd-org/cwd-repo.git';
-    execRegistry['gh api repos/other-org/other-repo/git/refs/heads/main'] =
-      targetSha;
-    execRegistry['gh run list'] = JSON.stringify([
-      ghRun({
-        databaseId: 888,
-        status: 'completed',
-        conclusion: 'success',
-        event: 'merge_group',
-        headSha: targetSha,
-        url: 'https://github.com/other-org/other-repo/actions/runs/888',
-      }),
-    ]);
-
-    const result = await ciWaitRunHandler.execute({
-      ref: 'main',
-      repo: 'other-org/other-repo',
-    });
-    const data = parseResult(result.content);
-    expect(data.ok).toBe(true);
-    expect(data.final_status).toBe('not_applicable');
-    expect(data.reason).toBe('merge_group_validated');
-    expect(data.run_id).toBe(888);
-
-    // Verify the branch-to-SHA resolution hit the EXPLICIT slug, NOT the cwd
-    // slug — the handler must have skipped `parseRepoSlug()` (which would
-    // have returned `cwd-org/cwd-repo`) and used the caller's `repo` directly.
-    const apiCalls = execCalls().filter((c) =>
-      normalizeCmd(c).includes('gh api repos/other-org/other-repo/git/refs/heads/main'),
-    );
-    expect(apiCalls.length).toBe(1);
-    const wrongApiCalls = execCalls().filter((c) =>
-      normalizeCmd(c).includes('gh api repos/cwd-org/cwd-repo/git/refs/'),
-    );
-    expect(wrongApiCalls.length).toBe(0);
-  });
 
   // GitLab with explicit repo → gitlabApiCiList uses encoded explicit slug.
   test('gitlab_explicit_repo — uses encoded owner/repo path, not cwd', async () => {
@@ -598,36 +509,6 @@ describe('ci_wait_run handler', () => {
 
   // Branch ref with explicit repo → merge-queue SHA resolution uses the
   // explicit slug (NOT the cwd slug).
-  test('merge_group_branch_with_explicit_repo — resolves SHA via explicit slug', async () => {
-    const targetSha = 'f'.repeat(40);
-    execRegistry['git remote get-url origin'] =
-      'https://github.com/cwd-org/cwd-repo.git';
-    execRegistry['gh api repos/explicit-org/explicit-repo/git/refs/heads/feature/1-demo'] =
-      targetSha;
-    execRegistry['gh run list'] = JSON.stringify([
-      ghRun({
-        databaseId: 2222,
-        status: 'completed',
-        conclusion: 'success',
-        event: 'merge_group',
-        headSha: targetSha,
-      }),
-    ]);
-
-    const result = await ciWaitRunHandler.execute({
-      ref: 'feature/1-demo',
-      repo: 'explicit-org/explicit-repo',
-    });
-    const data = parseResult(result.content);
-    expect(data.ok).toBe(true);
-    expect(data.final_status).toBe('not_applicable');
-    expect(data.reason).toBe('merge_group_validated');
-    // Must not have asked the cwd for a SHA.
-    const wrongApiCalls = execCalls().filter((c) =>
-      normalizeCmd(c).includes('gh api repos/cwd-org/cwd-repo/git/refs/'),
-    );
-    expect(wrongApiCalls.length).toBe(0);
-  });
 
   // --- Issue #259: expected_sha anchors the wait to a specific commit ---
 
