@@ -7,6 +7,11 @@
 **BREAKING CHANGE (#363, Story 2.2):** `wave_finalize` no longer accepts `epic_id`. Callers must pass `plan_id`. The assembled kahuna→target MR title changes from `epic(#N): <slug> — kahuna to <target>` to `plan(#N): <slug> — kahuna to <target>`. No legacy-compat fallback; the old parameter name fails schema validation with a clear error. Part of the Plan/Phase/Epic taxonomy lock (cc-workflow#499).
 
 ### Features
+- **work_item**: `type: "plan"` is now a first-class type, applying the `type::plan` label. `/issue plan` previously could not create a Plan issue at all — the enum had no `plan` — and callers worked around it with `type: "epic"` plus an explicit `type::plan` label. [#477]
+
+### Fixes
+- **work_item**: the automatic `type::<type>` label is now **suppressed when the caller supplies any `type::*` label of their own**, on both platforms. It was previously prepended unconditionally, which was safe only **by accident** on GitLab: `type::epic` and `type::plan` share the `type::` scope key, GitLab's scoped labels are mutually exclusive, and the caller's later label evicted ours. **GitHub has no scoped labels**, so the identical call produced an issue carrying **both** — a Plan mislabelled as an Epic, which the pipeline is specified never to read (Dev Spec R-19). Relying on the target platform to clean up after us is not a contract. Caller labels are also trimmed before they reach the platform (`gh` matches label names exactly and rejects an untrimmed one outright; GitLab would mint a junk label). A missing-label failure on GitHub now names the remedy (`label_create` first — GitHub does not create labels implicitly, GitLab does). [#477]
+
 - **plan_load_dod**: New MCP tool to fetch Plan tracking-issue and extract Definition of Done structure — both Plan-level DoD checkboxes and per-Phase DoD checklists with [R-XX] refs. Returns parsed view including Dev Spec path from References section. Part of the Plan DoD workflow family. [#388]
 - **wave_reconcile**: New Prime(post-wave) reconciliation handler emitting canonical `[drift-halt]` comments on Category B drift per Dev Spec §5.4.1. [#366, Story 2.5]
 - **devspec_finalize**: Require `depends_on` field on every Story in `phases-waves.json` (may be empty array); finalization fails with a named list of offenders otherwise. [#367, Story 2.6]

@@ -659,6 +659,7 @@ export interface LabelListResponse {
  * carry `size::*` / `priority::*` etc. via the caller's explicit labels list).
  */
 export type WorkItemType =
+  | 'plan'
   | 'epic'
   | 'story'
   | 'feature'

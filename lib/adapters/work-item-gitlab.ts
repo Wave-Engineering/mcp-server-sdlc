@@ -13,11 +13,12 @@
  *     pre-migration bug — `createGithubPR` ran against a GitLab origin).
  *
  * Argv composition:
- *   Issue types (epic | story | bug | chore | docs | feature | fix):
+ *   Issue types (plan | epic | story | bug | chore | docs | feature | fix):
  *     glab issue create
  *       --title <title>
  *       --description <body>
- *       [--label <csv>]               // glab takes a comma-separated list
+ *       [--label <csv>]               // glab takes a comma-separated list; auto
+ *       //                               `type::<type>` unless the caller set one
  *       [-R <owner/repo>]             // glab uses short `-R`, NOT `--repo`
  *
  *   `type: 'mr'`:
@@ -47,6 +48,7 @@ function projectDir(): string {
 }
 
 const ISSUE_TYPE_LABELS: Record<string, string | null> = {
+  plan: 'type::plan',
   epic: 'type::epic',
   story: 'type::story',
   feature: 'type::feature',
@@ -57,6 +59,33 @@ const ISSUE_TYPE_LABELS: Record<string, string | null> = {
   pr: null,
   mr: null,
 };
+
+/**
+ * The auto `type::<type>` label, UNLESS the caller already supplied one.
+ *
+ * The auto-label used to be prepended unconditionally. That was only ever safe by
+ * ACCIDENT, and only on GitLab: `type::epic` and `type::plan` share the `type::`
+ * scope key, GitLab's scoped labels are mutually exclusive, and the caller's later
+ * label evicted ours. GitHub has NO scoped labels — so the same call produced an
+ * issue carrying BOTH, which is precisely the taxonomy leak Dev Spec R-19 forbids
+ * (a Plan is a pipeline artifact; an Epic is a PM-layer grouping the pipeline never
+ * reads).
+ *
+ * Relying on the target platform to clean up after us is not a contract. If the
+ * caller has stated the type explicitly, we do not second-guess it — on either
+ * platform.
+ */
+function autoTypeLabel(
+  type: string,
+  callerLabels: string[] | undefined,
+): string | null {
+  const auto = ISSUE_TYPE_LABELS[type];
+  if (!auto) return null;
+  const callerSetType = (callerLabels ?? []).some((l) =>
+    l.trim().toLowerCase().startsWith('type::'),
+  );
+  return callerSetType ? null : auto;
+}
 
 function isIssueType(type: string): boolean {
   return type !== 'pr' && type !== 'mr';
@@ -93,8 +122,15 @@ export async function workItemGitlab(
 
     if (isIssueType(args.type)) {
       const cmd = ['glab', 'issue', 'create', '--title', args.title, '--description', body];
-      const autoLabel = ISSUE_TYPE_LABELS[args.type];
-      const labels = autoLabel ? [autoLabel, ...(args.labels ?? [])] : [...(args.labels ?? [])];
+      // Normalize ONCE, then feed BOTH the suppression check and the argv. If we
+      // only trim for detection, ' type::plan ' suppresses the auto-label and then
+      // goes to the platform verbatim — gh matches label names exactly and rejects
+      // the create, and GitLab happily mints a junk label. Handing the mess to the
+      // platform after taking responsibility for it is the very thing this function
+      // exists to stop.
+      const callerLabels = (args.labels ?? []).map((l) => l.trim()).filter(Boolean);
+      const autoLabel = autoTypeLabel(args.type, callerLabels);
+      const labels = autoLabel ? [autoLabel, ...callerLabels] : callerLabels;
       if (labels.length > 0) {
         cmd.push('--label', labels.join(','));
       }
