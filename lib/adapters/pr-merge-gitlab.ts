@@ -116,7 +116,24 @@ function resolveHeadSha(number: number, repo?: string): string {
  * transient and correctly retried by re-resolving the sha, NOT fatal.
  */
 function isStaleShaRejection(message: string): boolean {
-  return /sha does not match/i.test(message) || /\b409\b/.test(message);
+  // GitLab's documented rejection text — the primary signal.
+  if (/sha does not match/i.test(message)) return true;
+
+  // Secondary: a 409 STATUS, matched in its structural position. glab renders
+  // failures as `<VERB> <url>: <status> {message: ...}`, so the status is always
+  // followed by the response body's `{`.
+  //
+  // A bare /\b409\b/ is WRONG here and was a real bug: glab's error text echoes
+  // the request URL, which contains the MR IID (`.../merge_requests/409/merge`).
+  // So merging MR !409 matched on its own IID and misclassified ANY failure —
+  // a genuine 405 conflict included — as a stale-head race, retried it, and
+  // then reported `gitlab_head_sha_moved`. It also fired on unrelated text
+  // carrying a standalone 409, e.g. a branch named `fix/409-something`.
+  //
+  // That is the same defect this PR exists to remove: asserting a cause the
+  // evidence does not support. Requiring the `{` anchors the match to the
+  // status field, which a URL path segment can never satisfy.
+  return /\b409\s*\{/.test(message);
 }
 
 /** Attempts of resolve-sha → merge before a stale-head rejection becomes fatal. */

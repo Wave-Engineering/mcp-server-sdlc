@@ -451,6 +451,90 @@ describe('prMergeGitlab — --sha stale-head guard (#486)', () => {
     expect(result.error).toContain('source branch moved');
   });
 
+  // PAIRED test: MR !409 and its control MR !410. Same genuine non-sha failure,
+  // differing only in IID. The pair is the proof — !410 alone would pass even
+  // with the bug, and !409 alone could be dismissed as a quirk of that fixture.
+  //
+  // The bug: glab's error text echoes the request URL, which carries the MR IID
+  // (`.../merge_requests/409/merge`). A bare /\b409\b/ matched the IID rather
+  // than an HTTP status, so ANY failure on MR !409 was misclassified as a
+  // stale-head race, retried, and reported as `gitlab_head_sha_moved`.
+  for (const [iid, label] of [
+    [409, 'MR !409 — IID collides with the HTTP status being matched'],
+    [410, 'MR !410 — control, no collision'],
+  ] as Array<[number, string]>) {
+    test(`non-sha failure is fatal and correctly classified: ${label}`, async () => {
+      let mergeAttempts = 0;
+      onExec(
+        `glab api projects/org%2Frepo/merge_requests/${String(iid)}`,
+        JSON.stringify({
+          iid,
+          state: 'opened',
+          source_branch: 'feature/conflict',
+          target_branch: 'main',
+          web_url: `https://gitlab.com/org/repo/-/merge_requests/${String(iid)}`,
+          labels: [],
+          diff_refs: { head_sha: `head${String(iid)}aaaa` },
+          merge_commit_sha: null,
+        }),
+      );
+      onExec(`glab mr merge ${String(iid)} --squash --remove-source-branch --yes`, () => {
+        mergeAttempts += 1;
+        const err = new Error('merge failed') as ThrowableError;
+        // Verbatim glab shape: the URL echoes the IID, and the real status is 405.
+        err.stderr =
+          'All attempts fail:\n#1: PUT https://gitlab.com/api/v4/projects/org%2Frepo/' +
+          `merge_requests/${String(iid)}/merge: 405 {message: Method Not Allowed}\n`;
+        throw err;
+      });
+
+      const result = await prMergeGitlab({ number: iid, repo: 'org/repo' });
+      expectErr(result);
+      // Must be the genuine failure, NOT a stale-head misclassification.
+      expect(result.code).toBe('glab_mr_merge_failed');
+      expect(result.code).not.toBe('gitlab_head_sha_moved');
+      // And it must not have burned a retry on a non-race.
+      expect(mergeAttempts).toBe(1);
+    });
+  }
+
+  test('a real 409 status IS still classified as a stale-head race', async () => {
+    // The other side of the fix: tightening the matcher must not stop it
+    // recognising a genuine 409, which glab renders as `: 409 {message: ...}`.
+    let mergeAttempts = 0;
+    let mrReads = 0;
+    onExec('glab api projects/org%2Frepo/merge_requests/50', () => {
+      mrReads += 1;
+      return JSON.stringify({
+        iid: 50,
+        state: mrReads >= 3 ? 'merged' : 'opened',
+        source_branch: 'feature/moving',
+        target_branch: 'main',
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/50',
+        labels: [],
+        diff_refs: { head_sha: `head50v${String(mrReads)}` },
+        merge_commit_sha: mrReads >= 3 ? 'merged50' : null,
+      });
+    });
+    onExec('glab mr merge 50 --squash --remove-source-branch --yes', () => {
+      mergeAttempts += 1;
+      if (mergeAttempts === 1) {
+        const err = new Error('merge failed') as ThrowableError;
+        // Status position: `409 {` — note the IID here is 50, so the ONLY 409
+        // present is the genuine status.
+        err.stderr =
+          'All attempts fail:\n#1: PUT https://gitlab.com/api/v4/projects/org%2Frepo/' +
+          'merge_requests/50/merge: 409 {message: something about the head}\n';
+        throw err;
+      }
+      return '';
+    });
+
+    const result = await prMergeGitlab({ number: 50, repo: 'org/repo' });
+    expectOk(result);
+    expect(mergeAttempts).toBe(2); // retried, as a real race should be
+  });
+
   test('a non-sha merge failure is fatal — no retry', async () => {
     let mergeAttempts = 0;
     onExec(
