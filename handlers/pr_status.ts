@@ -41,7 +41,12 @@ const prStatusHandler: HandlerDef = {
     if ('platform_unsupported' in result) {
       return envelope({ ok: true, platform_unsupported: true, hint: result.hint });
     }
-    if (!result.ok) return envelope({ ok: false, error: result.error });
+    // Surface the adapter's `code` alongside `error` (#491). `/mmr` documents
+    // handling a `{ok: false, code, error}` envelope, but this handler had been
+    // dropping `code`, leaving callers to string-match the message to tell one
+    // failure from another. Additive — existing readers of `error` are
+    // unaffected.
+    if (!result.ok) return envelope({ ok: false, code: result.code, error: result.error });
     // pr_status preserves the legacy `{ok: true, data: {...}}` envelope
     // (rather than spreading like other migrated handlers) so downstream
     // callers — e.g. /mmr — that read `result.data.checks.summary` keep

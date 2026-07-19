@@ -371,7 +371,22 @@ GitHub lets you request only the fields you need; GitLab always dumps the whole 
 | `mergeStateStatus` (CLEAN/DIRTY/BLOCKED/UNSTABLE) | `detailed_merge_status` (`mergeable`, `broken_status`, `blocked_status`, `ci_must_pass`, ...) | `merge_state` (`clean`/`dirty`/`blocked`/`unstable`/`unknown`) |
 | `mergeable` (boolean)                             | `merge_status` (`can_be_merged`/`cannot_be_merged`)   | `mergeable` (boolean)           |
 | `url`                                             | `web_url`                                             | `url`                           |
-| `checks[].name` + `checks[].conclusion` (from `gh pr checks --json name,state,conclusion`) | `pipeline.status` (`success`/`failed`/`running`/`pending`) | `checks.summary` (`all_passed`/`has_failures`/`pending`/`none`) |
+| `statusCheckRollup[]` (from `gh pr view --json ...,statusCheckRollup` — the SAME call as the fields above) | `pipeline.status` (`success`/`failed`/`running`/`pending`) | `checks.summary` (`all_passed`/`has_failures`/`pending`/`none`) |
+
+> ⚠️ **Do NOT use `gh pr checks --json` for checks.** That flag does not exist on
+> gh 2.45 (what Ubuntu 24.04 LTS ships). It exits non-zero, and treating that
+> failure as "no checks configured" makes `pr_status` report `checks: none` for
+> PRs with passing checks — silently, on every PR. `pr_wait_ci` was migrated off
+> it by **#220**; `pr_status` carried the same defect until **#491**. Request
+> `statusCheckRollup` on the existing `gh pr view` call instead — one subprocess,
+> and no second query that can fail unnoticed.
+>
+> **Fail closed on an absent rollup.** `gh` always returns a requested `--json`
+> key, so a missing/null `statusCheckRollup` means the check state is UNKNOWN,
+> not absent. Return `{ok: false, code: 'gh_status_check_rollup_missing'}` rather
+> than inventing a summary: `/mmr` halts on an error envelope but treats an
+> unrecognised `checks.summary` as permission to merge, so an error is the only
+> representation that actually stops it.
 
 **Normalization rules:**
 - GitHub `mergeStateStatus`:
