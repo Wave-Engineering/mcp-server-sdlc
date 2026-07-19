@@ -8,7 +8,7 @@
  * Errors that come back from `gh` are converted into `{ok: false, error, code}`
  * — never thrown — so the handler doesn't need a try/catch around the dispatch.
  *
- * The `aggregateGithubChecks` / `normalizeGithubState` / `normalizeGithubMergeState`
+ * The `normalizeGithubState` / `normalizeGithubMergeState`
  * helpers are preserved verbatim from the pre-migration handler — that logic
  * is correct as-is and the existing integration tests in `tests/pr_status.test.ts`
  * lock its behavior.
@@ -16,6 +16,8 @@
 
 import { execSync } from 'child_process';
 import { runArgv } from '../shared/error-norm.js';
+import { classifyRun, describeFailedQuery, renderArgv } from '../shared/query-outcome.js';
+import { classifyRollupItem, type RollupItem } from './pr-wait-ci-github.js';
 import type {
   AdapterResult,
   PrStatusArgs,
@@ -48,40 +50,44 @@ function normalizeGithubMergeState(mergeStateStatus: string): PrStatusMergeState
   return 'unknown';
 }
 
-interface GithubCheck {
-  name?: string;
-  state?: string;
-  conclusion?: string | null;
-}
 
-export function aggregateGithubChecks(checks: GithubCheck[]): PrStatusChecksAggregate {
+/**
+ * Aggregate a `statusCheckRollup` into the `pr_status` checks shape (#491).
+ *
+ * Reuses `classifyRollupItem` from `pr-wait-ci-github.ts` rather than adding a
+ * second classifier, so `pr_status` and `pr_wait_ci` cannot disagree about what
+ * a given check means — the disagreement that surfaced this bug (one reported
+ * `4/4 passed` while the other reported `none`, seconds apart, same PR).
+ *
+ * `skipping` counts as passed: a skipped or stale check is not a blocker, which
+ * is the same judgement `pr_wait_ci` already makes at the DECISION level
+ * (`decide()` returns passed when pending === 0 && failed === 0, #221).
+ *
+ * The COUNTS differ deliberately: `snapshotGithub` leaves skipped checks
+ * uncounted while still setting `total = checks.length`, so an all-skipped PR
+ * prints `0/4` there and `4/4` here. Same verdict, different arithmetic — kept
+ * so `passed + failed + pending === total` holds in this aggregate, which the
+ * `pr_status` response shape implies. Noted rather than silently divergent,
+ * because a cosmetic disagreement between these two tools is exactly what got
+ * #491 reported.
+ */
+export function aggregateRollup(items: RollupItem[]): PrStatusChecksAggregate {
   let passed = 0;
   let failed = 0;
   let pending = 0;
 
-  for (const c of checks) {
-    const conclusion = (c.conclusion ?? '').toLowerCase();
-    const state = (c.state ?? '').toLowerCase();
-
-    if (conclusion === 'success' || state === 'success') {
-      passed += 1;
-    } else if (
-      conclusion === 'failure' ||
-      conclusion === 'cancelled' ||
-      conclusion === 'timed_out' ||
-      conclusion === 'action_required' ||
-      state === 'failure'
-    ) {
-      failed += 1;
-    } else {
-      // null conclusion, in_progress, queued, pending, etc.
-      pending += 1;
-    }
+  for (const item of items) {
+    const bucket = classifyRollupItem(item);
+    if (bucket === 'pass' || bucket === 'skipping') passed += 1;
+    else if (bucket === 'fail') failed += 1;
+    else pending += 1;
   }
 
-  const total = checks.length;
+  const total = items.length;
   let summary: PrStatusChecksSummary;
   if (total === 0) {
+    // A genuine zero — the query SUCCEEDED and the PR has no checks. Distinct
+    // from the failure path above, which returns an error instead.
     summary = 'none';
   } else if (failed > 0) {
     summary = 'has_failures';
@@ -102,28 +108,58 @@ export async function prStatusGithub(
   try {
     const cwd = projectDir();
 
-    // 1. gh pr view
+    // 1. gh pr view — one call, checks included (#491).
+    //
+    // `statusCheckRollup` is requested HERE rather than via a second
+    // `gh pr checks --json` subprocess. Two reasons, both load-bearing:
+    //
+    //   * `gh pr checks --json` DOES NOT EXIST on gh 2.45 (what Ubuntu 24.04
+    //     LTS ships). It exits non-zero with `unknown flag: --json`, and the
+    //     old code treated that failure as "no checks configured" — so this
+    //     tool reported `checks: none` for PRs with passing checks, on every
+    //     GitHub PR, permanently. `pr_wait_ci` was migrated off that same flag
+    //     by #220; `pr_status` never received the fix.
+    //   * Folding it into the existing view call removes the second subprocess
+    //     entirely, and with it the whole category of "the second query failed
+    //     and nobody noticed".
     const viewCmd = [
       'gh', 'pr', 'view', String(args.number),
-      '--json', 'state,mergeStateStatus,mergeable,url',
+      '--json', 'state,mergeStateStatus,mergeable,url,statusCheckRollup',
     ];
     if (args.repo !== undefined) viewCmd.push('--repo', args.repo);
 
-    const viewResult = runArgv(viewCmd, cwd);
-    if (viewResult.exitCode !== 0) {
-      return {
-        ok: false,
-        code: 'gh_pr_view_failed',
-        error: `gh pr view failed: ${viewResult.stderr.trim() || viewResult.stdout.trim()}`,
-      };
-    }
-
-    const pr = JSON.parse(viewResult.stdout) as {
+    interface PrView {
       state: string;
       mergeStateStatus: string;
       mergeable: string | boolean;
       url: string;
-    };
+      statusCheckRollup?: RollupItem[] | null;
+    }
+
+    // #493: classify the run rather than hand-checking exitCode and leaving
+    // JSON.parse to throw into the generic catch. A failed query and an
+    // unparseable payload are BOTH "we did not learn the state" — they get one
+    // named code, and neither can be mistaken for a successful empty result.
+    const viewOutcome = classifyRun<PrView>(
+      runArgv(viewCmd, cwd),
+      (stdout) => JSON.parse(stdout) as PrView,
+      `PR #${String(args.number)} view`,
+    );
+    if (!viewOutcome.succeeded) {
+      return {
+        ok: false,
+        // Distinct codes: the command failing and the command returning garbage
+        // are different diagnoses, and collapsing them would reintroduce the
+        // distinguishability loss this fix is about (#493).
+        code: viewOutcome.kind === 'parse' ? 'gh_pr_view_unparseable' : 'gh_pr_view_failed',
+        error: describeFailedQuery({
+          what: `PR #${String(args.number)} status`,
+          failure: viewOutcome.failure,
+          argv: viewOutcome.argv,
+        }),
+      };
+    }
+    const pr = viewOutcome.value;
 
     const state = normalizeGithubState(pr.state);
     const merge_state = normalizeGithubMergeState(pr.mergeStateStatus);
@@ -133,29 +169,29 @@ export async function prStatusGithub(
     const mergeable =
       mergeableRaw === true || mergeableRaw === 'MERGEABLE' ? true : false;
 
-    // 2. gh pr checks — non-fatal: a failure here means "no checks configured"
-    //    rather than a hard error. Preserved from the pre-migration handler.
-    let checks: PrStatusChecksAggregate = {
-      total: 0,
-      passed: 0,
-      failed: 0,
-      pending: 0,
-      summary: 'none',
-    };
-    const checksCmd = [
-      'gh', 'pr', 'checks', String(args.number),
-      '--json', 'name,state,conclusion',
-    ];
-    if (args.repo !== undefined) checksCmd.push('--repo', args.repo);
-    const checksResult = runArgv(checksCmd, cwd);
-    if (checksResult.exitCode === 0) {
-      try {
-        const parsed = JSON.parse(checksResult.stdout) as GithubCheck[];
-        checks = aggregateGithubChecks(parsed);
-      } catch {
-        // JSON parse failure — leave checks at the 'none' default.
-      }
+    // 2. Aggregate checks from the rollup we already fetched.
+    //
+    // #491/#493: a MISSING field is NOT an empty result. `gh` always returns a
+    // requested `--json` key, so an absent `statusCheckRollup` means we did not
+    // successfully learn the check state — and reporting that as `summary:
+    // 'none'` is the silent-permissive failure this fix exists to remove.
+    //
+    // We fail the whole call rather than inventing a summary. That is the
+    // fail-CLOSED direction and it matters concretely: `/mmr` stops on an
+    // `{ok:false}` envelope, but treats an unrecognised `checks.summary` as
+    // permission to proceed (it only halts on `has_failures`). Returning a new
+    // summary variant would therefore still merge; returning an error stops.
+    if (pr.statusCheckRollup === undefined || pr.statusCheckRollup === null) {
+      return {
+        ok: false,
+        code: 'gh_status_check_rollup_missing',
+        error:
+          `gh pr view returned no statusCheckRollup field for PR #${String(args.number)}. ` +
+          'Check state is UNKNOWN, not absent — refusing to report it as "no checks". ' +
+          `Command run: ${renderArgv(viewCmd)}`,
+      };
     }
+    const checks: PrStatusChecksAggregate = aggregateRollup(pr.statusCheckRollup);
 
     return {
       ok: true,

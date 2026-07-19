@@ -962,7 +962,7 @@ Migrate `pr_status` to the adapter pair. Note: `pr_status.ts` line 218 has the i
 **Implementation Steps:**
 
 1. Add `prStatus(args: PrStatusArgs): Promise<AdapterResult<PrStatusResponse>>` to `PlatformAdapter`
-2. Create `lib/adapters/pr-status-github.ts` — lift GitHub logic from `handlers/pr_status.ts`; preserve the `aggregateGithubChecks` normalization
+2. Create `lib/adapters/pr-status-github.ts` — lift GitHub logic from `handlers/pr_status.ts`; preserve the `aggregateRollup` normalization
 3. Create `lib/adapters/pr-status-gitlab.ts` — lift GitLab logic; make the pipeline-status fallthrough EXPLICIT (when both `pipeline?.status` and `head_pipeline?.status` are undefined, return a typed "no pipeline data" outcome rather than silently producing `summary: 'none'`)
 4. Wire into adapter assemblers
 5. Refactor `handlers/pr_status.ts` to ~50-line dispatch
@@ -977,7 +977,7 @@ Migrate `pr_status` to the adapter pair. Note: `pr_status.ts` line 218 has the i
 | Test Name | Purpose | File Location |
 |-----------|---------|---------------|
 | `pr-status-github — parses state + mergeStateStatus + checks` | Aggregate response | `lib/adapters/pr-status-github.test.ts` |
-| `pr-status-github — aggregateGithubChecks counts pass/fail/pending` | Check normalization | `lib/adapters/pr-status-github.test.ts` |
+| `pr-status-github — aggregateRollup counts pass/fail/pending` | Check normalization | `lib/adapters/pr-status-github.test.ts` |
 | `pr-status-gitlab — parses state + detailed_merge_status` | Aggregate response | `lib/adapters/pr-status-gitlab.test.ts` |
 | `pr-status-gitlab — pipeline-status fallthrough is explicit` | Regression for line 218 silent loss | `lib/adapters/pr-status-gitlab.test.ts` |
 

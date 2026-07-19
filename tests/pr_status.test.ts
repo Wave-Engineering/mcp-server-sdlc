@@ -70,14 +70,11 @@ describe('pr_status handler', () => {
         mergeStateStatus: 'CLEAN',
         mergeable: 'MERGEABLE',
         url: 'https://github.com/Wave-Engineering/example/pull/42',
+        statusCheckRollup: [
+          { __typename: 'CheckRun', name: 'validate', status: 'COMPLETED', conclusion: 'SUCCESS' },
+          { __typename: 'CheckRun', name: 'lint', status: 'COMPLETED', conclusion: 'SUCCESS' },
+        ],
       }),
-    );
-    register(
-      'gh pr checks 42',
-      JSON.stringify([
-        { name: 'validate', state: 'completed', conclusion: 'success' },
-        { name: 'lint', state: 'completed', conclusion: 'success' },
-      ]),
     );
 
     const result = await prStatusHandler.execute({ number: 42 });
@@ -106,14 +103,11 @@ describe('pr_status handler', () => {
         mergeStateStatus: 'UNSTABLE',
         mergeable: 'MERGEABLE',
         url: 'https://github.com/Wave-Engineering/example/pull/100',
+        statusCheckRollup: [
+          { __typename: 'CheckRun', name: 'validate', status: 'COMPLETED', conclusion: 'SUCCESS' },
+          { __typename: 'CheckRun', name: 'flaky-test', status: 'COMPLETED', conclusion: 'FAILURE' },
+        ],
       }),
-    );
-    register(
-      'gh pr checks 100',
-      JSON.stringify([
-        { name: 'validate', state: 'completed', conclusion: 'success' },
-        { name: 'flaky-test', state: 'completed', conclusion: 'failure' },
-      ]),
     );
 
     const result = await prStatusHandler.execute({ number: 100 });
@@ -137,14 +131,11 @@ describe('pr_status handler', () => {
         mergeStateStatus: 'BLOCKED',
         mergeable: 'UNKNOWN',
         url: 'https://github.com/Wave-Engineering/example/pull/7',
+        statusCheckRollup: [
+          { __typename: 'CheckRun', name: 'validate', status: 'IN_PROGRESS' },
+          { __typename: 'CheckRun', name: 'lint', status: 'COMPLETED', conclusion: 'SUCCESS' },
+        ],
       }),
-    );
-    register(
-      'gh pr checks 7',
-      JSON.stringify([
-        { name: 'validate', state: 'in_progress', conclusion: null },
-        { name: 'lint', state: 'completed', conclusion: 'success' },
-      ]),
     );
 
     const result = await prStatusHandler.execute({ number: 7 });
@@ -167,9 +158,9 @@ describe('pr_status handler', () => {
         mergeStateStatus: '',
         mergeable: 'UNKNOWN',
         url: 'https://github.com/Wave-Engineering/example/pull/11',
+        statusCheckRollup: [],
       }),
     );
-    register('gh pr checks 11', JSON.stringify([]));
 
     const result = await prStatusHandler.execute({ number: 11 });
     const out = parseResult(result.content);
@@ -189,9 +180,9 @@ describe('pr_status handler', () => {
         mergeStateStatus: 'DIRTY',
         mergeable: 'CONFLICTING',
         url: 'https://github.com/Wave-Engineering/example/pull/22',
+        statusCheckRollup: [],
       }),
     );
-    register('gh pr checks 22', JSON.stringify([]));
 
     const result = await prStatusHandler.execute({ number: 22 });
     const out = parseResult(result.content);
@@ -201,7 +192,14 @@ describe('pr_status handler', () => {
     expect(data.mergeable).toBe(false);
   });
 
-  test('github_no_checks_command_failure_treated_as_none', async () => {
+  test('github_missing_rollup_fails_closed (#491)', async () => {
+    // INVERTED from `github_no_checks_command_failure_treated_as_none`, which
+    // asserted the defect as intended behaviour: a checks lookup that did not
+    // happen was reported as `summary: 'none'`, i.e. "this PR has no checks".
+    //
+    // That is the silent-permissive direction. `/mmr` halts on an {ok:false}
+    // envelope but treats an unrecognised checks.summary as permission to
+    // merge, so an error is the only representation that fails CLOSED.
     registerGithubRemote();
     register(
       'gh pr view 99 --json',
@@ -210,18 +208,15 @@ describe('pr_status handler', () => {
         mergeStateStatus: 'CLEAN',
         mergeable: 'MERGEABLE',
         url: 'https://github.com/Wave-Engineering/example/pull/99',
+        // statusCheckRollup deliberately absent — check state is UNKNOWN.
       }),
     );
-    // Intentionally do NOT register gh pr checks — the handler should catch and treat as 'none'
 
     const result = await prStatusHandler.execute({ number: 99 });
     const out = parseResult(result.content);
-    expect(out.ok).toBe(true);
-    const data = out.data as Record<string, unknown>;
-    expect(data.merge_state).toBe('clean');
-    const checks = data.checks as Record<string, unknown>;
-    expect(checks.total).toBe(0);
-    expect(checks.summary).toBe('none');
+    expect(out.ok).toBe(false);
+    expect(out.code).toBe('gh_status_check_rollup_missing');
+    expect(String(out.error)).toContain('UNKNOWN, not absent');
   });
 
   // --- GitLab paths ---
@@ -384,7 +379,7 @@ describe('pr_status handler', () => {
 
   // --- cross-repo routing ---
 
-  test('route_with_repo — github threads --repo into gh pr view and gh pr checks', async () => {
+  test('route_with_repo — github threads --repo into the single gh pr view call', async () => {
     // cwd origin points at a DIFFERENT repo than the target.
     register('git remote get-url origin', 'https://github.com/cwd-org/cwd-repo.git');
     register(
@@ -394,9 +389,9 @@ describe('pr_status handler', () => {
         mergeStateStatus: 'CLEAN',
         mergeable: 'MERGEABLE',
         url: 'https://github.com/Wave-Engineering/mcp-server-sdlc/pull/42',
+        statusCheckRollup: [],
       }),
     );
-    register('gh pr checks 42', JSON.stringify([]));
 
     const result = await prStatusHandler.execute({
       number: 42,
@@ -408,9 +403,6 @@ describe('pr_status handler', () => {
     const viewCall =
       execCalls().find((c) => unquote(c).startsWith('gh pr view 42')) ?? '';
     expect(unquote(viewCall)).toContain('--repo Wave-Engineering/mcp-server-sdlc');
-    const checksCall =
-      execCalls().find((c) => unquote(c).startsWith('gh pr checks 42')) ?? '';
-    expect(unquote(checksCall)).toContain('--repo Wave-Engineering/mcp-server-sdlc');
   });
 
   test('route_with_repo — gitlab forwards owner/repo slug into glab api path', async () => {
@@ -448,18 +440,15 @@ describe('pr_status handler', () => {
         mergeStateStatus: 'CLEAN',
         mergeable: 'MERGEABLE',
         url: 'https://github.com/Wave-Engineering/example/pull/42',
+        statusCheckRollup: [],
       }),
     );
-    register('gh pr checks 42', JSON.stringify([]));
 
     await prStatusHandler.execute({ number: 42 });
 
     const viewCall =
       execCalls().find((c) => unquote(c).startsWith('gh pr view 42')) ?? '';
     expect(unquote(viewCall)).not.toContain('--repo');
-    const checksCall =
-      execCalls().find((c) => unquote(c).startsWith('gh pr checks 42')) ?? '';
-    expect(unquote(checksCall)).not.toContain('--repo');
   });
 
   test('invalid_slug_early_error — returns ok:false with zero exec calls', async () => {
