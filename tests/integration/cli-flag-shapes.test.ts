@@ -221,6 +221,25 @@ describe('GitLab CLI flag shapes', () => {
     matchOrSkip(help, /--remove-source-branch/);
   });
 
+  test('glab mr merge accepts --sha and --auto-merge flags (#486)', () => {
+    // Used by pr_merge / pr_merge_wait via pr-merge-gitlab.
+    //
+    // These are load-bearing and cannot be covered by the unit suite, which
+    // asserts against a MOCKED argv string and would stay green against a glab
+    // that rejects the flags:
+    //   --sha        GitLab's stale-head guard. Without it, namespaces with
+    //                `require_sha_for_merge` (now the DEFAULT for new groups)
+    //                reject the merge with 400.
+    //   --auto-merge Passed as `--auto-merge=false`. It is a relatively recent
+    //                rename — older glab exposed this as
+    //                `--when-pipeline-succeeds`. On a glab predating the
+    //                rename, `--auto-merge=false` is an UNKNOWN FLAG and every
+    //                GitLab merge fails, which is worse than the bug #486 fixed.
+    const help = captureHelp('glab mr merge --help');
+    matchOrSkip(help, /--sha/);
+    matchOrSkip(help, /--auto-merge/);
+  });
+
   test('glab api projects/.../pipelines query is valid (used by ci_runs_for_branch)', () => {
     // Used by ci_wait_run and ci_runs_for_branch handlers via gitlab-api.ts
     // Our handlers use `glab api projects/<encoded>/pipelines?ref=<branch>&limit=N`

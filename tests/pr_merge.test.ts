@@ -171,6 +171,7 @@ describe('pr_merge handler — aggregate response (#225)', () => {
         target_branch: 'main',
         web_url: 'https://gitlab.com/org/repo/-/merge_requests/17',
         labels: [],
+        sha: 'head17aaaaaa',
         merge_commit_sha: 'deadbeef1234',
       }),
     );
@@ -493,6 +494,21 @@ describe('pr_merge handler — aggregate response (#225)', () => {
 
   test('gitlab failed merge — error surfaces as failure', async () => {
     onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git\n');
+    // #486: head-sha resolution runs before the merge, so this fixture is
+    // required for the call to reach the merge failure this test asserts on.
+    onExec(
+      'glab api projects/org%2Frepo/merge_requests/9',
+      JSON.stringify({
+        iid: 9,
+        state: 'opened',
+        source_branch: 'feature/conflict',
+        target_branch: 'main',
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/9',
+        labels: [],
+        sha: 'head9conflict',
+        merge_commit_sha: null,
+      }),
+    );
     onExec('glab mr merge 9 --squash --remove-source-branch --yes', () => {
       const err = new Error('merge request cannot be merged') as ThrowableError;
       err.stderr = 'merge request has conflicts\n';
@@ -575,6 +591,7 @@ describe('pr_merge handler — aggregate response (#225)', () => {
         target_branch: 'main',
         web_url: 'https://gitlab.com/org/repo/-/merge_requests/14',
         labels: [],
+        sha: 'head14dddddd',
         merge_commit_sha: 'f00dbabe',
       }),
     );
@@ -638,6 +655,7 @@ describe('pr_merge handler — aggregate response (#225)', () => {
         target_branch: 'main',
         web_url: 'https://gitlab.com/target-org/target-repo/-/merge_requests/17',
         labels: [],
+        sha: 'head17eeeeee',
         merge_commit_sha: 'deadbeef',
       }),
     );
