@@ -18,6 +18,20 @@ export interface RunResult {
   exitCode: number;
   stdout: string;
   stderr: string;
+  /**
+   * The argv actually executed (#493).
+   *
+   * Carried so a caller reporting "I found nothing" can derive its
+   * verification suggestion FROM THE QUERY THAT RAN, rather than hand-writing
+   * one that may describe a different query. A hand-written hint can drift from
+   * the real call — `ci_wait_run` shipped one that reproduced its own failing
+   * lookup (#492), so an operator who followed the advice got an empty result
+   * that appeared to confirm a false cause.
+   *
+   * Derived suggestions cannot disagree with the executed query, because they
+   * ARE the executed query.
+   */
+  argv: string[];
 }
 
 export interface ExecError extends Error {
@@ -43,15 +57,19 @@ export function bufToString(b: unknown): string {
  */
 export function runArgv(cmd: string[], cwd: string): RunResult {
   const shellCmd = cmd.map(shellEscape).join(' ');
+  // Copy so a caller mutating its own argv array afterwards cannot retroactively
+  // change what this result claims was executed.
+  const argv = [...cmd];
   try {
     const stdout = execSync(shellCmd, { cwd, encoding: 'utf8' });
-    return { exitCode: 0, stdout, stderr: '' };
+    return { exitCode: 0, stdout, stderr: '', argv };
   } catch (err) {
     const e = err as ExecError;
     return {
       exitCode: typeof e.status === 'number' ? e.status : -1,
       stdout: bufToString(e.stdout),
       stderr: bufToString(e.stderr) || (err instanceof Error ? err.message : String(err)),
+      argv,
     };
   }
 }
