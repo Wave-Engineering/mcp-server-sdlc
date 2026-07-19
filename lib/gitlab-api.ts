@@ -88,6 +88,22 @@ export interface GitlabMr {
   work_in_progress?: boolean;
   head_pipeline?: GitlabPipeline | null;
   pipeline?: GitlabPipeline | null; // Alias for head_pipeline in some contexts
+  /**
+   * Diff head SHA — the HEAD commit of the **source branch**. Distinct from
+   * `merge_commit_sha`, which is the commit produced *by* a merge and is null
+   * until the MR is merged. This is the value GitLab's merge endpoint wants as
+   * its `sha` stale-head guard (#486).
+   *
+   * Read as the FALLBACK: `diff_refs.head_sha` below is the canonical source
+   * and takes precedence (see `resolveHeadSha` in `pr-merge-gitlab.ts`).
+   */
+  sha?: string;
+  /** Canonical source-branch head; preferred over the top-level `sha`. */
+  diff_refs?: {
+    base_sha?: string | null;
+    head_sha?: string | null;
+    start_sha?: string | null;
+  } | null;
   merge_commit_sha?: string | null;
   created_at?: string;
   updated_at?: string;

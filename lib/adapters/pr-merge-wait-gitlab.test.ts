@@ -76,6 +76,7 @@ describe('prMergeWaitGitlab — adapter orchestration (parity)', () => {
         target_branch: 'main',
         web_url: 'https://gitlab.com/org/repo/-/merge_requests/50',
         labels: [],
+        sha: 'waithead01',
         merge_commit_sha: 'preexisting',
       }),
     );
@@ -103,6 +104,7 @@ describe('prMergeWaitGitlab — adapter orchestration (parity)', () => {
         target_branch: 'main',
         web_url: 'https://gitlab.com/org/repo/-/merge_requests/51',
         labels: [],
+        sha: 'waithead02',
         merge_commit_sha: merged ? 'direct51' : null,
       });
     });
@@ -133,6 +135,7 @@ describe('prMergeWaitGitlab — adapter orchestration (parity)', () => {
         target_branch: 'main',
         web_url: 'https://gitlab.com/org/repo/-/merge_requests/55',
         labels: [],
+        sha: 'waithead03',
         merge_commit_sha: merged ? 'skip55abc' : null,
       });
     });
@@ -161,6 +164,7 @@ describe('prMergeWaitGitlab — adapter orchestration (parity)', () => {
         target_branch: 'main',
         web_url: 'https://gitlab.com/org/repo/-/merge_requests/80',
         labels: [],
+        sha: 'waithead04',
       }),
     );
     onExec('glab mr merge 80 --squash --remove-source-branch --yes', () => {
