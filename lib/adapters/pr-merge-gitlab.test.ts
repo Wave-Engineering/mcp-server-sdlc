@@ -212,7 +212,7 @@ describe('prMergeGitlab — subprocess boundary', () => {
     });
     expectOk(result);
     const mergeCall = findCall('glab mr merge 17');
-    expect(mergeCall).toContain('-R target-org/target-repo');
+    expect(mergeCall).toContain("-R 'target-org/target-repo'");
     const apiCall = findCall('glab api projects/');
     expect(apiCall).toContain('target-org%2Ftarget-repo');
   });
@@ -511,6 +511,6 @@ describe('prMergeGitlab — --sha stale-head guard (#486)', () => {
 
     const mergeCall = findCall('glab mr merge 4');
     expect(mergeCall).toContain("--sha 'deep4headsha'");
-    expect(mergeCall).toContain(`-R ${deep}`);
+    expect(mergeCall).toContain(`-R '${deep}'`);
   });
 });

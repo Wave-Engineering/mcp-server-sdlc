@@ -668,7 +668,7 @@ describe('pr_merge handler — aggregate response (#225)', () => {
     expect(data.ok).toBe(true);
 
     const mergeCall = execCalls().find((c) => c.startsWith('glab mr merge 17')) ?? '';
-    expect(mergeCall).toContain('-R target-org/target-repo');
+    expect(mergeCall).toContain("-R 'target-org/target-repo'");
     const apiCall = execCalls().find((c) => c.includes('glab api projects/')) ?? '';
     expect(apiCall).toContain('target-org%2Ftarget-repo');
     expect(apiCall).not.toContain('cwd-org%2Fcwd-repo');

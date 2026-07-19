@@ -151,7 +151,12 @@ function buildGitlabMergeCommand(
   if (squashMessage !== undefined && squashMessage.length > 0) {
     parts.push('--squash-message', shellEscape(squashMessage));
   }
-  return repo !== undefined ? `${parts.join(' ')} -R ${repo}` : parts.join(' ');
+  // #408: `repo` reaches a shell via execSync, so it MUST be escaped like every
+  // other interpolated value here (`squash_message`, `sha`). It was the one
+  // caller-supplied field interpolated raw.
+  return repo !== undefined
+    ? `${parts.join(' ')} -R ${shellEscape(repo)}`
+    : parts.join(' ');
 }
 
 export async function prMergeGitlab(
