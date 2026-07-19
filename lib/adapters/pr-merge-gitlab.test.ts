@@ -55,12 +55,13 @@ beforeEach(() => {
 
 describe('prMergeGitlab — subprocess boundary', () => {
   test('direct merge returns aggregate envelope', async () => {
-    onExec('glab mr merge 17 --squash --remove-source-branch --yes', '');
+    onExec("glab mr merge 17 --squash --remove-source-branch --yes --sha 'head-sha-123'", '');
     onExec(
       'glab api projects/org%2Frepo/merge_requests/17',
       JSON.stringify({
         iid: 17,
         state: 'merged',
+        sha: 'head-sha-123',
         source_branch: 'feature/test',
         target_branch: 'main',
         web_url: 'https://gitlab.com/org/repo/-/merge_requests/17',
@@ -89,12 +90,13 @@ describe('prMergeGitlab — subprocess boundary', () => {
   });
 
   test('skip_train is silently dropped — merge proceeds with warning (#423)', async () => {
-    onExec('glab mr merge 9 --squash --remove-source-branch --yes', '');
+    onExec("glab mr merge 9 --squash --remove-source-branch --yes --sha 'head-sha-123'", '');
     onExec(
       'glab api projects/org%2Frepo/merge_requests/9',
       JSON.stringify({
         iid: 9,
         state: 'merged',
+        sha: 'head-sha-123',
         source_branch: 'feature/train',
         target_branch: 'main',
         web_url: 'https://gitlab.com/org/repo/-/merge_requests/9',
@@ -112,12 +114,13 @@ describe('prMergeGitlab — subprocess boundary', () => {
   });
 
   test('skip_train omitted — no warning in response', async () => {
-    onExec('glab mr merge 10 --squash --remove-source-branch --yes', '');
+    onExec("glab mr merge 10 --squash --remove-source-branch --yes --sha 'head-sha-123'", '');
     onExec(
       'glab api projects/org%2Frepo/merge_requests/10',
       JSON.stringify({
         iid: 10,
         state: 'merged',
+        sha: 'head-sha-123',
         source_branch: 'feature/no-train',
         target_branch: 'main',
         web_url: 'https://gitlab.com/org/repo/-/merge_requests/10',
@@ -132,11 +135,24 @@ describe('prMergeGitlab — subprocess boundary', () => {
   });
 
   test('returns AdapterResult{ok:false, code} on glab failure (not thrown)', async () => {
-    onExec('glab mr merge 9 --squash --remove-source-branch --yes', () => {
+    onExec("glab mr merge 9 --squash --remove-source-branch --yes --sha 'head-sha-123'", () => {
       const err = new Error('merge request cannot be merged') as ThrowableError;
       err.stderr = 'merge request has conflicts\n';
       throw err;
     });
+    // Add the MR fetch mock that will be called before the failed merge
+    onExec(
+      'glab api projects/org%2Frepo/merge_requests/9',
+      JSON.stringify({
+        iid: 9,
+        state: 'open',
+        sha: 'head-sha-123',
+        source_branch: 'feature/train',
+        target_branch: 'main',
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/9',
+        labels: [],
+      }),
+    );
 
     const result = await prMergeGitlab({ number: 9, repo: 'org/repo' });
     expectErr(result);
@@ -145,12 +161,13 @@ describe('prMergeGitlab — subprocess boundary', () => {
   });
 
   test('squash message → --squash-message inline', async () => {
-    onExec('glab mr merge 14 --squash --remove-source-branch --yes', '');
+    onExec("glab mr merge 14 --squash --remove-source-branch --yes --sha 'head-sha-123'", '');
     onExec(
       'glab api projects/org%2Frepo/merge_requests/14',
       JSON.stringify({
         iid: 14,
         state: 'merged',
+        sha: 'head-sha-123',
         source_branch: 'feature/fix',
         target_branch: 'main',
         web_url: 'https://gitlab.com/org/repo/-/merge_requests/14',
@@ -170,12 +187,13 @@ describe('prMergeGitlab — subprocess boundary', () => {
   });
 
   test('-R flag forwarded when args.repo provided (GitLab uses -R, not --repo)', async () => {
-    onExec('glab mr merge 17 --squash --remove-source-branch --yes', '');
+    onExec("glab mr merge 17 --squash --remove-source-branch --yes --sha 'head-sha-123'", '');
     onExec(
       'glab api projects/target-org%2Ftarget-repo/merge_requests/17',
       JSON.stringify({
         iid: 17,
         state: 'merged',
+        sha: 'head-sha-123',
         source_branch: 'feature/test',
         target_branch: 'main',
         web_url: 'https://gitlab.com/target-org/target-repo/-/merge_requests/17',

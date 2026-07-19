@@ -17,6 +17,7 @@
  */
 
 import { execSync } from 'child_process';
+import { gitlabApiMr } from '../gitlab-api.js';
 import { getAdapter } from './index.js';
 import type {
   AdapterResult,
@@ -24,6 +25,15 @@ import type {
   PrMergeResponse,
   PrStateInfo,
 } from './types.js';
+
+function parseSlugOpts(
+  slug: string | undefined,
+): { owner?: string; repo?: string } | undefined {
+  if (slug === undefined) return undefined;
+  const idx = slug.indexOf('/');
+  if (idx <= 0 || idx === slug.length - 1) return undefined;
+  return { owner: slug.slice(0, idx), repo: slug.slice(idx + 1) };
+}
 
 interface ExecError extends Error {
   stdout?: Buffer | string;
@@ -67,6 +77,7 @@ function buildGitlabMergeCommand(
   number: number,
   squashMessage?: string,
   repo?: string,
+  sha?: string,
 ): string {
   const parts = [
     'glab',
@@ -77,6 +88,9 @@ function buildGitlabMergeCommand(
     '--remove-source-branch',
     '--yes',
   ];
+  if (sha !== undefined && sha.length > 0) {
+    parts.push('--sha', shellEscape(sha));
+  }
   if (squashMessage !== undefined && squashMessage.length > 0) {
     parts.push('--squash-message', shellEscape(squashMessage));
   }
@@ -93,8 +107,20 @@ export async function prMergeGitlab(
   const skippedTrain = args.skip_train === true;
 
   try {
+    let sha: string | undefined;
+    try {
+      const mr = gitlabApiMr(args.number, parseSlugOpts(args.repo));
+      if (mr.sha) {
+        sha = mr.sha;
+      }
+    } catch (err) {
+      // Ignore errors (e.g. network issue, MR not found). The subsequent
+      // glab mr merge command will fail natively and preserve existing 
+      // error handling output.
+    }
+
     // GitLab has no merge-queue concept; queue stays empty.
-    const cmd = buildGitlabMergeCommand(args.number, args.squash_message, args.repo);
+    const cmd = buildGitlabMergeCommand(args.number, args.squash_message, args.repo, sha);
     try {
       exec(cmd);
     } catch (err) {

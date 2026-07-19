@@ -88,6 +88,7 @@ export interface GitlabMr {
   work_in_progress?: boolean;
   head_pipeline?: GitlabPipeline | null;
   pipeline?: GitlabPipeline | null; // Alias for head_pipeline in some contexts
+  sha?: string;
   merge_commit_sha?: string | null;
   created_at?: string;
   updated_at?: string;
