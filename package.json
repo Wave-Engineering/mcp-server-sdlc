@@ -1,6 +1,6 @@
 {
   "name": "mcp-server-sdlc",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "SDLC workflow MCP server for Claude Code agents",
   "type": "module",
   "scripts": {
