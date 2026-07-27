@@ -76,9 +76,20 @@ export function resolveArtifactsDir(
   };
 }
 
-/** Extract the free-text slug suffix from `kahuna/<plan_id>-<slug>`. */
+/**
+ * Extract the free-text slug suffix from `<prefix>/<id>-<slug>`.
+ *
+ * The prefix used to be pinned to `kahuna` (#503). Post-claudecode-workflow#1052
+ * an integration branch can also be a `campaign/<planId>-<slug>`, and a caller may
+ * supply any name via `wave_init`'s `kahuna.branch` — against which the pinned
+ * pattern returned `''` and silently degraded the MR title to
+ * `plan(#56):  — kahuna to …`. Any single-segment prefix is accepted now; the
+ * only structural requirement is the `<digits>-` that separates the id from the
+ * slug. Still `''` for a branch with no slug segment — the caller renders that as
+ * an empty slug rather than inventing one.
+ */
 export function epicSlugFromBranch(kahunaBranch: string): string {
-  const m = /^kahuna\/\d+-(.+)$/.exec(kahunaBranch);
+  const m = /^[^/]+\/\d+-(.+)$/.exec(kahunaBranch);
   return m !== null ? m[1] : '';
 }
 

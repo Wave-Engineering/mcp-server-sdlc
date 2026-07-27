@@ -449,6 +449,96 @@ describe('wave_init handler', () => {
     expect(parsed.ok).toBe(false);
   });
 
+  // ---- #503: the branch name comes from the caller ------------------------
+  // The naming/validation logic is unit-tested in `lib/wave_init_plan.test.ts`
+  // against the injected deps. These prove the HANDLER actually threads `branch`
+  // (and the resolved default) through to the bootstrap — the seam that a
+  // lib-only test cannot see.
+
+  test('#503 — an explicit kahuna.branch is the ref created on the platform', async () => {
+    await setupStatusFixture({ kahuna_branch: null });
+    setExecRoutes([
+      { match: 'git remote get-url', respond: 'git@github.com:Wave-Engineering/mcp-server-sdlc.git' },
+      { match: 'git ls-remote --heads origin', respond: '' },
+      { match: 'gh api repos/Wave-Engineering/mcp-server-sdlc/git/refs/heads/campaign/56-blueshift', respond: '0000000000000000000000000000000000000abc' },
+      { match: 'gh api repos/Wave-Engineering/mcp-server-sdlc/git/refs -X POST', respond: '' },
+      { match: 'wave-status set-kahuna-branch', respond: '' },
+    ]);
+
+    const result = await handler.execute({
+      // A campaign: the plan's base is the campaign branch, not trunk.
+      plan_json: JSON.stringify({ phases: [], base_branch: 'campaign/56-blueshift' }),
+      kahuna: { plan_id: 56, slug: 'blueshift', branch: 'kahuna/56-W-2' },
+    });
+    const parsed = parseResult(result);
+
+    expect(parsed.ok).toBe(true);
+    expect(parsed.kahuna_branch).toBe('kahuna/56-W-2');
+    expect(parsed.kahuna_created).toBe(true);
+
+    const calls = mockExecSync.mock.calls.map(c => unquote(c[0] as string));
+    // The caller's name was created; the derived `kahuna/56-blueshift` was not.
+    expect(calls.some(c => c.includes('ref=refs/heads/kahuna/56-W-2'))).toBe(true);
+    expect(calls.some(c => c.includes('ref=refs/heads/kahuna/56-blueshift'))).toBe(false);
+    // ...and it was cut from the CAMPAIGN branch's SHA, not trunk's.
+    expect(calls.some(c => c.includes('git/refs/heads/campaign/56-blueshift'))).toBe(true);
+  });
+
+  test('#503 — a branch equal to the repo default is refused, and nothing is created', async () => {
+    await setupStatusFixture({ kahuna_branch: null });
+    setExecRoutes([
+      { match: 'git remote get-url', respond: 'git@github.com:Wave-Engineering/mcp-server-sdlc.git' },
+      // Trunk exists on the remote — which is exactly why the guard has to run
+      // BEFORE the reuse path, or the protected branch gets claimed as the
+      // integration branch and every flight merges straight to it.
+      { match: 'git ls-remote --heads origin', respond: 'abc123\trefs/heads/main' },
+    ]);
+
+    const result = await handler.execute({
+      plan_json: JSON.stringify({ phases: [], base_branch: 'campaign/56-blueshift' }),
+      kahuna: { plan_id: 56, slug: 'blueshift', branch: 'main' },
+    });
+    const parsed = parseResult(result);
+
+    expect(parsed.ok).toBe(false);
+    expect(parsed.error as string).toContain('same ref as the repo default branch');
+    const calls = mockExecSync.mock.calls.map(c => unquote(c[0] as string));
+    expect(calls.some(c => c.includes('git/refs -X POST'))).toBe(false);
+    expect(calls.some(c => c.includes('set-kahuna-branch'))).toBe(false);
+  });
+
+  // "before the branch is cut", not "before any platform call": the handler resolves
+  // the live default branch first (it needs it for the guard), so one read round-trip
+  // precedes validation. The assertion that matters is that no ref was CREATED.
+  test('#503 — an invalid ref is rejected before the branch is cut', async () => {
+    await setupStatusFixture({ kahuna_branch: null });
+    setExecRoutes([
+      { match: 'git remote get-url', respond: 'git@github.com:Wave-Engineering/mcp-server-sdlc.git' },
+    ]);
+
+    const result = await handler.execute({
+      plan_json: JSON.stringify({ phases: [], base_branch: 'campaign/56-blueshift' }),
+      kahuna: { plan_id: 56, slug: 'blueshift', branch: 'kahuna/56-W 2' },
+    });
+    const parsed = parseResult(result);
+
+    expect(parsed.ok).toBe(false);
+    expect(parsed.error as string).toContain('not a valid git ref');
+    const calls = mockExecSync.mock.calls.map(c => unquote(c[0] as string));
+    expect(calls.some(c => c.includes('git/refs -X POST'))).toBe(false);
+  });
+
+  test('#503 — the schema rejects an unknown key inside kahuna (strict object)', async () => {
+    const result = await handler.execute({
+      plan_json: JSON.stringify({ phases: [] }),
+      kahuna: { plan_id: 56, slug: 'blueshift', branch_name: 'kahuna/56-W-2' },
+    });
+    const parsed = parseResult(result);
+    // `.strict()` — a near-miss key must fail loudly rather than being dropped
+    // and silently falling back to the derived name.
+    expect(parsed.ok).toBe(false);
+  });
+
   test('kahuna bootstrap — backward compat: omitting kahuna leaves response field absent', async () => {
     await setupStatusFixture(null);
     const result = await handler.execute({

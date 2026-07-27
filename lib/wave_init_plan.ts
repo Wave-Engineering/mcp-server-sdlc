@@ -271,6 +271,66 @@ export interface KahunaBootstrapDeps extends KahunaBootstrapRemoteDeps {
 }
 
 /**
+ * Resolve the integration branch name to create (#503).
+ *
+ * The name used to be derived here unconditionally as `kahuna/<plan_id>-<slug>`,
+ * which encodes two assumptions that hold for a standalone wave and fail for a
+ * campaign: the branch is per-PLAN (so it is shared by every wave of that plan,
+ * and the per-wave promote that deletes it destroys the next wave's base), and
+ * it is cut from the plan's base (so a later wave forks a baseline missing the
+ * earlier waves' integrated work). A campaign needs one branch PER WAVE, cut
+ * from the campaign branch — a name only the caller can know.
+ *
+ * So: an explicit `branch` wins verbatim; absent one, the historical derived name
+ * is kept, because it is still correct for the standalone single-wave case and
+ * existing callers depend on it.
+ *
+ * Two limits worth knowing before you rely on this:
+ *
+ * 1. The guard below forbids the integration branch from BEING the base or the repo
+ *    default; it cannot check what the branch is cut FROM. A caller that names a
+ *    per-wave branch but omits `plan.base_branch` gets a wave branch forked from
+ *    trunk — legal here, wrong for a campaign. Naming the branch and setting the
+ *    base are one decision; make them together.
+ * 2. As of #503 the live wave engine still cuts the per-wave branch client-side
+ *    (claudecode-workflow `skills/nextwave/per-wave-workflow.js`) and carries its own
+ *    copy of these inequality assertions, so this path is exercised by tests rather
+ *    than by the campaign hot path. Two implementations of one invariant drift —
+ *    when the engine moves to the server-side bootstrap, delete its copy.
+ */
+export function kahunaBranchName(
+  kahuna: { plan_id: number; slug: string; branch?: string },
+): { ok: true; branch: string } | KahunaBootstrapError {
+  if (kahuna.branch === undefined) {
+    return { ok: true, branch: `kahuna/${kahuna.plan_id}-${kahuna.slug}` };
+  }
+  const branch = kahuna.branch;
+  // Validate before handing it to `git`/the platform API. An invalid ref fails at
+  // create time with a platform-specific message that reads like an auth or
+  // network fault; naming the actual problem here is the difference between a
+  // one-line fix and a triage session. Rules per git-check-ref-format(1), plus a
+  // leading-`-` guard (argv injection) and a `refs/` guard (double-qualification).
+  const invalid =
+    branch.trim() !== branch ? 'has leading or trailing whitespace'
+    : /\s/.test(branch) ? 'contains whitespace'
+    : branch.startsWith('/') || branch.endsWith('/') ? 'starts or ends with "/"'
+    : branch.includes('//') ? 'contains an empty path component ("//")'
+    : branch.startsWith('-') ? 'starts with "-" (would be read as a command-line flag)'
+    : branch.startsWith('refs/') ? 'is fully qualified — pass a branch name, not a refs/ path'
+    : branch.endsWith('.') || branch.endsWith('.lock') ? 'ends with "." or ".lock"'
+    : branch.includes('..') ? 'contains ".."'
+    : branch.includes('@{') ? 'contains "@{"'
+    : /[~^:?*[\\]/.test(branch) ? 'contains one of ~ ^ : ? * [ \\'
+    // eslint-disable-next-line no-control-regex
+    : /[\x00-\x1f\x7f]/.test(branch) ? 'contains a control character'
+    : null;
+  if (invalid !== null) {
+    return { ok: false, error: `kahuna branch '${branch}' is not a valid git ref: it ${invalid}` };
+  }
+  return { ok: true, branch };
+}
+
+/**
  * Phase 1 of #378's atomic kahuna bootstrap: pre-check state + create the
  * branch on remote, but do NOT write to state.json. Safe to call BEFORE
  * `wave-status init` (state.json may not yet exist).
@@ -281,13 +341,35 @@ export interface KahunaBootstrapDeps extends KahunaBootstrapRemoteDeps {
  */
 export async function bootstrapKahunaBranchRemote(
   cwd: string,
-  kahuna: { plan_id: number; slug: string },
+  kahuna: { plan_id: number; slug: string; branch?: string },
   baseBranch: string,
   readState: () => Promise<{ kahuna_branch?: string | null }>,
   deps: KahunaBootstrapRemoteDeps,
+  /** The repo's live default branch, when the caller knows it. A DISTINCT ref from
+   *  `baseBranch` whenever the plan sets an explicit base (a campaign branch), and
+   *  the one ref an integration branch must never be — see the guard below (#503). */
+  defaultBranch?: string,
 ): Promise<KahunaBootstrapResult | KahunaBootstrapError> {
   void cwd;
-  const desired = `kahuna/${kahuna.plan_id}-${kahuna.slug}`;
+  const named = kahunaBranchName(kahuna);
+  if (!named.ok) return named;
+  const desired = named.branch;
+  // A branch that IS the base is not an integration branch — flights would merge
+  // straight into the ref the gate diffs them against, and the gate's own diff would
+  // be empty by the time it looked. And a branch that is the PROTECTED default is
+  // worse: it exists already, so the reuse path below would claim trunk itself as
+  // the integration branch and every flight would merge straight to it — the exact
+  // early-trunk-write claudecode-workflow#1052 removed. Reject both (#503).
+  for (const [role, ref] of [['base branch', baseBranch], ['repo default branch', defaultBranch]] as const) {
+    if (ref !== undefined && desired === ref) {
+      return {
+        ok: false,
+        error:
+          `kahuna branch '${desired}' is the same ref as the ${role} — a wave integrates onto its ` +
+          `own branch and is diffed AGAINST the base; the two cannot be equal`,
+      };
+    }
+  }
   const state = await readState();
   const recorded = state.kahuna_branch ?? null;
 
@@ -310,13 +392,20 @@ export async function bootstrapKahunaBranchRemote(
   // recorded === null: state unset. Check the remote for an existing branch
   // matching `desired`.
   //
-  // #378: if the remote has the EXACT desired branch (`kahuna/<plan_id>-<slug>`),
-  // claim it as idempotent reuse rather than refusing as an orphan. The branch
-  // name is fully determined by request inputs; a true "orphan from a different
-  // plan" is impossible because plan_id is the unique tracking-issue number for
-  // the master plan, and (plan_id, slug) is a deterministic mapping. This makes
-  // wave_init retry-safe after a phase-2 (`wave-status init`) failure that left
-  // the branch on remote but no state.json.
+  // #378: if the remote has the EXACT desired branch, claim it as idempotent reuse
+  // rather than refusing as an orphan. The branch name is fully determined by
+  // request inputs; for the derived name a true "orphan from a different plan" is
+  // impossible because plan_id is the unique tracking-issue number for the master
+  // plan, and (plan_id, slug) is a deterministic mapping. This makes wave_init
+  // retry-safe after a phase-2 (`wave-status init`) failure that left the branch on
+  // remote but no state.json.
+  //
+  // #503: with a caller-supplied `branch` that uniqueness argument is the CALLER's
+  // to make — this reuses whatever it finds under that name. That is the right
+  // behavior (an existing integration branch carries work already merged into it,
+  // so re-cutting would discard it), but it means a caller who reuses one name
+  // across two campaigns gets their commits interleaved on one branch. Callers must
+  // namespace the name; the engine does so as `kahuna/<planId>-<waveId>`.
   if (deps.branchPresentOnRemote(desired)) {
     return { ok: true, kahuna_branch: desired, created: false, previously_recorded: false };
   }
@@ -372,12 +461,13 @@ export function recordKahunaBranchInState(
  */
 export async function bootstrapKahunaBranch(
   cwd: string,
-  kahuna: { plan_id: number; slug: string },
+  kahuna: { plan_id: number; slug: string; branch?: string },
   baseBranch: string,
   readState: () => Promise<{ kahuna_branch?: string | null }>,
   deps: KahunaBootstrapDeps,
+  defaultBranch?: string,
 ): Promise<KahunaBootstrapResult | KahunaBootstrapError> {
-  const remote = await bootstrapKahunaBranchRemote(cwd, kahuna, baseBranch, readState, deps);
+  const remote = await bootstrapKahunaBranchRemote(cwd, kahuna, baseBranch, readState, deps, defaultBranch);
   if (!remote.ok) return remote;
   if (!remote.previously_recorded) {
     const recorded = recordKahunaBranchInState(remote.kahuna_branch, deps.recordKahunaBranch);

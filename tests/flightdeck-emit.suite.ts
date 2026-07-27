@@ -825,6 +825,7 @@ describe('handler_emit (wired handlers → emit)', () => {
       const res = await waveFinalize.execute({
         plan_id: 42,
         kahuna_branch: headRef,
+        target_branch: 'main',
         body_artifacts_dir: artRoot,
         root: dir,
       });

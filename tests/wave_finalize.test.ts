@@ -16,6 +16,10 @@ installChildProcessMock();
 let currentPlatform: 'github' | 'gitlab' = 'github';
 
 const { default: handler, assembleBody } = await import('../handlers/wave_finalize.ts');
+// Deferred like the handler above — this module is pure, but importing it before
+// installChildProcessMock() has settled would break the mock-leakage discipline
+// the header describes.
+const { epicSlugFromBranch } = await import('../lib/wave-finalize.ts');
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
   return JSON.parse(result.content[0].text) as Record<string, unknown>;
@@ -60,16 +64,10 @@ beforeEach(() => {
       ? 'git@gitlab.com:o/r.git'
       : 'git@github.com:o/r.git',
   );
-  // #472: target_branch now resolves to the LIVE default branch when omitted
-  // (previously a static zod .default('main')). Stub both platforms' default
-  // lookup to 'main' so the existing "default → main" assertions still hold.
-  // GitHub: `gh repo view --json defaultBranchRef ...` (runArgv-escaped, matched
-  // on the unique field token). GitLab: `glab api projects/:id`.
-  onExec('defaultBranchRef', 'main');
-  // Quote-bounded token so this matches ONLY `glab api projects/:id` (the
-  // default-branch resolve) and NOT `projects/:id/merge_requests?...` (the
-  // prCreate post-create lookup, which uses the same `:id` placeholder).
-  onExec("'projects/:id'", JSON.stringify({ default_branch: 'main' }));
+  // No default-branch stub. #472 made an omitted `target_branch` resolve to the
+  // live default; #503 made the field REQUIRED, so the handler never asks the host
+  // for a default at all. A stub here would be dead — worse, it would let a
+  // regression that reintroduced defaulting pass silently.
 });
 
 afterEach(() => {
@@ -88,6 +86,7 @@ describe('wave_finalize handler', () => {
   test('schema rejects missing plan_id', async () => {
     const result = await handler.execute({
       kahuna_branch: 'kahuna/42-foo',
+      target_branch: 'main',
     });
     const data = parseResult(result);
     expect(data.ok).toBe(false);
@@ -98,6 +97,7 @@ describe('wave_finalize handler', () => {
     const result = await handler.execute({
       plan_id: 0,
       kahuna_branch: 'kahuna/42-foo',
+      target_branch: 'main',
     });
     const data = parseResult(result);
     expect(data.ok).toBe(false);
@@ -109,7 +109,12 @@ describe('wave_finalize handler', () => {
     expect(data.ok).toBe(false);
   });
 
-  test('target_branch defaults to main', async () => {
+  // #503 — inverts the former "target_branch defaults to main". A default whose
+  // value is the protected branch is one omitted argument away from the early
+  // trunk merge claudecode-workflow#1052 removed, so omitting it must be a SCHEMA
+  // error, never a PR against main. The two negative assertions are the point:
+  // no PR lookup and no PR create ran at all.
+  test('schema rejects missing target_branch — no implicit trunk target', async () => {
     onExec('gh pr list', JSON.stringify([{
       number: 99, url: 'https://github.com/o/r/pull/99',
       state: 'OPEN', headRefName: 'kahuna/42-foo', baseRefName: 'main', title: 't',
@@ -122,12 +127,62 @@ describe('wave_finalize handler', () => {
       body_artifacts_dir: tmpRoot,
     });
     const data = parseResult(result);
+    expect(data.ok).toBe(false);
+    expect(data.error as string).toContain('target_branch');
+    expect(execCalls().some(c => c.includes('gh pr list'))).toBe(false);
+    expect(execCalls().some(c => c.includes("'pr' 'create'"))).toBe(false);
+  });
+
+  test('schema rejects an empty target_branch', async () => {
+    const result = await handler.execute({
+      plan_id: 42,
+      kahuna_branch: 'kahuna/42-foo',
+      target_branch: '',
+      body_artifacts_dir: tmpRoot,
+    });
+    const data = parseResult(result);
+    expect(data.ok).toBe(false);
+    expect(data.error as string).toContain('target_branch');
+  });
+
+  test('an explicit target_branch is honored verbatim', async () => {
+    onExec('gh pr list', JSON.stringify([{
+      number: 99, url: 'https://github.com/o/r/pull/99',
+      state: 'OPEN', headRefName: 'kahuna/42-foo', baseRefName: 'main', title: 't',
+    }]));
+    onExec('ls-remote', 'abc123\trefs/heads/kahuna/42-foo');
+
+    const result = await handler.execute({
+      plan_id: 42,
+      kahuna_branch: 'kahuna/42-foo',
+      target_branch: 'main',
+      body_artifacts_dir: tmpRoot,
+    });
+    const data = parseResult(result);
     expect(data.ok).toBe(true);
-    // gh pr list was called with --base main (default). The adapter
-    // validates head/base against a strict charset and emits unquoted argv.
+    // The adapter validates head/base against a strict charset and emits
+    // unquoted argv.
     const listCall = execCalls().find(c => c.includes('gh pr list'));
     expect(listCall).toBeDefined();
     expect(listCall).toContain('--base main');
+  });
+
+  // The campaign shape (#1052): a wave integrates onto the campaign branch and
+  // the protected branch is written exactly once, at the DoD gate.
+  test('a campaign integration base is targeted, not trunk', async () => {
+    await writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md', 'done');
+    mockGithubCreate(601, 'kahuna/56-W-2', 'campaign/56-blueshift');
+
+    const result = await handler.execute({
+      plan_id: 56,
+      kahuna_branch: 'kahuna/56-W-2',
+      target_branch: 'campaign/56-blueshift',
+      body_artifacts_dir: tmpRoot,
+    });
+    expect(parseResult(result).ok).toBe(true);
+    const createCall = execCalls().find(c => c.includes("'pr' 'create'"));
+    expect(createCall as string).toContain("'--base' 'campaign/56-blueshift'");
+    expect(createCall as string).not.toContain("'--base' 'main'");
   });
 
   // --- error: kahuna_branch_not_found ---
@@ -138,6 +193,7 @@ describe('wave_finalize handler', () => {
     const result = await handler.execute({
       plan_id: 42,
       kahuna_branch: 'kahuna/42-nonexistent',
+      target_branch: 'main',
       body_artifacts_dir: tmpRoot,
     });
     const data = parseResult(result);
@@ -159,6 +215,7 @@ describe('wave_finalize handler', () => {
     const result = await handler.execute({
       plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
+      target_branch: 'main',
       body_artifacts_dir: tmpRoot,
     });
     const data = parseResult(result);
@@ -175,6 +232,7 @@ describe('wave_finalize handler', () => {
     const result = await handler.execute({
       plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
+      target_branch: 'main',
       body_artifacts_dir: tmpRoot, // empty directory
     });
     const data = parseResult(result);
@@ -191,6 +249,7 @@ describe('wave_finalize handler', () => {
     const result = await handler.execute({
       plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
+      target_branch: 'main',
       body_artifacts_dir: tmpRoot,
     });
     const data = parseResult(result);
@@ -211,6 +270,7 @@ describe('wave_finalize handler', () => {
     const result = await handler.execute({
       plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
+      target_branch: 'main',
       body_artifacts_dir: tmpRoot,
     });
     const data = parseResult(result);
@@ -233,6 +293,7 @@ describe('wave_finalize handler', () => {
     await handler.execute({
       plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
+      target_branch: 'main',
       body_artifacts_dir: tmpRoot,
     });
 
@@ -251,6 +312,7 @@ describe('wave_finalize handler', () => {
     const result = await handler.execute({
       plan_id: 42,
       kahuna_branch: 'kahuna/42-wave-status-cli',
+      target_branch: 'main',
       body_artifacts_dir: tmpRoot,
     });
     const data = parseResult(result);
@@ -274,6 +336,7 @@ describe('wave_finalize handler', () => {
     const result = await handler.execute({
       plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
+      target_branch: 'main',
       body_artifacts_dir: tmpRoot,
       root: tmpRoot, // the wave's target repo root
     });
@@ -298,6 +361,7 @@ describe('wave_finalize handler', () => {
     await handler.execute({
       plan_id: 42,
       kahuna_branch: 'kahuna/42-wave-status-cli',
+      target_branch: 'main',
       body_artifacts_dir: tmpRoot,
     });
 
@@ -389,11 +453,13 @@ describe('wave_finalize handler', () => {
     const r1 = parseResult(await handler.execute({
       plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
+      target_branch: 'main',
       body_artifacts_dir: tmpRoot,
     }));
     const r2 = parseResult(await handler.execute({
       plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
+      target_branch: 'main',
       body_artifacts_dir: tmpRoot,
     }));
 
@@ -409,6 +475,7 @@ describe('wave_finalize handler', () => {
     const result = await handler.execute({
       plan_id: 42,
       kahuna_branch: 'kahuna/42-wave-status-cli',
+      target_branch: 'main',
       // body_artifacts_dir omitted — defaults to /tmp/wavemachine/42-wave-status-cli
     });
     const data = parseResult(result);
@@ -444,6 +511,7 @@ describe('wave_finalize handler', () => {
     const result = await handler.execute({
       plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
+      target_branch: 'main',
       body_artifacts_dir: tmpRoot,
     });
     const data = parseResult(result);
@@ -472,6 +540,7 @@ describe('wave_finalize handler', () => {
     const result = await handler.execute({
       plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
+      target_branch: 'main',
       body_artifacts_dir: tmpRoot,
     });
     const data = parseResult(result);
@@ -487,6 +556,7 @@ describe('wave_finalize handler', () => {
     const result = await handler.execute({
       plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
+      target_branch: 'main',
       body_artifacts_dir: '/etc',
     });
     const data = parseResult(result);
@@ -501,6 +571,7 @@ describe('wave_finalize handler', () => {
     const result = await handler.execute({
       plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
+      target_branch: 'main',
       body_artifacts_dir: tmpRoot, // /tmp/wave-finalize-test-...
     });
     const data = parseResult(result);
@@ -512,6 +583,7 @@ describe('wave_finalize handler', () => {
     const result = await handler.execute({
       plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
+      target_branch: 'main',
       body_artifacts_dir: '/tmp/foo/../../etc',
     });
     const data = parseResult(result);
@@ -529,6 +601,7 @@ describe('wave_finalize handler', () => {
     const result = await handler.execute({
       plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
+      target_branch: 'main',
       body_artifacts_dir: tmpRoot,
     });
     const data = parseResult(result);
@@ -573,6 +646,7 @@ describe('wave_finalize handler', () => {
     const result = await handler.execute({
       plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
+      target_branch: 'main',
       // bus tmpRoot is intentionally empty (cleanup happened).
       body_artifacts_dir: tmpRoot,
       // route the durable-state read at projectRoot.
@@ -610,6 +684,7 @@ describe('wave_finalize handler', () => {
     const result = await handler.execute({
       plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
+      target_branch: 'main',
       body_artifacts_dir: tmpRoot,
       root: emptyRoot,
     });
@@ -637,6 +712,7 @@ describe('wave_finalize handler', () => {
     await handler.execute({
       plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
+      target_branch: 'main',
       body_artifacts_dir: tmpRoot,
       root: projectRoot,
     });
@@ -647,5 +723,33 @@ describe('wave_finalize handler', () => {
     expect(createCall as string).toContain('https://github.com/o/r/pull/999');
     // Durable-state issue must NOT leak into the body.
     expect(createCall as string).not.toContain('Issue #10');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #503 — slug extraction is prefix-agnostic
+// ---------------------------------------------------------------------------
+// `epicSlugFromBranch` pinned the prefix to `kahuna` and returned '' for anything
+// else, which silently degraded the MR title to `plan(#56):  — kahuna to …`. Post
+// claudecode-workflow#1052 an integration branch can be a `campaign/<planId>-<slug>`,
+// and `wave_init`'s `kahuna.branch` accepts any caller-supplied name — so the
+// pinned pattern was a title-corruption bug waiting on a non-kahuna prefix.
+describe('epicSlugFromBranch (#503)', () => {
+  test.each([
+    ['campaign/56-blueshift', 'blueshift'],
+    ['kahuna/56-blueshift', 'blueshift'],
+    ['kahuna/56-W-2', 'W-2'],
+    ['integration/7-multi-part-slug', 'multi-part-slug'],
+  ])('%s → %s', (branch, expected) => {
+    expect(epicSlugFromBranch(branch)).toBe(expected);
+  });
+
+  test.each([
+    ['no id segment', 'campaign/blueshift'],
+    ['no slug after the id', 'kahuna/56'],
+    ['no prefix at all', 'main'],
+    ['a nested prefix (the id is not in the second segment)', 'wave/kahuna/56-blueshift'],
+  ])('returns empty for %s', (_why, branch) => {
+    expect(epicSlugFromBranch(branch)).toBe('');
   });
 });
