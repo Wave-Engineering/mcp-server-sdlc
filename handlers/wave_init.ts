@@ -48,6 +48,12 @@ const inputSchema = z.object({
   kahuna: z.object({
     plan_id: z.number().int().positive(),
     slug: z.string().min(1).regex(/^[a-z0-9][a-z0-9-]*$/, 'slug must be kebab-case (lowercase, digits, hyphens)'),
+    // #503: the integration branch name, supplied by the caller. Omit it and the
+    // historical `kahuna/<plan_id>-<slug>` is derived — correct for a standalone
+    // single-wave run, wrong for a campaign, where the branch must be per-WAVE and
+    // cut from the campaign branch rather than per-plan and cut from trunk. Only the
+    // caller knows which of those it is running, so only the caller can name it.
+    branch: z.string().min(1).optional(),
   }).strict().optional(),
 });
 
@@ -70,8 +76,11 @@ const waveInitHandler: HandlerDef = {
   name: 'wave_init',
   description:
     'Initialize a wave plan from structured JSON; supports --extend mode. ' +
-    'Optional `kahuna` argument bootstraps a `kahuna/<plan_id>-<slug>` branch ' +
-    'off the plan\'s base_branch (default: the repo\'s live default branch) and records it in wave state. ' +
+    'Optional `kahuna` argument bootstraps an integration branch off the plan\'s base_branch ' +
+    '(default: the repo\'s live default branch) and records it in wave state. ' +
+    'The branch is `kahuna.branch` verbatim when supplied, else the derived `kahuna/<plan_id>-<slug>`; ' +
+    'pass it explicitly for a campaign, where the branch must be per-wave and cut from the ' +
+    'campaign branch rather than per-plan and cut from trunk (#503). ' +
     'Atomic across kahuna bootstrap + plan persist (#378): kahuna failure does ' +
     'not persist the plan; plan-persist failure leaves the branch claimable on retry.',
   inputSchema,
@@ -97,20 +106,43 @@ const waveInitHandler: HandlerDef = {
       if (args.kahuna !== undefined) {
         const slug = args.repo ?? parseRepoSlug() ?? undefined;
         const adapter = getAdapter({ repo: slug });
-        // Base branch: the plan's explicit base_branch wins; otherwise resolve
-        // the LIVE default branch from the host (never hardcode 'main' — a repo
-        // whose default is e.g. release/1.0.0 would otherwise cut the kahuna
-        // branch from the wrong place). Mirrors how pr_create defaults its base.
-        let baseBranch: string;
-        if (typeof plan.base_branch === 'string' && plan.base_branch.length > 0) {
-          baseBranch = plan.base_branch;
-        } else {
+        const resolveDefault = async (): Promise<{ ok: true; branch: string } | { ok: false; error: string }> => {
           const defRes = await adapter.resolveDefaultBranch({ repo: slug, cwd });
           if ('platform_unsupported' in defRes) {
-            return envelope({ ok: false, error: `default-branch resolution unsupported: ${defRes.hint}` });
+            return { ok: false, error: `default-branch resolution unsupported: ${defRes.hint}` };
           }
+          if (!defRes.ok) return { ok: false, error: defRes.error };
+          return { ok: true, branch: defRes.data.default_branch };
+        };
+        // Base branch: the plan's explicit base_branch wins; otherwise resolve the
+        // LIVE default branch from the host (never hardcode 'main' — a repo whose
+        // default is e.g. release/1.0.0 would otherwise cut the kahuna branch from
+        // the wrong place). Mirrors how pr_create defaults its base.
+        //
+        // `defaultBranch` is tracked SEPARATELY from `baseBranch` because the two
+        // diverge exactly when it matters: an explicit base means the protected
+        // branch is some other ref, and that other ref is the one an integration
+        // branch must never be (#503).
+        let baseBranch: string;
+        let defaultBranch: string | undefined;
+        if (typeof plan.base_branch === 'string' && plan.base_branch.length > 0) {
+          baseBranch = plan.base_branch;
+          // The base is explicit, so the default branch is a DIFFERENT ref and the
+          // bootstrap's "never equal to the protected branch" guard needs it. Only
+          // worth the extra host call when the caller named the branch: a derived
+          // `kahuna/<id>-<slug>` cannot collide with a plausible default (#503).
+          if (args.kahuna.branch !== undefined) {
+            const defRes = await resolveDefault();
+            // Fail loud rather than proceed with the guard disabled — a bootstrap that
+            // silently skips its trunk check is the failure mode this guard exists for.
+            if (!defRes.ok) return envelope({ ok: false, error: defRes.error });
+            defaultBranch = defRes.branch;
+          }
+        } else {
+          const defRes = await resolveDefault();
           if (!defRes.ok) return envelope({ ok: false, error: defRes.error });
-          baseBranch = defRes.data.default_branch;
+          baseBranch = defRes.branch;
+          defaultBranch = defRes.branch; // same ref — the guard's base check covers it
         }
         const statePath = join(await statusDir(cwd), 'state.json');
         const remote = await bootstrapKahunaBranchRemote(cwd, args.kahuna, baseBranch,
@@ -118,7 +150,8 @@ const waveInitHandler: HandlerDef = {
           {
             adapter, slug,
             branchPresentOnRemote: (b) => branchExistsOnRemote(cwd, b),
-          });
+          },
+          defaultBranch);
         if (!remote.ok) return envelope({ ok: false, error: remote.error });
         kahunaBranch = remote.kahuna_branch;
         kahunaCreated = remote.created;

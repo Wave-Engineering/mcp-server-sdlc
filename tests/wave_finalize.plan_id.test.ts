@@ -47,9 +47,8 @@ beforeEach(() => {
   resetExecMock();
   tmpRoot = makeTmpRoot();
   onExec('git remote get-url origin', () => 'git@github.com:o/r.git');
-  // #472: target_branch resolves to the live default when omitted. Stub the
-  // GitHub default-branch lookup to 'main' so title/base assertions still hold.
-  onExec('defaultBranchRef', 'main');
+  // No default-branch stub — `target_branch` is required as of #503, so the
+  // handler never resolves a default. See tests/wave_finalize.test.ts.
 });
 
 afterEach(() => {
@@ -67,6 +66,7 @@ describe('wave_finalize plan_id title pattern', () => {
     const result = await handler.execute({
       plan_id: 77,
       kahuna_branch: 'kahuna/77-docmancer-portal',
+      target_branch: 'main',
       body_artifacts_dir: tmpRoot,
     });
     const data = parseResult(result);
@@ -106,6 +106,7 @@ describe('wave_finalize plan_id title pattern', () => {
     await handler.execute({
       plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
+      target_branch: 'main',
       body_artifacts_dir: tmpRoot,
     });
 
@@ -119,6 +120,7 @@ describe('wave_finalize plan_id title pattern', () => {
     const result = await handler.execute({
       epic_id: 42,
       kahuna_branch: 'kahuna/42-foo',
+      target_branch: 'main',
       body_artifacts_dir: tmpRoot,
     });
     const data = parseResult(result);

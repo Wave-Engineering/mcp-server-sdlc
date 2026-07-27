@@ -1,10 +1,19 @@
 // KAHUNA epic-final gate: opens (or returns) the kahuna → target_branch MR.
-// Idempotent on (kahuna_branch, target_branch). `target_branch` defaults to the
-// repo's LIVE default branch (resolved via the adapter) when the caller omits
-// it — never a hardcoded 'main' (#472). Platform-agnostic dispatcher —
-// `findExistingPr` + `prCreate` + `resolveDefaultBranch` go through
-// `getAdapter()`; body composition and SHA hashing live in `lib/wave-finalize.ts`.
-// Story 2.23 (#317).
+// Idempotent on (kahuna_branch, target_branch). Platform-agnostic dispatcher —
+// `findExistingPr` + `prCreate` go through `getAdapter()`; body composition and
+// SHA hashing live in `lib/wave-finalize.ts`. Story 2.23 (#317).
+//
+// `target_branch` is REQUIRED — no default of any kind (#503). It was a static
+// `.default('main')`, then (#472/#473) the repo's live default branch resolved
+// via the adapter. Both are wrong for the same reason: the default's *value* is
+// "the protected branch", and this handler's job is to open a MERGE TARGET.
+// Post-claudecode-workflow#1052 a campaign integrates each wave onto the campaign
+// branch and writes the protected branch exactly once, at the DoD gate — so a wave
+// that reaches this handler with `target_branch` omitted must fail loudly, not
+// silently promote to trunk. There is no safe guess for which branch a wave
+// integrates onto; only the caller knows whether it is mid-campaign or at the DoD.
+// (#472's own hazard — a repo whose default is e.g. release/1.0.0 — is unaffected:
+// a caller that wants the default branch resolves it and passes it.)
 
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
@@ -20,9 +29,9 @@ const inputSchema = z.object({
   root: z.string().optional(),
   plan_id: z.number().int().positive(),
   kahuna_branch: z.string().min(1),
-  // Optional: an explicit target wins; when omitted the handler resolves the
-  // repo's LIVE default branch (never hardcode 'main' — #472).
-  target_branch: z.string().min(1).optional(),
+  // REQUIRED — no default (#503). A default here means "merge to the protected
+  // branch", which is exactly the early-trunk-write #1052 removed.
+  target_branch: z.string().min(1),
   body_artifacts_dir: z.string().optional(),
 });
 
@@ -35,7 +44,9 @@ const waveFinalizeHandler: HandlerDef = {
   name: 'wave_finalize',
   description:
     'Open (or return the existing) kahuna→target_branch MR for a KAHUNA epic. ' +
-    'Idempotent on (kahuna_branch, target_branch). `target_branch` defaults to the repo\'s live default branch when omitted. ' +
+    'Idempotent on (kahuna_branch, target_branch). `target_branch` is REQUIRED and has no default (#503) — ' +
+    'inside a campaign a wave integrates onto the campaign branch, and the protected branch is written once at the DoD gate; ' +
+    'a caller that wants the repo default must resolve it and pass it explicitly. ' +
     'The MR body is assembled from wavebus artifacts under `body_artifacts_dir` (default: /tmp/wavemachine/<slug>/); ' +
     'when those are absent (e.g. wave_complete cleanup wiped them on the last wave), the handler falls back to durable wave-status state ' +
     '(`<project>/.claude/status/{phases-waves.json,state.json}`) to re-derive the body from plan + recorded mr_urls. ' +
@@ -51,19 +62,9 @@ const waveFinalizeHandler: HandlerDef = {
       const resolved = resolveArtifactsDir(args.body_artifacts_dir, defaultArtifactsDir(args.kahuna_branch), cwd);
       if (!resolved.ok) return envelope({ ok: false, error: resolved.error });
       const adapter = getAdapter();
-      // target_branch: an explicit caller value wins; otherwise resolve the LIVE
-      // default branch from the host (never hardcode 'main' — a repo whose
-      // default is e.g. release/1.0.0 must finalize to release/1.0.0, not main).
-      const explicitTarget = args.target_branch;
-      let targetBranch: string;
-      if (explicitTarget !== undefined) {
-        targetBranch = explicitTarget;
-      } else {
-        const defRes = await adapter.resolveDefaultBranch({ cwd });
-        if ('platform_unsupported' in defRes) return envelope({ ok: false, error: `default-branch resolution unsupported: ${defRes.hint}` });
-        if (!defRes.ok) return envelope({ ok: false, error: defRes.error });
-        targetBranch = defRes.data.default_branch;
-      }
+      // target_branch is schema-required (#503) — nothing to resolve, nothing to
+      // guess. The zod parse above rejected an omitted or empty value.
+      const targetBranch = args.target_branch;
       // Try the bus first; fall back to durable wave-status state when the
       // bus has been cleaned up (#415). assembleBodyFromState consults
       // `<project>/.claude/status/{phases-waves.json,state.json}`.

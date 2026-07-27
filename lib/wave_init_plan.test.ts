@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { normalizePlanJson } from './wave_init_plan.ts';
+import { bootstrapKahunaBranchRemote, kahunaBranchName, normalizePlanJson } from './wave_init_plan.ts';
 
 describe('normalizePlanJson', () => {
   test('transforms devspec-upshift shape to wave-status shape', () => {
@@ -108,5 +108,135 @@ describe('normalizePlanJson', () => {
     const result = JSON.parse(normalizePlanJson(upshift));
     expect(result.phases[0].waves[0].issues[1].repo).toBe('org/other-repo');
     expect(result.phases[0].waves[0].issues[1].ref).toBe('org/other-repo#19');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #503 — the integration branch name comes from the CALLER
+// ---------------------------------------------------------------------------
+// The bootstrap takes all of its platform contact through injected deps, so these
+// exercise the real function with no exec mocking. The load-bearing assertion in
+// every "rejected" case is `created: []` — that the branch was never CUT, not
+// merely that an error came back.
+
+const SHA = 'a'.repeat(40);
+
+/** A deps double that records every branch it was asked to create. */
+function fakeDeps(opts: { onRemote?: string[] } = {}) {
+  const created: string[] = [];
+  const onRemote = new Set(opts.onRemote ?? []);
+  return {
+    created,
+    deps: {
+      slug: 'o/r',
+      branchPresentOnRemote: (b: string) => onRemote.has(b),
+      adapter: {
+        resolveBranchSha: async () => ({ ok: true as const, data: { sha: SHA } }),
+        createBranch: async ({ branch }: { branch: string }) => {
+          created.push(branch);
+          onRemote.add(branch);
+          return { ok: true as const, data: {} };
+        },
+      },
+    } as unknown as Parameters<typeof bootstrapKahunaBranchRemote>[4],
+  };
+}
+
+const noState = async () => ({ kahuna_branch: null });
+
+describe('kahunaBranchName (#503)', () => {
+  test('derives the historical name when no branch is supplied', () => {
+    const r = kahunaBranchName({ plan_id: 56, slug: 'blueshift' });
+    expect(r).toEqual({ ok: true, branch: 'kahuna/56-blueshift' });
+  });
+
+  test('returns an explicit branch verbatim — no re-derivation, no normalization', () => {
+    const r = kahunaBranchName({ plan_id: 56, slug: 'blueshift', branch: 'kahuna/56-W-2' });
+    expect(r).toEqual({ ok: true, branch: 'kahuna/56-W-2' });
+  });
+
+  test.each([
+    ['ends with .lock', 'kahuna/56-w.lock'],
+    ['has a leading dash', '-kahuna/56-w'],
+    ['is fully qualified', 'refs/heads/kahuna/56-w'],
+    ['contains ..', 'kahuna/56../w'],
+    ['contains a space', 'kahuna/56 w'],
+    ['has an empty path component', 'kahuna//56-w'],
+    ['contains a glob char', 'kahuna/56-w*'],
+    ['contains @{', 'kahuna/56-w@{1}'],
+  ])('rejects a branch that %s', (_why, branch) => {
+    const r = kahunaBranchName({ plan_id: 56, slug: 'blueshift', branch });
+    expect(r.ok).toBe(false);
+    expect((r as { error: string }).error).toContain('not a valid git ref');
+  });
+});
+
+describe('bootstrapKahunaBranchRemote branch naming (#503)', () => {
+  test('an explicit branch is the ref created — the derived name is not', async () => {
+    const { created, deps } = fakeDeps();
+    const r = await bootstrapKahunaBranchRemote(
+      '/tmp', { plan_id: 56, slug: 'blueshift', branch: 'kahuna/56-W-2' },
+      'campaign/56-blueshift', noState, deps, 'main',
+    );
+    expect(r).toMatchObject({ ok: true, kahuna_branch: 'kahuna/56-W-2', created: true });
+    expect(created).toEqual(['kahuna/56-W-2']);
+    expect(created).not.toContain('kahuna/56-blueshift');
+  });
+
+  test('omitting branch keeps the derived kahuna/<plan_id>-<slug>', async () => {
+    const { created, deps } = fakeDeps();
+    const r = await bootstrapKahunaBranchRemote(
+      '/tmp', { plan_id: 56, slug: 'blueshift' }, 'main', noState, deps, 'main',
+    );
+    expect(r).toMatchObject({ ok: true, kahuna_branch: 'kahuna/56-blueshift', created: true });
+    expect(created).toEqual(['kahuna/56-blueshift']);
+  });
+
+  test('a branch equal to the BASE is rejected and never created', async () => {
+    const { created, deps } = fakeDeps();
+    const r = await bootstrapKahunaBranchRemote(
+      '/tmp', { plan_id: 56, slug: 'blueshift', branch: 'campaign/56-blueshift' },
+      'campaign/56-blueshift', noState, deps, 'main',
+    );
+    expect(r.ok).toBe(false);
+    expect((r as { error: string }).error).toContain('same ref as the base branch');
+    expect(created).toEqual([]);
+  });
+
+  // The dangerous one: trunk already EXISTS on the remote, so without this guard
+  // the reuse path claims the protected branch itself as the integration branch and
+  // every flight merges straight to it (claudecode-workflow#1052).
+  test('a branch equal to the REPO DEFAULT is rejected even though the base differs', async () => {
+    const { created, deps } = fakeDeps({ onRemote: ['main'] });
+    const r = await bootstrapKahunaBranchRemote(
+      '/tmp', { plan_id: 56, slug: 'blueshift', branch: 'main' },
+      'campaign/56-blueshift', noState, deps, 'main',
+    );
+    expect(r.ok).toBe(false);
+    expect((r as { error: string }).error).toContain('same ref as the repo default branch');
+    expect(created).toEqual([]);
+  });
+
+  test('an invalid ref is rejected before any platform call', async () => {
+    const { created, deps } = fakeDeps();
+    const r = await bootstrapKahunaBranchRemote(
+      '/tmp', { plan_id: 56, slug: 'blueshift', branch: 'kahuna/56 W2' },
+      'campaign/56-blueshift', noState, deps, 'main',
+    );
+    expect(r.ok).toBe(false);
+    expect((r as { error: string }).error).toContain('not a valid git ref');
+    expect(created).toEqual([]);
+  });
+
+  // Per-wave branches accumulate across a campaign: the wave-2 bootstrap must reuse
+  // its own branch when a retry finds it, not error as a cross-plan orphan.
+  test('an existing explicit branch is claimed as reuse, not re-cut', async () => {
+    const { created, deps } = fakeDeps({ onRemote: ['kahuna/56-W-2'] });
+    const r = await bootstrapKahunaBranchRemote(
+      '/tmp', { plan_id: 56, slug: 'blueshift', branch: 'kahuna/56-W-2' },
+      'campaign/56-blueshift', noState, deps, 'main',
+    );
+    expect(r).toMatchObject({ ok: true, kahuna_branch: 'kahuna/56-W-2', created: false, previously_recorded: false });
+    expect(created).toEqual([]);
   });
 });
