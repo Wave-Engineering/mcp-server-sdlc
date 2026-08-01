@@ -267,6 +267,13 @@ export interface PrWaitCiArgs {
   poll_interval_sec: number;
   timeout_sec: number;
   repo?: string;
+  /**
+   * How long to keep re-probing an empty rollup / absent pipeline before
+   * concluding the repo has no checks for this ref (#508). Not a CI timeout —
+   * once one check registers, `timeout_sec` governs from there. `0` disables
+   * the window and restores #416's t=0 behaviour; only tests should do that.
+   */
+  settle_window_sec?: number;
 }
 
 export type PrWaitCiFinalState = 'passed' | 'failed' | 'timed_out';
@@ -293,23 +300,46 @@ export interface PrWaitCiPolledResponse {
 }
 
 /**
- * Short-circuit return shape (#416). Reached on the very first probe when the
- * PR's status-check rollup is empty — there is nothing to settle, so the
- * "wait until CI is settled" semantics are satisfied at t=0. `mergeable` and
- * an optional `blocker` distinguish the happy path (PR is ready to merge)
- * from the obstructed path (draft / conflicts / closed PR).
+ * The two ways "this PR has no checks" can be true (#508). They are different
+ * facts and only one of them is safe, which is why they are different tokens.
  *
- * `elapsed_sec` is intentionally a small integer (the wall-clock cost of the
- * single probe), not a polling-loop duration.
+ * - `no_checks_configured` — the settle window elapsed and nothing indicates CI
+ *   is coming. The repo genuinely runs no checks for this ref.
+ * - `no_checks_yet` — the settle window elapsed but a CI run EXISTS for the head
+ *   SHA that has not registered as a check. Checks are coming; we ran out of
+ *   patience, not out of CI. **Never merge on this.**
+ *
+ * Replaces the single `no_checks_required` of #416, which meant both. That token
+ * is deliberately gone rather than aliased: its plain-English name reads as
+ * "nothing is wrong" (`skills/mmr/SKILL.md` calls it "a trap" in as many words),
+ * and keeping it as a synonym would preserve exactly the ambiguity this fixes.
+ * Callers that allowlist on `passed` are unaffected; anything matching the old
+ * literal now fails to match, which is the intended forcing function.
+ */
+export type PrWaitCiNoChecksStatus = 'no_checks_configured' | 'no_checks_yet';
+
+/**
+ * Short-circuit return shape (#416, reworked by #508). Reached when the PR's
+ * status-check rollup is still empty after the settle window.
+ *
+ * #416 returned this at t=0 on the first empty rollup. That is indistinguishable
+ * from a check that is merely QUEUED — the rollup is empty in both cases — so a
+ * PR whose CI had not yet started reported a definite, successful-sounding
+ * verdict with `elapsed_sec: 0`. `mergeable` and an optional `blocker`
+ * distinguish the happy path from the obstructed one (draft / conflicts / closed).
  */
 export interface PrWaitCiNoChecksResponse {
   number: number;
-  status: 'no_checks_required';
+  status: PrWaitCiNoChecksStatus;
   elapsed_sec: number;
   mergeable: boolean;
   /** Reason the PR is not mergeable today (e.g. `draft`, `conflicts`, `closed`). Omitted when mergeable. */
   blocker?: string;
   url: string;
+  /** Seconds spent waiting for checks to register before concluding. 0 only when a hard blocker made waiting pointless. */
+  settled_sec: number;
+  /** Present on `no_checks_yet`: the un-registered runs that prove CI is coming. */
+  pending_runs?: { run_id: number; workflow_name: string; status: string }[];
 }
 
 export type PrWaitCiResponse = PrWaitCiPolledResponse | PrWaitCiNoChecksResponse;

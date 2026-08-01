@@ -27,8 +27,10 @@ import {
   type PollArgs,
   type PollResult,
 } from '../pr-wait-ci-poll.js';
+import { ciListRunsGithub } from './ci-list-runs-github.js';
 import type {
   AdapterResult,
+  CiListRunsArgs,
   PrWaitCiArgs,
   PrWaitCiNoChecksResponse,
   PrWaitCiResponse,
@@ -69,6 +71,7 @@ interface PrProbeResponse {
   isDraft?: boolean;
   mergeable?: string | boolean; // MERGEABLE | CONFLICTING | UNKNOWN | bool
   mergeStateStatus?: string; // CLEAN | DIRTY | BLOCKED | UNSTABLE | UNKNOWN
+  headRefOid?: string; // head SHA — anchors the #508 pending-run cross-check
 }
 
 type Bucket = 'pass' | 'fail' | 'pending' | 'skipping';
@@ -158,7 +161,7 @@ export function snapshotGithub(number: number, repo?: string): ChecksSnapshot {
  */
 export function probeGithub(number: number, repo?: string): PrProbeResponse {
   const raw = exec(
-    `gh pr view ${number} --json statusCheckRollup,url,state,isDraft,mergeable,mergeStateStatus${repoFlag(repo)}`,
+    `gh pr view ${number} --json statusCheckRollup,url,state,isDraft,mergeable,mergeStateStatus,headRefOid${repoFlag(repo)}`,
   );
   return JSON.parse(raw) as PrProbeResponse;
 }
@@ -191,29 +194,176 @@ export function emptyRollupBlocker(probe: PrProbeResponse): string | null {
   return null;
 }
 
+/**
+ * How long to keep re-probing an empty rollup before concluding the repo has no
+ * checks for this ref (#508). A `pull_request`-triggered workflow registers
+ * within seconds of PR creation; the window only has to outlast that gap.
+ *
+ * It is NOT a CI timeout — once a single check registers we fall through to the
+ * normal polling loop and `timeout_sec` governs from there.
+ */
+export const SETTLE_WINDOW_SEC = 45;
+export const SETTLE_POLL_SEC = 5;
+
+/** Injectable seams so the settle loop is testable without real time or a real gh. */
+export interface SettleDeps {
+  probe: (number: number, repo?: string) => PrProbeResponse;
+  /**
+   * Runs for the head SHA — evidence that checks are coming but unregistered.
+   *
+   * Discriminated on purpose. A query that FAILS is not a query that found
+   * nothing, and collapsing the two would let a broken `gh` report
+   * "no CI configured" — an instrument that examined nothing, reporting the
+   * one answer a caller might merge on. `{ok:false}` is carried through to
+   * `evidence_unavailable`.
+   */
+  pendingRuns: (
+    headSha: string,
+    repo?: string,
+  ) => Promise<
+    | { ok: true; runs: { run_id: number; workflow_name: string; status: string }[] }
+    | { ok: false }
+  >;
+  sleep: (ms: number) => Promise<void>;
+  now: () => number;
+  settleWindowSec: number;
+  settlePollSec: number;
+}
+
+/**
+ * A run counts as evidence only while it is NOT finished. A completed run for
+ * this SHA that never produced a check is not "CI is coming" — it is CI that
+ * already came and went (a skipped workflow, a path-filtered job), and treating
+ * it as pending would hold every such PR for the full window and then report
+ * `no_checks_yet` forever.
+ */
+export function isUnfinished(status: string): boolean {
+  const s = status.toLowerCase();
+  return s !== 'completed' && s !== 'cancelled' && s !== 'skipped';
+}
+
+export function defaultSettleDeps(overrides: Partial<SettleDeps> = {}): SettleDeps {
+  return {
+    probe: probeGithub,
+    pendingRuns: async (headSha, repo) => {
+      const args: CiListRunsArgs = { ref: headSha, limit: 20, ...(repo !== undefined ? { repo } : {}) };
+      try {
+        const res = await ciListRunsGithub(args);
+        if (!('ok' in res) || !res.ok || !Array.isArray(res.data)) return { ok: false };
+        return {
+          ok: true,
+          runs: res.data
+            .filter((r) => r.head_sha === headSha && isUnfinished(r.status))
+            .map((r) => ({ run_id: r.run_id, workflow_name: r.workflow_name, status: r.status })),
+        };
+      } catch {
+        return { ok: false };
+      }
+    },
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    now: () => Date.now(),
+    settleWindowSec: SETTLE_WINDOW_SEC,
+    settlePollSec: SETTLE_POLL_SEC,
+    ...overrides,
+  };
+}
+
 export async function prWaitCiGithub(
   args: PrWaitCiArgs,
+  depsIn: Partial<SettleDeps> = {},
 ): Promise<AdapterResult<PrWaitCiResponse>> {
   // Bound any exception that escapes the snapshot helper into a typed result —
   // adapter callers must not have to try/catch.
   try {
-    // #416 short-circuit. One probe BEFORE entering the polling loop: if the
-    // PR's rollup is empty there is nothing to settle and we return at t=0.
-    const probeStart = Date.now();
-    const probe = probeGithub(args.number, args.repo);
-    const rollup = probe.statusCheckRollup ?? [];
+    // #508. #416 short-circuited here at t=0: one probe, and an empty rollup
+    // returned `no_checks_required` immediately. An empty rollup is ALSO what a
+    // merely-QUEUED check looks like, so a PR whose CI had not started yet
+    // reported a definite, successful-sounding verdict with `elapsed_sec: 0`.
+    //
+    // Observed on cc-workflow#1087: `pr_wait_ci` said no_checks_required while
+    // `gh pr checks` said `validate pending` seconds later. The live cost was a
+    // spurious HALT, not a bad merge — `/mmr` allowlists on `passed` — but the
+    // ambiguity lived in the API contract, so every future caller inherited it.
+    //
+    // So: keep probing until a check registers or the settle window elapses.
+    const deps = defaultSettleDeps({
+      ...(args.settle_window_sec !== undefined
+        ? { settleWindowSec: args.settle_window_sec }
+        : {}),
+      ...depsIn, // explicit injection still wins, so tests stay in control
+    });
+    const probeStart = deps.now();
+    let probe = deps.probe(args.number, args.repo);
+    let rollup = probe.statusCheckRollup ?? [];
+
     if (rollup.length === 0) {
+      // A hard blocker makes waiting pointless: a closed, merged or draft PR is
+      // not going to start CI, and holding the caller for the window buys
+      // nothing. Returning at once here is the ONE place a zero settle is right.
       const blocker = emptyRollupBlocker(probe);
-      const elapsedSec = Math.max(0, Math.floor((Date.now() - probeStart) / 1000));
-      const data: PrWaitCiNoChecksResponse = {
-        number: args.number,
-        status: 'no_checks_required',
-        elapsed_sec: elapsedSec,
-        mergeable: blocker === null,
-        url: probe.url ?? '',
-        ...(blocker !== null ? { blocker } : {}),
-      };
-      return { ok: true, data };
+      if (blocker !== null) {
+        return {
+          ok: true,
+          data: {
+            number: args.number,
+            status: 'no_checks_configured',
+            elapsed_sec: Math.max(0, Math.floor((deps.now() - probeStart) / 1000)),
+            settled_sec: 0,
+            mergeable: false,
+            blocker,
+            url: probe.url ?? '',
+          },
+        };
+      }
+
+      const deadline = probeStart + deps.settleWindowSec * 1000;
+      while (rollup.length === 0 && deps.now() < deadline) {
+        await deps.sleep(deps.settlePollSec * 1000);
+        probe = deps.probe(args.number, args.repo);
+        rollup = probe.statusCheckRollup ?? [];
+      }
+
+      if (rollup.length === 0) {
+        // Still nothing. Cross-check the REF before calling it "no CI here":
+        // a queued run for the head SHA is positive evidence that checks are
+        // coming, and reporting that as "no checks configured" is the same
+        // false-certainty this issue is about, just later on the clock.
+        // No head SHA means no anchor for the query. Claiming either answer off
+        // an unanchored search would be false certainty pointed one way or the
+        // other, so treat it as "cannot certify" rather than "no CI here".
+        const headSha = probe.headRefOid ?? '';
+        const evidence = headSha === ''
+          ? ({ ok: false } as const)
+          : await deps.pendingRuns(headSha, args.repo);
+        const settledSec = Math.max(0, Math.floor((deps.now() - probeStart) / 1000));
+
+        // Only ONE branch may claim "this repo runs no checks": a query that
+        // SUCCEEDED and found nothing. Everything else — the query failed, no
+        // SHA to anchor it, or runs found — is `no_checks_yet` and not mergeable.
+        const certified = evidence.ok && evidence.runs.length === 0;
+        const runs = evidence.ok ? evidence.runs : [];
+        const blocker = certified
+          ? undefined
+          : runs.length > 0
+            ? 'checks_not_registered'
+            : 'evidence_unavailable';
+
+        const data: PrWaitCiNoChecksResponse = {
+          number: args.number,
+          status: certified ? 'no_checks_configured' : 'no_checks_yet',
+          elapsed_sec: settledSec,
+          settled_sec: settledSec,
+          // `no_checks_yet` is NEVER mergeable: either CI exists and has not
+          // reported, or we could not establish that it doesn't.
+          mergeable: certified,
+          url: probe.url ?? '',
+          ...(blocker !== undefined ? { blocker } : {}),
+          ...(runs.length > 0 ? { pending_runs: runs } : {}),
+        };
+        return { ok: true, data };
+      }
+      // Checks registered during the window — fall through to the poll loop,
+      // which is the whole point: this PR now gets a real passed/failed verdict.
     }
 
     const pollArgs: PollArgs = {

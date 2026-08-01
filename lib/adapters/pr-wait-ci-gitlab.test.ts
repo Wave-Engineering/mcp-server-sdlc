@@ -196,7 +196,7 @@ describe('prWaitCiGitlab — full poll path', () => {
   });
 
   // --- #416: empty-pipeline short-circuit ---
-  test('empty pipeline + mergeable MR → no_checks_required immediately', async () => {
+  test('empty pipeline no longer certifies "no CI" — GitLab creates pipelines async (#508)', async () => {
     onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
     onExec(
       'glab api projects/org%2Frepo/merge_requests/3',
@@ -214,21 +214,66 @@ describe('prWaitCiGitlab — full poll path', () => {
 
     const result = await prWaitCiGitlab({
       number: 3,
-      // Generous timeout — proves we never enter the poll loop.
       poll_interval_sec: 5,
       timeout_sec: 1800,
+      // #508 knob — zero keeps this a fast unit test; the settle loop itself is
+      // covered with a fake clock below.
+      settle_window_sec: 0,
     });
     if (!('ok' in result) || !result.ok) {
       throw new Error(`expected ok result, got ${JSON.stringify(result)}`);
     }
     const data = result.data as { status?: string; mergeable?: boolean; blocker?: string; elapsed_sec?: number };
-    expect(data.status).toBe('no_checks_required');
-    expect(data.mergeable).toBe(true);
-    expect(data.blocker).toBeUndefined();
-    expect(data.elapsed_sec).toBeLessThan(5);
+    // `head_pipeline: null` on GitLab is ALSO "the pipeline has not been created
+    // yet" — GitLab creates it asynchronously after the MR. The ref cross-check
+    // cannot run under this mock, so nothing may certify "no CI configured".
+    expect(data.status).toBe('no_checks_yet');
+    expect(data.mergeable).toBe(false);
+    expect(data.blocker).toBe('evidence_unavailable');
   });
 
-  test('empty pipeline + draft MR → no_checks_required + draft blocker', async () => {
+  test('a QUEUED pipeline for the head SHA → no_checks_yet, never mergeable (#508)', async () => {
+    const clock = (() => {
+      let t = 1_000_000;
+      return { now: () => t, sleep: async (ms: number) => { t += ms; } };
+    })();
+    const result = await prWaitCiGitlab(
+      { number: 3, poll_interval_sec: 5, timeout_sec: 1800 },
+      {
+        probe: () => ({
+          iid: 3,
+          state: 'opened',
+          title: 't',
+          description: null,
+          source_branch: 'f',
+          target_branch: 'main',
+          web_url: 'https://gitlab.com/org/repo/-/merge_requests/3',
+          labels: [],
+          draft: false,
+          has_conflicts: false,
+          merge_status: 'can_be_merged',
+          detailed_merge_status: 'mergeable',
+          diff_refs: { head_sha: 'deadbeef' },
+        }),
+        pendingRuns: async () => ({
+          ok: true,
+          runs: [{ run_id: 7, workflow_name: 'pipeline', status: 'pending' }],
+        }),
+        now: clock.now,
+        sleep: clock.sleep,
+        settleWindowSec: 45,
+        settlePollSec: 5,
+      },
+    );
+    if (!('ok' in result) || !result.ok) throw new Error('expected ok');
+    const data = result.data as { status?: string; mergeable?: boolean; blocker?: string; elapsed_sec?: number };
+    expect(data.status).toBe('no_checks_yet');
+    expect(data.mergeable).toBe(false);
+    expect(data.blocker).toBe('checks_not_registered');
+    expect(data.elapsed_sec).toBeGreaterThan(0);
+  });
+
+  test('empty pipeline + draft MR → no_checks_configured + draft blocker', async () => {
     onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
     onExec(
       'glab api projects/org%2Frepo/merge_requests/4',
@@ -249,12 +294,12 @@ describe('prWaitCiGitlab — full poll path', () => {
       throw new Error(`expected ok result, got ${JSON.stringify(result)}`);
     }
     const data = result.data as { status?: string; mergeable?: boolean; blocker?: string };
-    expect(data.status).toBe('no_checks_required');
+    expect(data.status).toBe('no_checks_configured');
     expect(data.mergeable).toBe(false);
     expect(data.blocker).toBe('draft');
   });
 
-  test('empty pipeline + conflicts → no_checks_required + conflicts blocker', async () => {
+  test('empty pipeline + conflicts → no_checks_configured + conflicts blocker', async () => {
     onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
     onExec(
       'glab api projects/org%2Frepo/merge_requests/5',
@@ -276,7 +321,7 @@ describe('prWaitCiGitlab — full poll path', () => {
       throw new Error(`expected ok result, got ${JSON.stringify(result)}`);
     }
     const data = result.data as { status?: string; mergeable?: boolean; blocker?: string };
-    expect(data.status).toBe('no_checks_required');
+    expect(data.status).toBe('no_checks_configured');
     expect(data.mergeable).toBe(false);
     expect(data.blocker).toBe('conflicts');
   });

@@ -27,6 +27,7 @@ const {
   snapshotGithub,
   emptyRollupBlocker,
   probeGithub,
+  isUnfinished,
 } = await import('./pr-wait-ci-github.ts');
 
 beforeEach(() => {
@@ -241,110 +242,263 @@ describe('prWaitCiGithub — #221 all-skipped regression', () => {
   });
 });
 
-// --- #416: empty-rollup short-circuit at the adapter boundary -----------
-describe('prWaitCiGithub — empty-rollup short-circuit (#416)', () => {
-  test('empty rollup + mergeable → no_checks_required immediately', async () => {
+// --- #508: the settle window replaces #416's t=0 short-circuit -------------
+//
+// #416 returned `no_checks_required` on the FIRST empty rollup. An empty rollup
+// is also exactly what a merely-QUEUED check looks like, so a PR whose CI had
+// not started yet reported a definite, successful-sounding verdict with
+// `elapsed_sec: 0`. Observed live on cc-workflow#1087: `pr_wait_ci` said
+// no_checks_required while `gh pr checks` said `validate pending` seconds later.
+//
+// Every test here drives the settle loop through INJECTED seams — fake clock,
+// fake sleep. A test that burned 45s of real wall-clock would be deleted by
+// whoever next ran the suite, and this behaviour would go uncovered.
+
+/** Fake clock whose `sleep` advances `now`, so the window elapses instantly. */
+function fakeClock() {
+  let t = 1_000_000;
+  let slept = 0;
+  return {
+    now: () => t,
+    sleep: async (ms: number) => {
+      t += ms;
+      slept += 1;
+    },
+    sleeps: () => slept,
+  };
+}
+
+const HEAD_SHA = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2';
+
+/** Local mirror of the adapter's RollupItem — the test imports values, not types. */
+interface RollupLike {
+  __typename?: string;
+  name?: string;
+  status?: string;
+  conclusion?: string;
+  state?: string;
+}
+
+function openMergeable(overrides: Record<string, unknown> = {}) {
+  return {
+    url: 'https://github.com/org/repo/pull/42',
+    statusCheckRollup: [] as RollupLike[],
+    state: 'OPEN',
+    isDraft: false,
+    mergeable: 'MERGEABLE',
+    mergeStateStatus: 'CLEAN',
+    headRefOid: HEAD_SHA,
+    ...overrides,
+  };
+}
+
+interface NoChecksData {
+  status?: string;
+  mergeable?: boolean;
+  blocker?: string;
+  elapsed_sec?: number;
+  settled_sec?: number;
+  url?: string;
+  final_state?: string;
+  pending_runs?: { run_id: number; workflow_name: string; status: string }[];
+}
+
+describe('prWaitCiGithub — settle window (#508)', () => {
+  test('empty rollup, nothing ever registers, no runs for head SHA → no_checks_configured', async () => {
+    const clock = fakeClock();
+    const result = await prWaitCiGithub(
+      { number: 42, poll_interval_sec: 5, timeout_sec: 1800 },
+      {
+        probe: () => openMergeable(),
+        pendingRuns: async () => ({ ok: true, runs: [] }),
+        now: clock.now,
+        sleep: clock.sleep,
+        settleWindowSec: 45,
+        settlePollSec: 5,
+      },
+    );
+    if (!('ok' in result) || !result.ok) throw new Error('expected ok');
+    const data = result.data as NoChecksData;
+    expect(data.status).toBe('no_checks_configured');
+    expect(data.mergeable).toBe(true);
+    expect(data.blocker).toBeUndefined();
+    expect(data.pending_runs).toBeUndefined();
+    // It actually waited rather than concluding at t=0.
+    expect(clock.sleeps()).toBeGreaterThan(0);
+    expect(data.settled_sec).toBeGreaterThanOrEqual(45);
+  });
+
+  test('THE BUG: a QUEUED run for the head SHA → no_checks_yet, never mergeable', async () => {
+    const clock = fakeClock();
+    const result = await prWaitCiGithub(
+      { number: 42, poll_interval_sec: 5, timeout_sec: 1800 },
+      {
+        probe: () => openMergeable(),
+        pendingRuns: async (sha) => {
+          expect(sha).toBe(HEAD_SHA); // cross-check is anchored to the head SHA
+          return { ok: true, runs: [{ run_id: 991, workflow_name: 'validate', status: 'queued' }] };
+        },
+        now: clock.now,
+        sleep: clock.sleep,
+        settleWindowSec: 45,
+        settlePollSec: 5,
+      },
+    );
+    if (!('ok' in result) || !result.ok) throw new Error('expected ok');
+    const data = result.data as NoChecksData;
+    expect(data.status).toBe('no_checks_yet');
+    // The load-bearing assertion. CI exists and has not reported; a caller must
+    // never read this as safe.
+    expect(data.mergeable).toBe(false);
+    expect(data.blocker).toBe('checks_not_registered');
+    expect(data.pending_runs?.[0]?.workflow_name).toBe('validate');
+    // The issue's named regression: `elapsed_sec: 0` must be impossible when a
+    // queued run exists for the head SHA.
+    expect(data.elapsed_sec).toBeGreaterThan(0);
+  });
+
+  test('a check that registers DURING the window falls through to the poll loop', async () => {
+    // This is the actual fix: the PR gets a real passed/failed verdict instead
+    // of any no-checks token at all.
     onExec(
       'gh pr view',
       JSON.stringify({
         url: 'https://github.com/org/repo/pull/42',
-        statusCheckRollup: [],
-        state: 'OPEN',
-        isDraft: false,
-        mergeable: 'MERGEABLE',
-        mergeStateStatus: 'CLEAN',
+        statusCheckRollup: [
+          { __typename: 'CheckRun', name: 'validate', status: 'COMPLETED', conclusion: 'SUCCESS' },
+        ],
       }),
     );
+    const clock = fakeClock();
+    let probes = 0;
+    const result = await prWaitCiGithub(
+      { number: 42, poll_interval_sec: 5, timeout_sec: 60 },
+      {
+        probe: () => {
+          probes += 1;
+          return probes >= 3
+            ? openMergeable({
+                statusCheckRollup: [
+                  { __typename: 'CheckRun', name: 'validate', status: 'QUEUED' },
+                ],
+              })
+            : openMergeable();
+        },
+        pendingRuns: async () => {
+          throw new Error('must not cross-check the ref once a check has registered');
+        },
+        now: clock.now,
+        sleep: clock.sleep,
+        settleWindowSec: 45,
+        settlePollSec: 5,
+      },
+    );
+    if (!('ok' in result) || !result.ok) throw new Error('expected ok');
+    const data = result.data as NoChecksData;
+    expect(data.final_state).toBe('passed');
+    expect(data.status).toBeUndefined(); // polled shape, not a no-checks shape
+  });
 
-    const result = await prWaitCiGithub({
-      number: 42,
-      poll_interval_sec: 5,
-      timeout_sec: 1800, // huge — proves we don't enter the poll loop
-    });
-    if (!('ok' in result) || !result.ok) {
-      throw new Error(`expected ok result, got ${JSON.stringify(result)}`);
+  test('hard blockers do NOT wait — waiting for a closed PR to start CI is pointless', async () => {
+    for (const [probeOverride, expected] of [
+      [{ state: 'CLOSED' }, 'closed'],
+      [{ state: 'MERGED' }, 'merged'],
+      [{ isDraft: true }, 'draft'],
+      [{ mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY' }, 'conflicts'],
+    ] as [Record<string, unknown>, string][]) {
+      const clock = fakeClock();
+      const result = await prWaitCiGithub(
+        { number: 42, poll_interval_sec: 5, timeout_sec: 1800 },
+        {
+          probe: () => openMergeable(probeOverride),
+          pendingRuns: async () => {
+            throw new Error('must not cross-check the ref for a blocked PR');
+          },
+          now: clock.now,
+          sleep: clock.sleep,
+          settleWindowSec: 45,
+          settlePollSec: 5,
+        },
+      );
+      if (!('ok' in result) || !result.ok) throw new Error('expected ok');
+      const data = result.data as NoChecksData;
+      expect(data.status).toBe('no_checks_configured');
+      expect(data.blocker).toBe(expected);
+      expect(data.mergeable).toBe(false);
+      expect(data.settled_sec).toBe(0);
+      // The ONE place a zero settle is correct — assert we truly did not sleep.
+      expect(clock.sleeps()).toBe(0);
     }
-    const data = result.data as { status?: string; mergeable?: boolean; blocker?: string; elapsed_sec?: number; url?: string };
-    expect(data.status).toBe('no_checks_required');
-    expect(data.mergeable).toBe(true);
-    expect(data.blocker).toBeUndefined();
-    expect(data.elapsed_sec).toBeLessThan(5);
-    expect(data.url).toBe('https://github.com/org/repo/pull/42');
-    // Probe argv must include the new fields the short-circuit needs.
-    const viewCall = execCalls().find((c) => c.startsWith('gh pr view')) ?? '';
-    expect(viewCall).toContain('mergeable');
-    expect(viewCall).toContain('isDraft');
-    expect(viewCall).toContain('state');
-    // #220 regression — never use the broken `gh pr checks --json` form.
-    expect(execCalls().some((c) => c.startsWith('gh pr checks'))).toBe(false);
   });
 
-  test('empty rollup + CONFLICTING → no_checks_required + conflicts blocker', async () => {
-    onExec(
-      'gh pr view',
-      JSON.stringify({
-        url: 'https://github.com/org/repo/pull/43',
-        statusCheckRollup: [],
-        state: 'OPEN',
-        isDraft: false,
-        mergeable: 'CONFLICTING',
-        mergeStateStatus: 'DIRTY',
-      }),
+  test('the retired `no_checks_required` token is gone, not aliased', async () => {
+    // Its plain-English name is the trap (skills/mmr/SKILL.md says so outright).
+    // Keeping it as a synonym would preserve the ambiguity this issue is about.
+    const clock = fakeClock();
+    const result = await prWaitCiGithub(
+      { number: 42, poll_interval_sec: 5, timeout_sec: 1800 },
+      {
+        probe: () => openMergeable(),
+        pendingRuns: async () => ({ ok: true, runs: [] }),
+        now: clock.now,
+        sleep: clock.sleep,
+        settleWindowSec: 10,
+        settlePollSec: 5,
+      },
     );
-    const result = await prWaitCiGithub({
-      number: 43,
-      poll_interval_sec: 5,
-      timeout_sec: 1800,
-    });
     if (!('ok' in result) || !result.ok) throw new Error('expected ok');
-    const data = result.data as { status?: string; mergeable?: boolean; blocker?: string };
-    expect(data.status).toBe('no_checks_required');
-    expect(data.mergeable).toBe(false);
-    expect(data.blocker).toBe('conflicts');
+    expect((result.data as NoChecksData).status).not.toBe('no_checks_required');
   });
 
-  test('empty rollup + draft → no_checks_required + draft blocker', async () => {
-    onExec(
-      'gh pr view',
-      JSON.stringify({
-        url: 'https://github.com/org/repo/pull/44',
-        statusCheckRollup: [],
-        state: 'OPEN',
-        isDraft: true,
-        mergeable: 'MERGEABLE',
-        mergeStateStatus: 'CLEAN',
-      }),
+  test('a missing head SHA cannot certify "no CI" — it is no_checks_yet, not configured', async () => {
+    // No anchor → the query cannot run → we have established NOTHING. Reporting
+    // `no_checks_configured` here would be an instrument that examined nothing
+    // returning the one answer a caller might merge on.
+    const clock = fakeClock();
+    const result = await prWaitCiGithub(
+      { number: 42, poll_interval_sec: 5, timeout_sec: 1800 },
+      {
+        probe: () => openMergeable({ headRefOid: undefined }),
+        pendingRuns: async () => {
+          throw new Error('must not query runs without a head SHA to anchor to');
+        },
+        now: clock.now,
+        sleep: clock.sleep,
+        settleWindowSec: 10,
+        settlePollSec: 5,
+      },
     );
-    const result = await prWaitCiGithub({ number: 44, poll_interval_sec: 5, timeout_sec: 60 });
     if (!('ok' in result) || !result.ok) throw new Error('expected ok');
-    const data = result.data as { status?: string; mergeable?: boolean; blocker?: string };
-    expect(data.status).toBe('no_checks_required');
+    const data = result.data as NoChecksData;
+    expect(data.status).toBe('no_checks_yet');
+    expect(data.blocker).toBe('evidence_unavailable');
     expect(data.mergeable).toBe(false);
-    expect(data.blocker).toBe('draft');
   });
 
-  test('empty rollup + closed PR → no_checks_required + closed blocker', async () => {
-    onExec(
-      'gh pr view',
-      JSON.stringify({
-        url: 'https://github.com/org/repo/pull/45',
-        statusCheckRollup: [],
-        state: 'CLOSED',
-        isDraft: false,
-        mergeable: 'UNKNOWN',
-        mergeStateStatus: 'UNKNOWN',
-      }),
+  test('a FAILED evidence query cannot report "no CI configured"', async () => {
+    // The instrument-examined-nothing case, which is the shape this whole repo
+    // is written against: a broken `gh` must not resolve to the mergeable answer.
+    const clock = fakeClock();
+    const result = await prWaitCiGithub(
+      { number: 42, poll_interval_sec: 5, timeout_sec: 1800 },
+      {
+        probe: () => openMergeable(),
+        pendingRuns: async () => ({ ok: false }),
+        now: clock.now,
+        sleep: clock.sleep,
+        settleWindowSec: 10,
+        settlePollSec: 5,
+      },
     );
-    const result = await prWaitCiGithub({ number: 45, poll_interval_sec: 5, timeout_sec: 60 });
     if (!('ok' in result) || !result.ok) throw new Error('expected ok');
-    const data = result.data as { status?: string; mergeable?: boolean; blocker?: string };
-    expect(data.status).toBe('no_checks_required');
+    const data = result.data as NoChecksData;
+    expect(data.status).toBe('no_checks_yet');
+    expect(data.blocker).toBe('evidence_unavailable');
     expect(data.mergeable).toBe(false);
-    expect(data.blocker).toBe('closed');
   });
 
-  test('non-empty rollup does NOT short-circuit — polled-response shape returned', async () => {
-    // Regression — proves the addition is conditional on rollup.length === 0.
+  test('non-empty rollup does NOT enter the settle window at all', async () => {
+    // Regression — proves the whole addition is conditional on an empty rollup.
     onExec(
       'gh pr view',
       JSON.stringify({
@@ -358,13 +512,38 @@ describe('prWaitCiGithub — empty-rollup short-circuit (#416)', () => {
         mergeStateStatus: 'CLEAN',
       }),
     );
-    const result = await prWaitCiGithub({ number: 46, poll_interval_sec: 5, timeout_sec: 10 });
+    const clock = fakeClock();
+    const result = await prWaitCiGithub(
+      { number: 46, poll_interval_sec: 5, timeout_sec: 10 },
+      { now: clock.now, sleep: clock.sleep },
+    );
     if (!('ok' in result) || !result.ok) throw new Error('expected ok');
-    const data = result.data as { status?: string; final_state?: string };
+    const data = result.data as NoChecksData;
     expect(data.final_state).toBe('passed');
     expect(data.status).toBeUndefined();
+    expect(clock.sleeps()).toBe(0);
   });
 });
+
+// --- evidence classifier: what counts as "CI is coming" (#508) --------------
+describe('isUnfinished — only unfinished runs are evidence', () => {
+  test('queued / in_progress / requested / waiting → evidence', () => {
+    for (const s of ['queued', 'in_progress', 'requested', 'waiting', 'pending']) {
+      expect(isUnfinished(s)).toBe(true);
+    }
+  });
+
+  test('completed / cancelled / skipped → NOT evidence', () => {
+    // A finished run that never produced a check is not "CI is coming" — it is
+    // CI that already came and went (path-filtered job, skipped workflow).
+    // Counting it would hold every such PR for the full window and then report
+    // `no_checks_yet` forever, converting a spurious pass into a spurious hang.
+    for (const s of ['completed', 'COMPLETED', 'cancelled', 'skipped']) {
+      expect(isUnfinished(s)).toBe(false);
+    }
+  });
+});
+
 
 // --- pure mapper tests for the empty-rollup blocker classifier (#416) ------
 describe('emptyRollupBlocker — pure mapping table', () => {

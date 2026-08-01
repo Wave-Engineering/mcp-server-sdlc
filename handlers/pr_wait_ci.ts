@@ -23,6 +23,10 @@ const inputSchema = z
     number: z.number().int().positive(),
     poll_interval_sec: z.number().int().optional().default(30),
     timeout_sec: z.number().int().positive().optional().default(1800),
+    // #508: how long to wait for checks to REGISTER before concluding a repo
+    // runs none. An empty rollup at t=0 is indistinguishable from a queued
+    // check, which is how a PR with pending CI reported a definite verdict.
+    settle_window_sec: z.number().int().min(0).optional(),
     // GitLab nested groups need arbitrary `/` depth — see lib/schemas/repo.ts (#290).
     repo: repoOptionalSchema,
   })
