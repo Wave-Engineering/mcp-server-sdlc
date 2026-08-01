@@ -32,42 +32,73 @@ Tools below are listed in alphabetic order. To add a tool: drop a file in `handl
 
 `final_state: 'passed'` requires `total > 0 && pending === 0 && failed === 0`. All-skipped checks (every workflow's `if:` guard didn't match) count as `passed` — see #221.
 
-**Returns — empty-rollup short-circuit** (#416). When the head ref has no required status checks, the handler returns immediately at t=0 instead of spinning to timeout. The semantics is "wait until CI is settled" — if there are no checks to settle, that condition is satisfied at t=0.
+**Returns — no checks** (#416, reworked by #508). When the head ref still has no
+registered checks after a **settle window**, the handler returns without entering
+the polling loop.
+
+#416 returned here at t=0 on the first empty rollup. An empty rollup is also
+exactly what a merely-**queued** check looks like, so a PR whose CI had not
+started yet got a definite, successful-sounding verdict with `elapsed_sec: 0`.
+So the handler now keeps probing for `settle_window_sec` (default 45s), and if
+nothing has registered by then it cross-checks the **head SHA** for CI runs
+before deciding which of two facts is true:
+
+| status | meaning | `mergeable` |
+|---|---|---|
+| `no_checks_configured` | the ref-query succeeded and found no runs — this repo genuinely runs no checks here | may be `true` |
+| `no_checks_yet` | runs exist for the head SHA that have not registered as checks, **or** the ref-query could not be run at all | always `false` |
+
+**Only a query that SUCCEEDED and found nothing may report `no_checks_configured`.**
+A failed query, or a missing head SHA, yields `no_checks_yet` with
+`blocker: "evidence_unavailable"` — an instrument that examined nothing must
+never return the answer a caller might merge on.
 
 ```json
 {
   "ok": true,
   "number": 42,
-  "status": "no_checks_required",
-  "elapsed_sec": 0,
-  "mergeable": true,
+  "status": "no_checks_yet",
+  "elapsed_sec": 45,
+  "settled_sec": 45,
+  "mergeable": false,
+  "blocker": "checks_not_registered",
+  "pending_runs": [{ "run_id": 991, "workflow_name": "validate", "status": "queued" }],
   "url": "https://github.com/org/repo/pull/42"
 }
 ```
 
-When the rollup is empty AND the PR/MR is obstructed (draft, closed, conflicts, …), `mergeable` is `false` and a `blocker` field names the obstruction:
+When there are no checks AND the PR/MR is obstructed (draft, closed, conflicts, …),
+the settle window is skipped entirely — a closed PR is not going to start CI — and
+`settled_sec` is `0`:
 
 ```json
 {
   "ok": true,
   "number": 42,
-  "status": "no_checks_required",
+  "status": "no_checks_configured",
   "elapsed_sec": 0,
+  "settled_sec": 0,
   "mergeable": false,
   "blocker": "draft" | "closed" | "merged" | "conflicts" | "not_mergeable" | "locked",
   "url": "https://github.com/org/repo/pull/42"
 }
 ```
 
+> **`no_checks_required` is gone.** It meant both facts above, and its
+> plain-English name reads as "nothing is wrong". It is removed rather than
+> aliased so that callers matching the old literal stop matching — a deliberate
+> forcing function. Callers that allowlist on `final_state === 'passed'` are
+> unaffected.
+
 **Discriminator.** Callers should branch on the response shape via either field:
 
-- `status === 'no_checks_required'` → empty-rollup short-circuit (`final_state` absent).
+- `status` present (`no_checks_configured` | `no_checks_yet`) → no-checks return (`final_state` absent). **Neither value is a pass.**
 - `final_state` present → polling-loop result (`status` absent).
 
 **Platform notes.**
 
-- GitHub: probe is `gh pr view <num> --json statusCheckRollup,url,state,isDraft,mergeable,mergeStateStatus`. Polling-loop snapshot uses the slimmer `--json statusCheckRollup,url` (per-iteration cost stays minimal). `gh pr checks --json` is NOT used — it broke on Ubuntu 24.04's gh 2.45 (#220).
-- GitLab: probe is `glab api projects/<encoded-slug>/merge_requests/<iid>`. Empty-rollup means `head_pipeline === null && pipeline === null`. Polling-loop status mapping: `success → passed`, `failed/canceled → failed`, `running/pending/created/preparing/waiting_for_resource/scheduled/manual → pending`, anything else → uncounted (loop times out).
+- GitHub: probe is `gh pr view <num> --json statusCheckRollup,url,state,isDraft,mergeable,mergeStateStatus,headRefOid` (`headRefOid` anchors the #508 ref cross-check). Polling-loop snapshot uses the slimmer `--json statusCheckRollup,url` (per-iteration cost stays minimal). `gh pr checks --json` is NOT used — it broke on Ubuntu 24.04's gh 2.45 (#220).
+- GitLab: probe is `glab api projects/<encoded-slug>/merge_requests/<iid>`. Empty-rollup means `head_pipeline === null && pipeline === null` — which on GitLab is also what "the pipeline has not been created yet" looks like, since pipelines are created asynchronously after the MR (#508). Polling-loop status mapping: `success → passed`, `failed/canceled → failed`, `running/pending/created/preparing/waiting_for_resource/scheduled/manual → pending`, anything else → uncounted (loop times out).
 
 **See also.** `pattern_decorative_ac_and_stub_orphan.md` for the failure mode this short-circuit closes (autopilot callers losing 30-minute timeout windows on docs-only PRs with no CI).
 

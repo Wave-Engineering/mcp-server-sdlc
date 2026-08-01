@@ -19,7 +19,8 @@
  */
 
 import { execSync } from 'child_process';
-import { gitlabApiMr } from '../gitlab-api.js';
+import { gitlabApiMr, type GitlabMr } from '../gitlab-api.js';
+import { ciListRunsGitlab } from './ci-list-runs-gitlab.js';
 import {
   defaultDeps,
   runPollLoop,
@@ -28,6 +29,7 @@ import {
 } from '../pr-wait-ci-poll.js';
 import type {
   AdapterResult,
+  CiListRunsArgs,
   PrWaitCiArgs,
   PrWaitCiNoChecksResponse,
   PrWaitCiResponse,
@@ -129,30 +131,147 @@ function emptyPipelineBlockerGitlab(
   return null;
 }
 
+/**
+ * Settle knobs for the GitLab twin of the #508 fix. GitLab creates the pipeline
+ * asynchronously after the MR, so `head_pipeline: null` has exactly the same
+ * two meanings as GitHub's empty rollup — "no CI here" and "no CI *yet*".
+ */
+export const SETTLE_WINDOW_SEC_GITLAB = 45;
+export const SETTLE_POLL_SEC_GITLAB = 5;
+
+export interface SettleDepsGitlab {
+  probe: (number: number, repo?: string) => GitlabMr;
+  /** Discriminated: a FAILED query is not a query that found nothing (#508). */
+  pendingRuns: (
+    headSha: string,
+    repo?: string,
+  ) => Promise<
+    | { ok: true; runs: { run_id: number; workflow_name: string; status: string }[] }
+    | { ok: false }
+  >;
+  sleep: (ms: number) => Promise<void>;
+  now: () => number;
+  settleWindowSec: number;
+  settlePollSec: number;
+}
+
+/** GitLab pipeline statuses that mean "still going to report". */
+function isUnfinishedGitlab(status: string): boolean {
+  const s = status.toLowerCase();
+  return s === 'created' || s === 'waiting_for_resource' || s === 'preparing' ||
+    s === 'pending' || s === 'running' || s === 'scheduled' || s === 'manual';
+}
+
+/** Canonical source-branch head; `diff_refs.head_sha` wins over the top-level `sha`. */
+function headShaOf(mr: GitlabMr): string {
+  return mr.diff_refs?.head_sha ?? mr.sha ?? '';
+}
+
+export function defaultSettleDepsGitlab(
+  overrides: Partial<SettleDepsGitlab> = {},
+): SettleDepsGitlab {
+  return {
+    probe: (n, repo) => gitlabApiMr(n, parseSlugOpts(repo)),
+    pendingRuns: async (headSha, repo) => {
+      const listArgs: CiListRunsArgs = {
+        ref: headSha,
+        limit: 20,
+        ...(repo !== undefined ? { repo } : {}),
+      };
+      try {
+        const res = await ciListRunsGitlab(listArgs);
+        if (!('ok' in res) || !res.ok || !Array.isArray(res.data)) return { ok: false };
+        return {
+          ok: true,
+          runs: res.data
+            .filter((r) => r.head_sha === headSha && isUnfinishedGitlab(r.status))
+            .map((r) => ({ run_id: r.run_id, workflow_name: r.workflow_name, status: r.status })),
+        };
+      } catch {
+        return { ok: false };
+      }
+    },
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    now: () => Date.now(),
+    settleWindowSec: SETTLE_WINDOW_SEC_GITLAB,
+    settlePollSec: SETTLE_POLL_SEC_GITLAB,
+    ...overrides,
+  };
+}
+
 export async function prWaitCiGitlab(
   args: PrWaitCiArgs,
+  depsIn: Partial<SettleDepsGitlab> = {},
 ): Promise<AdapterResult<PrWaitCiResponse>> {
   try {
-    // #416 short-circuit. One probe BEFORE entering the polling loop: if the
-    // MR has no pipeline data at all (neither `head_pipeline` nor `pipeline`),
-    // there is nothing to settle and we return at t=0.
-    const probeStart = Date.now();
-    const mr = gitlabApiMr(args.number, parseSlugOpts(args.repo));
-    const hasPipeline =
-      (mr.head_pipeline !== undefined && mr.head_pipeline !== null) ||
-      (mr.pipeline !== undefined && mr.pipeline !== null);
-    if (!hasPipeline) {
+    // #508 — the GitLab half. #416 returned at t=0 when the MR carried no
+    // pipeline data. GitLab creates the pipeline ASYNCHRONOUSLY after the MR, so
+    // `head_pipeline: null` is also exactly what "the pipeline has not been
+    // created yet" looks like. Same ambiguity as the GitHub empty rollup, same
+    // fix: keep probing, then cross-check the ref before concluding.
+    const deps = defaultSettleDepsGitlab({
+      ...(args.settle_window_sec !== undefined
+        ? { settleWindowSec: args.settle_window_sec }
+        : {}),
+      ...depsIn,
+    });
+    const probeStart = deps.now();
+    let mr = deps.probe(args.number, args.repo);
+    const hasPipelineNow = (m: GitlabMr): boolean =>
+      (m.head_pipeline !== undefined && m.head_pipeline !== null) ||
+      (m.pipeline !== undefined && m.pipeline !== null);
+    if (!hasPipelineNow(mr)) {
+      // A hard blocker makes waiting pointless — a closed/merged/draft MR is not
+      // going to start a pipeline.
       const blocker = emptyPipelineBlockerGitlab(mr);
-      const elapsedSec = Math.max(0, Math.floor((Date.now() - probeStart) / 1000));
-      const data: PrWaitCiNoChecksResponse = {
-        number: args.number,
-        status: 'no_checks_required',
-        elapsed_sec: elapsedSec,
-        mergeable: blocker === null,
-        url: mr.web_url ?? '',
-        ...(blocker !== null ? { blocker } : {}),
-      };
-      return { ok: true, data };
+      if (blocker !== null) {
+        return {
+          ok: true,
+          data: {
+            number: args.number,
+            status: 'no_checks_configured',
+            elapsed_sec: Math.max(0, Math.floor((deps.now() - probeStart) / 1000)),
+            settled_sec: 0,
+            mergeable: false,
+            blocker,
+            url: mr.web_url ?? '',
+          },
+        };
+      }
+
+      const deadline = probeStart + deps.settleWindowSec * 1000;
+      while (!hasPipelineNow(mr) && deps.now() < deadline) {
+        await deps.sleep(deps.settlePollSec * 1000);
+        mr = deps.probe(args.number, args.repo);
+      }
+
+      if (!hasPipelineNow(mr)) {
+        const headSha = headShaOf(mr);
+        const evidence = headSha === ''
+          ? ({ ok: false } as const)
+          : await deps.pendingRuns(headSha, args.repo);
+        const settledSec = Math.max(0, Math.floor((deps.now() - probeStart) / 1000));
+        // Only a query that SUCCEEDED and found nothing may claim "no CI here".
+        const certified = evidence.ok && evidence.runs.length === 0;
+        const runs = evidence.ok ? evidence.runs : [];
+        const blocker = certified
+          ? undefined
+          : runs.length > 0
+            ? 'checks_not_registered'
+            : 'evidence_unavailable';
+        const data: PrWaitCiNoChecksResponse = {
+          number: args.number,
+          status: certified ? 'no_checks_configured' : 'no_checks_yet',
+          elapsed_sec: settledSec,
+          settled_sec: settledSec,
+          mergeable: certified,
+          url: mr.web_url ?? '',
+          ...(blocker !== undefined ? { blocker } : {}),
+          ...(runs.length > 0 ? { pending_runs: runs } : {}),
+        };
+        return { ok: true, data };
+      }
+      // A pipeline appeared during the window — fall through to the poll loop.
     }
 
     const pollArgs: PollArgs = {

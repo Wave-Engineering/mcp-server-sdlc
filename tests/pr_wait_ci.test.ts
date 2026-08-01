@@ -601,7 +601,7 @@ describe('pr_wait_ci handler', () => {
   // "wait until CI is settled" — if there are no checks to settle, that
   // condition is satisfied at t=0.
 
-  test('test_pr_wait_ci_empty_rollup_mergeable — empty rollup + mergeable returns no_checks_required immediately', async () => {
+  test('test_pr_wait_ci_empty_rollup_mergeable — empty rollup no longer certifies "no CI" (#508)', async () => {
     setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote'))
         return 'https://github.com/org/repo.git\n';
@@ -620,23 +620,29 @@ describe('pr_wait_ci handler', () => {
     const result = await handler.execute({
       number: 42,
       poll_interval_sec: 5,
-      // Generous timeout — proves the short-circuit returns *before* any sleep.
       timeout_sec: 1800,
+      // #508 knob. Zero restores the old t=0 probe so this stays a fast unit
+      // test; the settle loop itself is covered with a fake clock in
+      // lib/adapters/pr-wait-ci-github.test.ts.
+      settle_window_sec: 0,
     });
     const data = parseResult(result);
     expect(data.ok).toBe(true);
-    expect(data.status).toBe('no_checks_required');
-    expect(data.mergeable).toBe(true);
+    // NOT `no_checks_configured`. The exec mock has no `gh run list`, so the
+    // ref cross-check cannot run — and a query that did not run may never
+    // certify "this repo has no CI". That is the whole point of #508: the
+    // mergeable-looking answer is the one that must be earned.
+    expect(data.status).toBe('no_checks_yet');
+    expect(data.mergeable).toBe(false);
+    expect(data.blocker).toBe('evidence_unavailable');
     expect(typeof data.elapsed_sec).toBe('number');
-    expect(data.elapsed_sec).toBeLessThan(5); // far less than poll_interval
-    expect(data.blocker).toBeUndefined();
     expect(data.url).toBe('https://github.com/org/repo/pull/42');
     // `final_state` is the polling-loop shape — must NOT appear on the
     // short-circuit envelope (would confuse callers reading the discriminator).
     expect(data.final_state).toBeUndefined();
   });
 
-  test('test_pr_wait_ci_empty_rollup_with_conflict — empty rollup + conflict returns no_checks_required + blocker', async () => {
+  test('test_pr_wait_ci_empty_rollup_with_conflict — empty rollup + conflict returns no_checks_configured + blocker', async () => {
     setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote'))
         return 'https://github.com/org/repo.git\n';
@@ -659,13 +665,13 @@ describe('pr_wait_ci handler', () => {
     });
     const data = parseResult(result);
     expect(data.ok).toBe(true);
-    expect(data.status).toBe('no_checks_required');
+    expect(data.status).toBe('no_checks_configured');
     expect(data.mergeable).toBe(false);
     expect(data.blocker).toBe('conflicts');
     expect(data.elapsed_sec).toBeLessThan(5);
   });
 
-  test('test_pr_wait_ci_empty_rollup_draft — empty rollup + draft PR returns no_checks_required + draft blocker', async () => {
+  test('test_pr_wait_ci_empty_rollup_draft — empty rollup + draft PR returns no_checks_configured + draft blocker', async () => {
     setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote'))
         return 'https://github.com/org/repo.git\n';
@@ -684,7 +690,7 @@ describe('pr_wait_ci handler', () => {
     const result = await handler.execute({ number: 44, poll_interval_sec: 5, timeout_sec: 60 });
     const data = parseResult(result);
     expect(data.ok).toBe(true);
-    expect(data.status).toBe('no_checks_required');
+    expect(data.status).toBe('no_checks_configured');
     expect(data.mergeable).toBe(false);
     expect(data.blocker).toBe('draft');
   });
