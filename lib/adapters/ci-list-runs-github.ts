@@ -25,6 +25,7 @@
  */
 
 import { execSync } from 'child_process';
+import { shortRefName } from '../shared/query-outcome.js';
 import { runArgv } from '../shared/error-norm.js';
 import type {
   AdapterResult,
@@ -80,13 +81,19 @@ export async function ciListRunsGithub(
     // Ref selection. When expected_sha is provided the SHA is authoritative
     // (always --commit); for branch refs we additionally pass --branch so
     // `gh` narrows by both. Without expected_sha the ref drives selection.
+    // `--branch` matches gh's `headBranch`, which for a TAG-triggered run is the
+    // bare tag name — so `refs/tags/v1.1.0` matches nothing and the caller is
+    // told the pipeline never ran. Measured live: `--branch refs/tags/v8.2.0`
+    // returned 0 runs, `--branch v8.2.0` returned 2, for the same tag. The repo
+    // normalised `refs/heads/` in two places and `refs/tags/` in none (#492).
+    const branchRef = shortRefName(args.ref);
     if (args.expected_sha !== undefined) {
-      if (!isSha(args.ref)) cmd.push('--branch', args.ref);
+      if (!isSha(args.ref)) cmd.push('--branch', branchRef);
       cmd.push('--commit', args.expected_sha);
     } else if (isSha(args.ref)) {
       cmd.push('--commit', args.ref);
     } else {
-      cmd.push('--branch', args.ref);
+      cmd.push('--branch', branchRef);
     }
     if (args.workflow_name !== undefined) {
       cmd.push('--workflow', args.workflow_name);
@@ -106,11 +113,12 @@ export async function ciListRunsGithub(
         ok: false,
         code: 'gh_run_list_failed',
         error: `gh run list failed: ${result.stderr.trim() || result.stdout.trim()}`,
+        queried_argv: result.argv,
       };
     }
 
     const raw = result.stdout.trim();
-    if (!raw) return { ok: true, data: [] };
+    if (!raw) return { ok: true, data: [], queried_argv: result.argv };
 
     const runs = JSON.parse(raw) as GhRun[];
     if (!Array.isArray(runs)) {
@@ -118,9 +126,10 @@ export async function ciListRunsGithub(
         ok: false,
         code: 'gh_run_list_bad_shape',
         error: `gh run list returned non-array JSON: ${String(runs).slice(0, 200)}`,
+        queried_argv: result.argv,
       };
     }
-    return { ok: true, data: runs.map(normalizeGh) };
+    return { ok: true, data: runs.map(normalizeGh), queried_argv: result.argv };
   } catch (err) {
     return {
       ok: false,

@@ -29,9 +29,22 @@
 // ---------------------------------------------------------------------------
 
 export type AdapterResult<T> =
-  | { ok: true; data: T }
-  | { ok: false; error: string; code: string }
+  | { ok: true; data: T; queried_argv?: string[] }
+  | { ok: false; error: string; code: string; queried_argv?: string[] }
   | { platform_unsupported: true; hint: string };
+
+/**
+ * `queried_argv` — the argv the adapter ACTUALLY executed to produce this
+ * result, when it ran a subprocess (#493).
+ *
+ * Optional and additive: no existing caller changes, and adapters that do not
+ * shell out simply omit it. It exists so a "found nothing" message can derive
+ * its verify line from the query that ran rather than a hand-written guess at
+ * it. #492 is what that guess costs — its suggestion rendered the exact FAILING
+ * lookup, so an operator who followed the tool's own advice got an empty result
+ * that appeared to confirm the tool's false diagnosis. A hand-written hint can
+ * drift from the query; a derived one cannot.
+ */
 
 // ---------------------------------------------------------------------------
 // Placeholder arg/response types
