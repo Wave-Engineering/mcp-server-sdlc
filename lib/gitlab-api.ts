@@ -140,7 +140,10 @@ export interface GitlabRepo {
 // Low-level exec wrapper
 // ---------------------------------------------------------------------------
 
-function execGlab(cmd: string, cwd?: string): string {
+// Exported for test: the guards here are the whole point of #502/#382, and a
+// test that only exercises the pure detector cannot tell whether this function
+// still consults it — that mutation survived until this was reachable.
+export function execGlab(cmd: string, cwd?: string): string {
   let raw: string;
   try {
     // `cwd` defaults to undefined, leaving execSync on `process.cwd()` —
@@ -172,7 +175,59 @@ function execGlab(cmd: string, cwd?: string): string {
   if (raw.trim() === '') {
     throw new Error(`glab returned empty output for: ${cmd}`);
   }
+  // HTTP ERRORS ARRIVE ON STDOUT WITH EXIT 0 (#502). `glab api` prints the API's
+  // error body — `{"message":"404 Project Not Found"}` — and exits ZERO, so
+  // neither guard above fires. The typed wrapper then JSON.parses it into its
+  // expected shape, every field comes back `undefined`, and the handler emits a
+  // confident `ok: true` envelope full of falsy data.
+  //
+  // That is a false negative that reads as an authoritative answer:
+  // `spec_validate_structure` reported a perfectly valid issue as missing all
+  // three required sections, with `ok: true`. The tool did not fail — it
+  // answered, wrongly, and nothing downstream could tell.
+  //
+  // Detected HERE rather than in each wrapper because this is the chokepoint
+  // every one of them routes through; fixing it per-wrapper is how #491's
+  // knowledge stayed scoped to the wrong caller for months.
+  const apiError = detectGlabApiError(raw);
+  if (apiError !== undefined) {
+    throw new Error(`glab API error for: ${cmd}\n${apiError}`);
+  }
   return raw;
+}
+
+/**
+ * GitLab's REST error body, if `raw` is one.
+ *
+ * The shape is `{"message": ...}` or `{"error": ...}` — and `message` may be a
+ * string, an array, or an object keyed by field, so it is rendered rather than
+ * assumed to be a string.
+ *
+ * Deliberately narrow: it must not mistake a legitimate payload that merely
+ * HAS a `message` field for an error. A GitLab error body is a bare object with
+ * no other content, so an object carrying `id`/`iid`/`web_url` alongside is a
+ * real resource and passes through untouched.
+ */
+export function detectGlabApiError(raw: string): string | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return undefined; // not JSON — not our business
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return undefined;
+  }
+  const obj = parsed as Record<string, unknown>;
+  const carrier = 'message' in obj ? 'message' : 'error' in obj ? 'error' : undefined;
+  if (carrier === undefined) return undefined;
+  // A real resource that happens to carry `message` (a commit, a note) also
+  // carries identifying fields. An error body does not.
+  for (const marker of ['id', 'iid', 'web_url', 'sha', 'name', 'path']) {
+    if (marker in obj) return undefined;
+  }
+  const value = obj[carrier];
+  return typeof value === 'string' ? value : JSON.stringify(value);
 }
 
 /**
