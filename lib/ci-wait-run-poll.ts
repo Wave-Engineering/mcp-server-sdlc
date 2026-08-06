@@ -47,6 +47,7 @@
  * `ci_wait_run(ref: 'main')` in /mmr) leave it off and are unaffected.
  */
 
+import { describeEmptyResult } from './shared/query-outcome.js';
 import type {
   CiListRunsArgs,
   MergeAnchor,
@@ -334,6 +335,16 @@ function normalizeConclusion(
   }
 }
 
+/**
+ * The argv of the most recent lookup, captured so the "found nothing" message
+ * can derive its verify line from the query that ACTUALLY ran (#492/#493).
+ *
+ * Module-scoped rather than threaded through every call site: the poll loop
+ * calls listRuns from several places and the message needs whichever ran last,
+ * which is exactly "the query whose emptiness we are reporting".
+ */
+let lastArgv: string[] | undefined;
+
 async function listRuns(
   deps: WaitDeps,
   args: CiListRunsArgs,
@@ -342,7 +353,11 @@ async function listRuns(
   if ('platform_unsupported' in result) {
     throw new Error(`ciListRuns platform_unsupported: ${result.hint}`);
   }
-  if (!result.ok) throw new Error(result.error);
+  if (!result.ok) {
+    lastArgv = result.queried_argv;
+    throw new Error(result.error);
+  }
+  lastArgv = result.queried_argv;
   return result.data;
 }
 
@@ -637,10 +652,27 @@ export async function waitForRun(
       const shaMsg = expectedSha ? ` with head SHA '${expectedSha}'` : '';
       return {
         ok: false,
-        error:
-          `No CI run found for ref '${args.ref}'${shaMsg}${filterMsg} after waiting ${waited}s. ` +
-          `The pipeline may not have been triggered, or the ref has not been pushed to origin. ` +
-          `Verify with: gh run list --${isSha(args.ref) ? 'commit' : 'branch'} ${args.ref}`,
+        // OBSERVATION, NOT CAUSE (#492/#493). This previously asserted "the
+        // pipeline may not have been triggered" — a hypothesis about the world
+        // the tool has no evidence for; it cannot distinguish "did not run"
+        // from "I looked in the wrong place", and on the reported repro the run
+        // existed and had already SUCCEEDED.
+        //
+        // Worse, the old verify line rendered the exact failing lookup, so an
+        // operator who followed it got an empty result that appeared to confirm
+        // the false cause. The command is now derived from the argv actually
+        // executed, so it cannot disagree with the query that was run, and the
+        // guesses are labelled as unverified.
+        error: describeEmptyResult({
+          what: 'CI run',
+          detail: `for ref '${args.ref}'${shaMsg}${filterMsg} after waiting ${waited}s`,
+          argv: lastArgv ?? [],
+          hypotheses: [
+            'the pipeline was not triggered',
+            'the ref has not been pushed to origin',
+            'the run exists under a different ref spelling',
+          ],
+        }),
         waited_sec: waited,
         ref: args.ref,
         platform: args.platform,

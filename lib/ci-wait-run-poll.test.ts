@@ -1,3 +1,4 @@
+import { renderArgv } from './shared/query-outcome.js';
 import { describe, test, expect } from 'bun:test';
 import { waitForRun, FIRST_RUN_APPEARANCE_SEC } from './ci-wait-run-poll.ts';
 import type {
@@ -795,5 +796,80 @@ describe('first-run appearance window (#483)', () => {
     // It appeared at ~120s — inside the bounded window, so it was NOT prematurely failed.
     expect(r.waited_sec).toBeGreaterThanOrEqual(120);
     expect(r.waited_sec).toBeLessThan(FIRST_RUN_APPEARANCE_SEC + 15);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #492 — a failed LOOKUP is not a failed TRIGGER
+//
+// Reported by @treebeard on a publish: `ci_wait_run(ref: "refs/tags/v1.1.0")`
+// said "the pipeline may not have been triggered" for a run that existed and
+// had already SUCCEEDED. Two separable defects, and the second survives fixing
+// the first.
+// ---------------------------------------------------------------------------
+
+describe('not-found reports an observation, not a cause (#492/#493)', () => {
+  test('the message makes no causal claim of its own', async () => {
+    const adapter = makeAdapter(async () => ({
+      ok: true,
+      data: [],
+      queried_argv: ['gh', 'run', 'list', '--branch', 'v1.1.0'],
+    }));
+    const clock = fakeClock();
+
+    const result = await waitForRun(
+      { ref: 'v1.1.0', platform: 'github', timeout_sec: 1 },
+      { adapter, sleep: clock.sleep, now: clock.now },
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected a not-found result');
+    const err = result.error;
+    // The exact wording that shipped, asserted as fact with no evidence.
+    expect(err).not.toMatch(/The pipeline may not have been triggered, or/);
+    expect(err).toContain('The query RAN and returned nothing');
+  });
+
+  test('guesses survive, but only behind an unverified label', async () => {
+    // Removing the hypotheses entirely would lose real diagnostic value. The
+    // fix is labelling, not silence.
+    const adapter = makeAdapter(async () => ({
+      ok: true,
+      data: [],
+      queried_argv: ['gh', 'run', 'list', '--branch', 'v1.1.0'],
+    }));
+    const clock = fakeClock();
+    const result = await waitForRun(
+      { ref: 'v1.1.0', platform: 'github', timeout_sec: 1 },
+      { adapter, sleep: clock.sleep, now: clock.now },
+    );
+    if (result.ok) throw new Error('expected a not-found result');
+    const err = result.error;
+    expect(err).toContain('NOT verified');
+    expect(err.indexOf('NOT verified')).toBeLessThan(
+      err.indexOf('the pipeline was not triggered'),
+    );
+  });
+
+  test('the verify line is the argv that ACTUALLY ran — the anti-rung-3 guard', async () => {
+    // The old hint rendered the exact FAILING lookup, so an operator who
+    // followed the tool's own advice got an empty result that appeared to
+    // CONFIRM the false cause. Deriving it from argv makes that impossible.
+    const argv = ['gh', 'run', 'list', '--branch', 'v1.1.0', '--repo', 'o/r'];
+    const adapter = makeAdapter(async () => ({ ok: true, data: [], queried_argv: argv }));
+    const clock = fakeClock();
+    const result = await waitForRun(
+      { ref: 'refs/tags/v1.1.0', platform: 'github', timeout_sec: 1 },
+      { adapter, sleep: clock.sleep, now: clock.now },
+    );
+    if (result.ok) throw new Error('expected a not-found result');
+    const err = result.error;
+    // renderArgv shell-escapes each token so the line is genuinely
+    // copy-pasteable; compare against that, not a naive join.
+    expect(err).toContain(renderArgv(argv));
+    // And specifically NOT the caller's raw ref, which is the spelling that
+    // matched nothing.
+    expect(err).not.toContain('refs/tags/v1.1.0'.padStart(0) + "' '--repo");
+    expect(err).not.toMatch(/--branch'? 'refs\/tags\//);
   });
 });
