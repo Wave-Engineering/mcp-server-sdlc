@@ -77,7 +77,7 @@ const waveFinalizeHandler: HandlerDef = {
       // edge case where the kahuna branch was deleted after the MR was opened.
       const existing = await adapter.findExistingPr({ head: args.kahuna_branch, base: targetBranch, state: 'open', cwd });
       if ('platform_unsupported' in existing) return envelope({ ok: false, error: `findExistingPr unsupported: ${existing.hint}` });
-      if (!existing.ok) return envelope({ ok: false, error: existing.error });
+      if (!existing.ok) return envelope({ ok: false, code: existing.code, error: existing.error });
       if (existing.data !== null) {
         // body_sha is empty when neither bus nor durable state has issues —
         // legitimate post-cleanup state on a brand-new PR.
@@ -97,7 +97,7 @@ const waveFinalizeHandler: HandlerDef = {
       const title = `plan(#${args.plan_id}): ${epicSlugFromBranch(args.kahuna_branch)} — kahuna to ${targetBranch}`;
       const created = await adapter.prCreate({ title, body, base: targetBranch, head: args.kahuna_branch, cwd });
       if ('platform_unsupported' in created) return envelope({ ok: false, error: `prCreate unsupported: ${created.hint}` });
-      if (!created.ok) return envelope({ ok: false, error: created.error });
+      if (!created.ok) return envelope({ ok: false, code: created.code, error: created.error });
       // FlightDeck emit (S1.5, additive) — promote step for the newly-opened
       // kahuna→target MR, plus a coded self-approval concern: the epic opens its
       // own promotion MR (the KAHUNA sandbox self-approval shape). Fire-and-

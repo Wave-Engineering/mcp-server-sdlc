@@ -67,6 +67,23 @@ describe('pr_merge_wait handler — thin dispatcher', () => {
     expect(execCalls().find((c) => c.includes('gh pr merge'))).toBeUndefined();
   });
 
+  test('#527: ok:false envelope preserves the adapter error code', async () => {
+    // Drive the adapter to a typed failure: the detect-and-skip state read
+    // throws, so executeMergeWait returns
+    // { ok:false, code:'fetch_initial_state_failed' }. The handler used to drop
+    // `code`, un-typing pr_merge_blocked / enrolled_merge_failed and every other
+    // adapter failure for MCP callers; it must now surface it. Red-first: the
+    // pre-fix envelope had no `code`.
+    onExec('gh pr view 91 --json state,url,mergeCommit', () => {
+      throw new Error('gh: PR not found');
+    });
+    const result = await prMergeWaitHandler.execute({ number: 91 });
+    const data = parseResult(result);
+    expect(data.ok).toBe(false);
+    expect(data.code).toBe('fetch_initial_state_failed');
+    expect(data.error).toContain('failed to read initial PR state');
+  });
+
   test('handler exports valid HandlerDef shape', () => {
     expect(prMergeWaitHandler.name).toBe('pr_merge_wait');
     expect(typeof prMergeWaitHandler.execute).toBe('function');

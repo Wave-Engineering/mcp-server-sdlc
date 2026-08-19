@@ -61,7 +61,7 @@ const specAcceptanceCriteriaHandler: HandlerDef = {
     const repo = repoSlug(ref);
     const result = await getAdapter({ repo }).fetchIssue({ number: ref.number, repo });
     if ('platform_unsupported' in result) return envelope({ ok: false, error: result.hint });
-    if (!result.ok) return envelope({ ok: false, error: result.error });
+    if (!result.ok) return envelope({ ok: false, code: result.code, error: result.error });
 
     const { sections } = parseSections(result.data.body);
     const items = parseChecklist(sections.acceptance_criteria ?? '');

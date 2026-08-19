@@ -123,6 +123,7 @@ const ibmHandler: HandlerDef = {
     if (!issueResult.ok) {
       return envelope({
         ok: false,
+        code: issueResult.code,
         error: `Branch '${branch}' references issue #${issueNumber}, but the lookup failed: ${issueResult.error}`,
       });
     }
@@ -139,7 +140,7 @@ const ibmHandler: HandlerDef = {
 
     const prResult = await adapter.fetchPrForBranch({ branch, repo: args.repo });
     if ('platform_unsupported' in prResult) return envelope({ ok: false, error: prResult.hint });
-    if (!prResult.ok) return envelope({ ok: false, error: prResult.error });
+    if (!prResult.ok) return envelope({ ok: false, code: prResult.code, error: prResult.error });
 
     return envelope({
       ok: true,

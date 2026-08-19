@@ -44,7 +44,7 @@ const ciRunStatusHandler: HandlerDef = {
     if ('platform_unsupported' in result) {
       return envelope({ ok: false, error: result.hint });
     }
-    if (!result.ok) return envelope({ ok: false, error: result.error });
+    if (!result.ok) return envelope({ ok: false, code: result.code, error: result.error });
 
     if (result.data === null) {
       const filter = args.workflow_name ? ` with workflow '${args.workflow_name}'` : '';

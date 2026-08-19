@@ -112,7 +112,7 @@ export async function reconcile(
       return { ok: true, platform_unsupported: true, hint: prListRes.hint };
     }
     if (!prListRes.ok) {
-      return { ok: false, error: `pr_list failed: ${prListRes.error}` };
+      return { ok: false, code: prListRes.code, error: `pr_list failed: ${prListRes.error}` };
     }
     // Oldest-first for stable merge-order derivation. `pr_list` doesn't
     // guarantee ordering; the adapter's default (GitHub) is newest-first by
@@ -166,7 +166,7 @@ export async function reconcile(
     }
     if (!commentRes.ok) {
       return {
-        ok: false, error: `pr_comment failed: ${commentRes.error}`,
+        ok: false, code: commentRes.code, error: `pr_comment failed: ${commentRes.error}`,
         wave_id: waveId, drift: true, sets, comment_body: body,
       };
     }
