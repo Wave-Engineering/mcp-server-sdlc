@@ -136,6 +136,38 @@ export async function executeMergeWait(
     return { ok: true, data: { ...merge } };
   }
 
+  // #518: `pr_merge` reports `enrolled:false` (with the blocker named in
+  // `warnings`) when the MR is not in progress but genuinely blocked — GitLab
+  // approvals, unresolved discussions, draft, conflicts (#461/#520). That is
+  // NOT an enrollment to poll: waiting cannot make a blocked MR land, so
+  // entering the loop below would burn the full timeout and then return an
+  // opaque `poll_timeout` that never names the block — the exact round-trip
+  // #461 removed from `pr_merge`. Fail fast, surfacing the reason instead.
+  //
+  // This also structurally prevents the stale-warning self-contradiction: a
+  // blocked MR merged out-of-band mid-poll would otherwise reach the
+  // poll-then-spread success path as `enrolled:false, merged:true` still
+  // carrying the now-false block warning. Returning here means the blocked
+  // case never reaches that path.
+  //
+  // Field-based, not platform-based (keeps the executor platform-agnostic):
+  // on GitHub a failed merge surfaces as `ok:false` rather than this shape, so
+  // in practice this fires only on GitLab — but it is correct on either.
+  if (!merge.enrolled) {
+    const blockers =
+      merge.warnings.length > 0
+        ? merge.warnings.join('; ')
+        : 'no blocker reason reported';
+    return {
+      ok: false,
+      code: 'pr_merge_blocked',
+      error:
+        `pr_merge_wait: PR #${args.number} is blocked and was not enrolled ` +
+        `(enrolled:false) — polling cannot land it. Blocker: ${blockers}. ` +
+        `Resolve the block and retry.`,
+    };
+  }
+
   // Queue path: enrolled but not yet on main. Poll until merged or timeout.
   // Each poll routes through getAdapter().fetchPrState — the hybrid sub-call
   // pattern at work.
