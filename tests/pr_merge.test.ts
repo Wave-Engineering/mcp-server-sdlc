@@ -728,3 +728,120 @@ describe('pr_merge handler — aggregate response (#225)', () => {
     expect(graphqlCalls.length).toBe(1);
   });
 });
+
+// ===========================================================================
+// #497 — branch-delete failure after a successful merge reports ok:true
+// ===========================================================================
+//
+// `gh pr merge --delete-branch` performs merge then deletion in one command.
+// If deletion fails AFTER the merge commits the whole command exits non-zero.
+// The two outcomes demand opposite caller responses and must not be conflated:
+//   - merge failed → ok:false (caller must stop and surface the error)
+//   - merge landed, deletion failed → ok:true with warning (caller proceeds)
+
+describe('#497 — branch-delete failure after successful merge', () => {
+  function branchDeleteError(prNumber: number): ThrowableError {
+    const err = new Error(
+      `failed to delete remote branch fix/${prNumber}-foo: HTTP 503: No server is currently available to handle this request.`,
+    ) as ThrowableError;
+    err.stderr = err.message;
+    err.status = 1;
+    return err;
+  }
+
+  test('branch-delete failure + merge confirmed → ok:true with warning', async () => {
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git\n');
+    stubNoQueue();
+    onExec('gh pr merge 930 --squash --delete-branch', () => {
+      throw branchDeleteError(930);
+    });
+    // fetchPrState via the gh pr view path
+    onExec(
+      'gh pr view 930 --json state,url,mergeCommit',
+      JSON.stringify({
+        state: 'MERGED',
+        url: 'https://github.com/org/repo/pull/930',
+        mergeCommit: { oid: 'bae1b8d' },
+      }),
+    );
+
+    const result = await prMergeHandler.execute({ number: 930 });
+    const data = parseResult(result);
+
+    expect(data.ok).toBe(true);
+    expect(data.merged).toBe(true);
+    expect(data.merge_method).toBe('direct_squash');
+    expect(data.merge_commit_sha).toBe('bae1b8d');
+    // Warning must be present and name the deletion failure
+    expect(Array.isArray(data.warnings)).toBe(true);
+    const w = (data.warnings as string[]).join(' ');
+    expect(w).toMatch(/branch deletion failed/i);
+    expect(w).toMatch(/HTTP 503/);
+  });
+
+  test('branch-delete failure + merge NOT confirmed → ok:false (normal error path)', async () => {
+    // If after the deletion error the PR is still OPEN (merge didn't land),
+    // we must NOT swallow the error — fall through to ok:false.
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git\n');
+    stubNoQueue();
+    onExec('gh pr merge 931 --squash --delete-branch', () => {
+      throw branchDeleteError(931);
+    });
+    onExec(
+      'gh pr view 931 --json state,url,mergeCommit',
+      JSON.stringify({
+        state: 'OPEN',
+        url: 'https://github.com/org/repo/pull/931',
+        mergeCommit: null,
+      }),
+    );
+
+    const result = await prMergeHandler.execute({ number: 931 });
+    const data = parseResult(result);
+
+    // The merge did not land — caller must see ok:false
+    expect(data.ok).toBe(false);
+  });
+
+  test('branch-delete failure + fetchPrState throws → falls through to ok:false', async () => {
+    // If the confirmation call itself fails, we have no information — report
+    // the original error rather than silently returning ok:true.
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git\n');
+    stubNoQueue();
+    onExec('gh pr merge 932 --squash --delete-branch', () => {
+      throw branchDeleteError(932);
+    });
+    onExec('gh pr view 932 --json state,url,mergeCommit', () => {
+      const err = new Error('HTTP 500') as ThrowableError;
+      err.stderr = 'HTTP 500';
+      err.status = 1;
+      throw err;
+    });
+
+    const result = await prMergeHandler.execute({ number: 932 });
+    const data = parseResult(result);
+
+    expect(data.ok).toBe(false);
+  });
+
+  test('unrelated merge failure is not misclassified as branch-delete', async () => {
+    // A plain merge failure (e.g. "not mergeable") must stay ok:false without
+    // triggering the branch-delete recovery path.
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git\n');
+    stubNoQueue();
+    onExec('gh pr merge 933 --squash --delete-branch', () => {
+      const err = new Error('Pull request is not mergeable') as ThrowableError;
+      err.stderr = 'Pull request is not mergeable';
+      err.status = 1;
+      throw err;
+    });
+
+    const result = await prMergeHandler.execute({ number: 933 });
+    const data = parseResult(result);
+
+    expect(data.ok).toBe(false);
+    // Must not have reached fetchPrState
+    const viewCalls = execCalls().filter((c) => c.includes('gh pr view 933'));
+    expect(viewCalls).toHaveLength(0);
+  });
+});
