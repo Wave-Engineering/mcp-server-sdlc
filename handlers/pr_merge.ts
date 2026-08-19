@@ -58,7 +58,12 @@ const prMergeHandler: HandlerDef = {
     if ('platform_unsupported' in result) {
       return envelope({ ok: true, platform_unsupported: true, hint: result.hint });
     }
-    if (!result.ok) return envelope({ ok: false, error: result.error });
+    // #424: the code is not decoration — a caller must be able to tell
+    // "the merge command succeeded but state confirmation failed"
+    // (gitlab_mr_state_fetch_failed) from "the merge genuinely failed"
+    // (glab_mr_merge_failed) without string-matching the error text, per the
+    // adapter's own documented contract (docs/adapters/README.md).
+    if (!result.ok) return envelope({ ok: false, code: result.code, error: result.error });
     // FlightDeck emit (S1.5, additive) — a promote step for the merge, plus a
     // coded gate-override concern when skip_train bypassed the merge-train gate
     // (only meaningful when the queue was NOT enforced; enforced repos silently

@@ -11,20 +11,24 @@
  * and the adapter proceeds with the merge, surfacing a warning in the
  * response rather than short-circuiting with `platform_unsupported`.
  *
- * Story 1.11 (#248) routes the post-merge state lookup through
- * `getAdapter().fetchPrState(...)` — the FIRST hybrid sub-call dispatched
- * via the platform adapter — instead of importing `lib/pr_state.ts` directly.
+ * Story 1.11 (#248) originally routed the post-merge state lookup through
+ * `getAdapter().fetchPrState(...)` — the FIRST hybrid sub-call dispatched via
+ * the platform adapter. #424 replaced every post-merge state read in this
+ * file with `pollPostMergeState`, which reads via `gitlabApiMr` directly
+ * (like `resolveHeadSha` already did): it needs the GitLab-specific
+ * `detailed_merge_status` field the routed `PrStateInfo` shape doesn't carry,
+ * and it needs to retry — both false economy through the generic hybrid path.
+ * The routing pattern itself stays valid elsewhere; this file just no longer
+ * uses it.
  */
 
 import { execSync } from 'child_process';
-import { gitlabApiMr } from '../gitlab-api.js';
-import { getAdapter } from './index.js';
+import { gitlabApiMr, type GitlabMr } from '../gitlab-api.js';
 import { normalizeGitlabMergeState } from './pr-status-gitlab.js';
 import type {
   AdapterResult,
   PrMergeArgs,
   PrMergeResponse,
-  PrStateInfo,
 } from './types.js';
 
 interface ExecError extends Error {
@@ -149,6 +153,68 @@ function isStaleShaRejection(message: string): boolean {
 /** Attempts of resolve-sha → merge before a stale-head rejection becomes fatal. */
 const MAX_SHA_ATTEMPTS = 2;
 
+// #424: after `glab mr merge` exits 0, GitLab's own state can lag the merge
+// command by a beat — the merge genuinely completes but the very next MR read
+// still shows `state: 'opened'`. Reproduced live: two parallel MRs in the same
+// wave flight, one read back `merged:true` immediately, the other (merged
+// moments earlier by wall clock) read back `merged:false` — a read-after-write
+// race, not a real failure. A single unretried read cannot tell "still racing"
+// from "genuinely not merged", so poll briefly before trusting a not-merged
+// read. Bounded: on the common case (state already settled) this adds zero
+// delay — the first read already sees `merged`.
+//
+// Polling stops the moment the MR classifies as `blocked` (#461's
+// `normalizeGitlabMergeState`), not just on `merged` — a `not_approved` MR is
+// never going to resolve to `merged` by waiting a few hundred ms, so treating
+// it the same as a genuine race would burn the whole poll budget for nothing.
+// Reads via `gitlabApiMr` directly (as `resolveHeadSha` above already does)
+// rather than the routed `fetchPrState`: `detailed_merge_status` is a
+// GitLab-specific field the cross-platform `PrStateInfo` shape doesn't carry,
+// and the blocked-reason check needs it from the SAME read the poll already
+// made, not a second round-trip per attempt.
+const MERGE_STATE_POLL_ATTEMPTS = 4;
+const MERGE_STATE_POLL_DELAY_MS = 250;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+interface PostMergeState {
+  mr: GitlabMr;
+  merged: boolean;
+  /** Set when classified `blocked` (not_approved, discussions_not_resolved, etc). */
+  blockedReason: string | undefined;
+}
+
+function classifyPostMergeState(mr: GitlabMr): PostMergeState {
+  const merged = mr.state === 'merged';
+  let blockedReason: string | undefined;
+  if (!merged) {
+    const cls = normalizeGitlabMergeState(mr.detailed_merge_status, mr.merge_status);
+    if (cls === 'blocked') blockedReason = mr.detailed_merge_status ?? 'blocked_status';
+  }
+  return { mr, merged, blockedReason };
+}
+
+/**
+ * Poll the MR until it merges, classifies as genuinely blocked, or the
+ * attempt budget runs out — whichever comes first. Throws on a genuine fetch
+ * failure, matching how `resolveHeadSha` already handles its own read; the
+ * caller converts that into a typed refusal.
+ */
+async function pollPostMergeState(number: number, repo: string | undefined): Promise<PostMergeState> {
+  let state = classifyPostMergeState(gitlabApiMr(number, parseSlugOpts(repo)));
+  for (
+    let attempt = 1;
+    attempt < MERGE_STATE_POLL_ATTEMPTS && !state.merged && state.blockedReason === undefined;
+    attempt += 1
+  ) {
+    await sleep(MERGE_STATE_POLL_DELAY_MS);
+    state = classifyPostMergeState(gitlabApiMr(number, parseSlugOpts(repo)));
+  }
+  return state;
+}
+
 function buildGitlabMergeCommand(
   number: number,
   sha: string,
@@ -239,38 +305,45 @@ export async function prMergeGitlab(
         if (!isStaleShaRejection(failure)) {
           // Branch deletion is post-merge cleanup (#497). Verify actual state;
           // if the MR merged despite the error, surface it as a warning.
+          // #424: reuses the same race-hardened poll as the main success
+          // path — this read sits in the identical propagation-lag window
+          // (merge landed, THEN deletion failed), so an unretried single
+          // read here was exposed to the exact race #424 exists to close,
+          // and a lagged read would have misreported a landed merge as
+          // `glab_mr_merge_failed` — worse than the bug #424 fixes, since
+          // that's ok:false for a merge that actually succeeded.
           if (isBranchDeleteFailure(failure)) {
-            const stateResult = await getAdapter({ repo: args.repo }).fetchPrState({
-              number: args.number,
-              repo: args.repo,
-            });
-            if (
-              !('platform_unsupported' in stateResult) &&
-              stateResult.ok &&
-              stateResult.data.state === 'merged'
-            ) {
-              const info = stateResult.data;
-              return {
-                ok: true,
-                data: {
-                  number: args.number,
-                  enrolled: true,
-                  merged: true,
-                  merge_method: 'direct_squash',
-                  queue: { enabled: false, position: null, enforced: false },
-                  pr_state: 'MERGED',
-                  url: info.url,
-                  merge_commit_sha: info.mergeCommitSha,
-                  warnings: [
-                    ...(skippedTrain
-                      ? ['skip_train ignored on GitLab — merge trains are auto-managed at the project level']
-                      : []),
-                    `branch deletion failed after successful merge (cosmetic — the merge landed): ${failure}`,
-                  ],
-                  queue_fallback: false,
-                  graphql_fallback: false,
-                },
-              };
+            try {
+              const postMerge = await pollPostMergeState(args.number, args.repo);
+              if (postMerge.merged) {
+                return {
+                  ok: true,
+                  data: {
+                    number: args.number,
+                    enrolled: true,
+                    merged: true,
+                    merge_method: 'direct_squash',
+                    queue: { enabled: false, position: null, enforced: false },
+                    pr_state: 'MERGED',
+                    url: postMerge.mr.web_url,
+                    merge_commit_sha: postMerge.mr.merge_commit_sha ?? undefined,
+                    warnings: [
+                      ...(skippedTrain
+                        ? ['skip_train ignored on GitLab — merge trains are auto-managed at the project level']
+                        : []),
+                      `branch deletion failed after successful merge (cosmetic — the merge landed): ${failure}`,
+                    ],
+                    queue_fallback: false,
+                    graphql_fallback: false,
+                  },
+                };
+              }
+            } catch {
+              // A read failure here doesn't change what we already know: the
+              // merge COMMAND itself exited non-zero, unlike the main poll's
+              // read failure (where the command succeeded and the read WAS
+              // the only ground truth). Fall through to the existing
+              // glab_mr_merge_failed report below — no new uncertainty.
             }
           }
           return {
@@ -297,61 +370,40 @@ export async function prMergeGitlab(
           `each time); last rejection: ${lastStaleRejection}`,
       };
     }
-    const stateResult = await getAdapter({ repo: args.repo }).fetchPrState({
-      number: args.number,
-      repo: args.repo,
-    });
-    if ('platform_unsupported' in stateResult) {
+    // #424/#461: poll for the settled state (racing propagation vs a genuine
+    // block resolve differently — see pollPostMergeState) in one pass, rather
+    // than a single unretried read followed by a second separate diagnostic
+    // call. Best-effort at the network layer: a fetch failure here is a real
+    // error (unlike the merge command itself, which already succeeded), so it
+    // surfaces as a typed refusal rather than silently reporting a stale shape.
+    let postMerge: PostMergeState;
+    try {
+      postMerge = await pollPostMergeState(args.number, args.repo);
+    } catch (err) {
       return {
         ok: false,
-        code: 'fetch_pr_state_platform_unsupported',
-        error: `fetchPrState platform_unsupported: ${stateResult.hint}`,
+        code: 'gitlab_mr_state_fetch_failed',
+        error:
+          `the merge command succeeded; could not read MR state to confirm — do not retry the ` +
+          `merge: ${extractFailure(err).message}`,
       };
     }
-    if (!stateResult.ok) {
-      return { ok: false, code: stateResult.code, error: stateResult.error };
-    }
-    const info: PrStateInfo = stateResult.data;
-    const actuallyMerged = info.state === 'merged';
-
-    // #461: `glab mr merge` can exit 0 without merging — e.g. an MR blocked on
-    // required approvals, unresolved discussions, or draft status. That left
-    // the caller with `enrolled:true, merged:false`, indistinguishable from
-    // legitimate queue enrollment (GitHub's shape). GitLab has no queue
-    // concept, so re-check the MR's own `detailed_merge_status` and surface
-    // the blocker by name instead of making the caller round-trip pr_status
-    // to discover it. Reuses `normalizeGitlabMergeState` — the canonical
-    // classification `pr-status-gitlab.ts` already carries — rather than
-    // re-deriving a narrower, incomplete subset here. Best-effort: if the
-    // re-fetch itself fails, fall through with the pre-#461 shape rather than
-    // failing a merge attempt whose real outcome we already know.
-    let blockedReason: string | undefined;
-    if (!actuallyMerged) {
-      try {
-        const freshMr = gitlabApiMr(args.number, parseSlugOpts(args.repo));
-        const state = normalizeGitlabMergeState(freshMr.detailed_merge_status, freshMr.merge_status);
-        if (state === 'blocked') {
-          blockedReason = freshMr.detailed_merge_status ?? 'blocked_status';
-        }
-      } catch {
-        // best-effort — see comment above
-      }
-    }
+    const { mr, merged: actuallyMerged, blockedReason } = postMerge;
+    // A blocked MR is not enrollment — nothing is in progress, the MR is
+    // simply blocked, and `enrolled:true` would misleadingly imply otherwise.
     const mergeBlocked = blockedReason !== undefined;
 
     return {
       ok: true,
       data: {
         number: args.number,
-        // A blocked MR is not enrollment — nothing is in progress, the MR is
-        // simply blocked, and `enrolled:true` would misleadingly imply otherwise.
         enrolled: !mergeBlocked,
         merged: actuallyMerged,
         merge_method: 'direct_squash',
         queue: { enabled: false, position: null, enforced: false },
         pr_state: actuallyMerged ? 'MERGED' : 'OPEN',
-        url: info.url,
-        merge_commit_sha: info.mergeCommitSha,
+        url: mr.web_url,
+        merge_commit_sha: mr.merge_commit_sha ?? undefined,
         warnings: [
           ...(skippedTrain
             ? ['skip_train ignored on GitLab — merge trains are auto-managed at the project level']

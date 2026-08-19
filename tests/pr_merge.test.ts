@@ -864,8 +864,8 @@ describe('#461 — GitLab blocked merge surfaces the blocker', () => {
   test('not_approved MR → enrolled:false with an explicit warning', async () => {
     onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git\n');
     onExec('glab mr merge 84 --squash --remove-source-branch --yes', '');
-    // Every gitlabApiMr call (resolveHeadSha, fetchPrState, the #461 re-check)
-    // hits this same endpoint — one consistent MR shape services all three.
+    // Every gitlabApiMr call (resolveHeadSha, the unified #424/#461 poll)
+    // hits this same endpoint — one consistent MR shape services both.
     onExec(
       'glab api projects/org%2Frepo/merge_requests/84',
       JSON.stringify({
@@ -891,6 +891,11 @@ describe('#461 — GitLab blocked merge surfaces the blocker', () => {
     expect(data.pr_state).toBe('OPEN');
     const w = (data.warnings as string[]).join(' ');
     expect(w).toMatch(/not_approved/);
+    // #424: a genuinely blocked MR must stop polling immediately rather than
+    // burning the full poll budget on a state that will never resolve to
+    // merged — resolveHeadSha (1) + one poll read that classifies blocked (1).
+    const apiCalls = execCalls().filter((c) => c.includes('merge_requests/84'));
+    expect(apiCalls).toHaveLength(2);
   });
 
   test('discussions_not_resolved → also enrolled:false (not just not_approved)', async () => {
@@ -956,12 +961,15 @@ describe('#461 — GitLab blocked merge surfaces the blocker', () => {
     expect(data.warnings).toEqual([]);
   });
 
-  test('re-check API call throws → falls through to the pre-#461 shape, not a crash', async () => {
-    // The #461 re-check is best-effort: if the diagnostic call itself fails,
-    // the merge OUTCOME we already have (from fetchPrState) must still be
-    // returned rather than swallowed. Exercised via a call-counting responder
-    // so only the THIRD gitlabApiMr call (the re-check) fails — the first two
-    // (resolveHeadSha, fetchPrState) must succeed for the flow to reach it.
+  test('a state read fails mid-poll → ok:false, not silently swallowed', async () => {
+    // #424 unified the #461 blocked-reason check into the SAME poll that
+    // resolves the merge race — there is no longer a separate, purely
+    // cosmetic diagnostic call whose failure can be shrugged off. A failed
+    // read now genuinely means "we don't know whether it merged or is
+    // blocked", which must surface as ok:false rather than a guessed shape.
+    // Call 1 = resolveHeadSha. Call 2 = poll's first read, ambiguous
+    // ('checking' — neither merged nor blocked, so the loop continues).
+    // Call 3 = the retry — this one fails.
     onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git\n');
     onExec('glab mr merge 88 --squash --remove-source-branch --yes', '');
     let apiCallCount = 0;
@@ -976,7 +984,7 @@ describe('#461 — GitLab blocked merge surfaces the blocker', () => {
       return JSON.stringify({
         iid: 88,
         state: 'opened',
-        detailed_merge_status: 'not_approved',
+        detailed_merge_status: 'checking',
         source_branch: 'feature/test',
         target_branch: 'main',
         web_url: 'https://gitlab.com/org/repo/-/merge_requests/88',
@@ -989,14 +997,14 @@ describe('#461 — GitLab blocked merge surfaces the blocker', () => {
     const result = await prMergeHandler.execute({ number: 88 });
     const data = parseResult(result);
 
-    // The merge outcome (not merged) is still reported correctly — the
-    // re-check failure degrades the DIAGNOSTIC, not the result itself.
-    expect(data.ok).toBe(true);
-    expect(data.merged).toBe(false);
-    // Pre-#461 fallback shape: enrolled stays true, no warning added, since
-    // the re-check couldn't confirm a block.
-    expect(data.enrolled).toBe(true);
-    expect(data.warnings).toEqual([]);
+    expect(data.ok).toBe(false);
+    // The whole point of a typed code: a caller must be able to tell "the
+    // merge command succeeded but state confirmation failed" from "the merge
+    // genuinely failed" WITHOUT string-matching error text. If the handler
+    // ever drops `code` again (as it did until this same PR fixed
+    // handlers/pr_merge.ts:61), this assertion catches it immediately.
+    expect(data.code).toBe('gitlab_mr_state_fetch_failed');
+    expect(apiCallCount).toBe(3);
   });
 
   test('a genuinely merged MR is unaffected — no re-check, no warning', async () => {
@@ -1024,8 +1032,8 @@ describe('#461 — GitLab blocked merge surfaces the blocker', () => {
     expect(data.merged).toBe(true);
     expect(data.enrolled).toBe(true);
     expect(data.warnings).toEqual([]);
-    // The title's claim, made assertable: exactly resolveHeadSha + fetchPrState
-    // — the #461 re-check must not have fired on the merged path.
+    // The title's claim, made assertable: exactly resolveHeadSha + one poll
+    // read — the poll stops immediately on seeing `merged`.
     const apiCalls = execCalls().filter((c) => c.includes('merge_requests/86'));
     expect(apiCalls).toHaveLength(2);
   });
@@ -1077,8 +1085,8 @@ describe('#497 (GitLab) — branch-delete failure after successful merge', () =>
       err.status = 1;
       throw err;
     });
-    // resolveHeadSha's pre-merge read, then fetchPrState's post-failure read —
-    // both see the same already-merged MR.
+    // resolveHeadSha's pre-merge read, then pollPostMergeState's post-failure
+    // read — both see the same already-merged MR.
     onExec(
       'glab api projects/org%2Frepo/merge_requests/90',
       JSON.stringify({
@@ -1104,6 +1112,53 @@ describe('#497 (GitLab) — branch-delete failure after successful merge', () =>
     expect(w).toMatch(/branch deletion failed/i);
     expect(w).toMatch(/500/);
   });
+
+  test('branch-delete failure + state read races (settles merged on retry) → ok:true, not ok:false', async () => {
+    // Code-review finding (Important #2): this path used a SINGLE unretried
+    // read before #424, exposing it to the identical propagation-lag race —
+    // and a lagged read here would have been WORSE than the bug #424 fixes:
+    // it would report `glab_mr_merge_failed` (ok:false) for a merge that
+    // actually landed, using a branch-deletion error as the stated cause.
+    // Now reuses pollPostMergeState, so a race that resolves within the poll
+    // budget is caught here exactly as it is on the main merge-success path.
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git\n');
+    onExec('glab mr merge 95 --squash --remove-source-branch --yes', () => {
+      const err = new Error(
+        'could not delete source branch fix/95-foo: 500 Internal Server Error',
+      ) as ThrowableError;
+      err.stderr = err.message;
+      err.status = 1;
+      throw err;
+    });
+    let apiCallCount = 0;
+    onExec('glab api projects/org%2Frepo/merge_requests/95', () => {
+      apiCallCount += 1;
+      // Call 1 = resolveHeadSha. Call 2 = the post-failure poll's first read
+      // (still racing). Call 3 = the retry, which sees the settled state.
+      const state = apiCallCount >= 3 ? 'merged' : 'opened';
+      return JSON.stringify({
+        iid: 95,
+        state,
+        detailed_merge_status: state === 'merged' ? 'mergeable' : 'checking',
+        source_branch: 'feature/test',
+        target_branch: 'main',
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/95',
+        labels: [],
+        sha: 'head95aaaaaa',
+        merge_commit_sha: state === 'merged' ? 'deadbeef9595' : null,
+      });
+    });
+
+    const result = await prMergeHandler.execute({ number: 95 });
+    const data = parseResult(result);
+
+    expect(data.ok).toBe(true);
+    expect(data.merged).toBe(true);
+    expect(data.merge_commit_sha).toBe('deadbeef9595');
+    const w = (data.warnings as string[]).join(' ');
+    expect(w).toMatch(/branch deletion failed/i);
+    expect(apiCallCount).toBe(3);
+  }, 10000);
 
   test('branch-delete failure + MR NOT confirmed merged → ok:false', async () => {
     onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git\n');
@@ -1135,5 +1190,131 @@ describe('#497 (GitLab) — branch-delete failure after successful merge', () =>
 
     // The merge did not land — must not be swallowed as a success.
     expect(data.ok).toBe(false);
+  });
+});
+
+// ===========================================================================
+// #424 — GitLab merge-state read-after-write race: poll before trusting a
+// not-yet-merged read
+// ===========================================================================
+//
+// `glab mr merge` can exit 0 and the merge genuinely land, but GitLab's own
+// state read lags by a beat — the very next MR read still shows `opened`.
+// Reproduced live: two parallel MRs in the same wave flight, one read back
+// `merged:true` immediately, the other (merged moments EARLIER by wall
+// clock) read back `merged:false`. A single unretried read cannot tell
+// "still racing" from "genuinely not merged" — pollPostMergeState retries
+// briefly before trusting a not-merged read, and stops the moment the MR
+// classifies as genuinely blocked rather than burning the whole budget.
+
+describe('#424 — GitLab merge-state poll resolves the read-after-write race', () => {
+  test('state settles to merged on the SECOND read → merged:true, no error', async () => {
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git\n');
+    onExec('glab mr merge 92 --squash --remove-source-branch --yes', '');
+    let apiCallCount = 0;
+    onExec('glab api projects/org%2Frepo/merge_requests/92', () => {
+      apiCallCount += 1;
+      // Call 1 = resolveHeadSha (pre-merge). Call 2 = the poll's first read
+      // (still racing — GitLab hasn't caught up). Call 3 = the poll's retry,
+      // which sees the settled state.
+      const state = apiCallCount >= 3 ? 'merged' : 'opened';
+      return JSON.stringify({
+        iid: 92,
+        state,
+        detailed_merge_status: state === 'merged' ? 'mergeable' : 'checking',
+        source_branch: 'feature/test',
+        target_branch: 'main',
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/92',
+        labels: [],
+        sha: 'head92aaaaaa',
+        merge_commit_sha: state === 'merged' ? 'deadbeef9292' : null,
+      });
+    });
+
+    const result = await prMergeHandler.execute({ number: 92 });
+    const data = parseResult(result);
+
+    expect(data.ok).toBe(true);
+    expect(data.merged).toBe(true);
+    expect(data.merge_commit_sha).toBe('deadbeef9292');
+    expect(data.enrolled).toBe(true);
+    expect(data.warnings).toEqual([]);
+    // Exactly resolveHeadSha + 2 poll reads — the loop must stop as soon as
+    // it sees 'merged', not run the full attempt budget.
+    expect(apiCallCount).toBe(3);
+  }, 10000);
+
+  test('state never settles within the budget → falls through to the honest not-merged shape', async () => {
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git\n');
+    onExec('glab mr merge 93 --squash --remove-source-branch --yes', '');
+    let apiCallCount = 0;
+    onExec('glab api projects/org%2Frepo/merge_requests/93', () => {
+      apiCallCount += 1;
+      // Never settles — simulates a genuinely slow-to-propagate MR (or one
+      // that really is just still checking), distinct from a permanently
+      // blocked one.
+      return JSON.stringify({
+        iid: 93,
+        state: 'opened',
+        detailed_merge_status: 'checking',
+        source_branch: 'feature/test',
+        target_branch: 'main',
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/93',
+        labels: [],
+        sha: 'head93aaaaaa',
+        merge_commit_sha: null,
+      });
+    });
+
+    const result = await prMergeHandler.execute({ number: 93 });
+    const data = parseResult(result);
+
+    expect(data.ok).toBe(true);
+    expect(data.merged).toBe(false);
+    // 'checking' is 'unknown', not 'blocked' — still honestly enrolled:true,
+    // matching the pre-#424 shape for a call that exhausts the poll budget.
+    expect(data.enrolled).toBe(true);
+    expect(data.warnings).toEqual([]);
+    // resolveHeadSha (1) + the full poll budget (4 attempts) = 5. Proves the
+    // poll ran its full attempt budget rather than giving up early or
+    // looping forever. No trailing diagnostic call — #424 unified the
+    // blocked-reason check into the same poll reads.
+    expect(apiCallCount).toBe(5);
+  }, 10000);
+
+  test('a state-read error on the first read short-circuits — no retry, no added delay', async () => {
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git\n');
+    onExec('glab mr merge 94 --squash --remove-source-branch --yes', '');
+    let apiCallCount = 0;
+    onExec('glab api projects/org%2Frepo/merge_requests/94', () => {
+      apiCallCount += 1;
+      if (apiCallCount === 1) {
+        // resolveHeadSha must still succeed — the merge command needs a sha.
+        return JSON.stringify({
+          iid: 94,
+          state: 'opened',
+          source_branch: 'feature/test',
+          target_branch: 'main',
+          web_url: 'https://gitlab.com/org/repo/-/merge_requests/94',
+          labels: [],
+          sha: 'head94aaaaaa',
+          merge_commit_sha: null,
+        });
+      }
+      // The post-merge state read fails outright (not a race — a real error).
+      const err = new Error('glab api: HTTP 503') as ThrowableError;
+      err.stderr = 'HTTP 503';
+      err.status = 1;
+      throw err;
+    });
+
+    const result = await prMergeHandler.execute({ number: 94 });
+    const data = parseResult(result);
+
+    // A genuine fetch error is not the propagation race this poll exists
+    // for — it must surface immediately, not retry against a dead endpoint.
+    expect(data.ok).toBe(false);
+    // resolveHeadSha (1) + exactly ONE failed poll attempt — no retries.
+    expect(apiCallCount).toBe(2);
   });
 });
