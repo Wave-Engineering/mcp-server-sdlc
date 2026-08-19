@@ -52,7 +52,7 @@ const ciRunLogsHandler: HandlerDef = {
     if ('platform_unsupported' in result) {
       return envelope({ ok: false, error: result.hint });
     }
-    if (!result.ok) return envelope({ ok: false, error: result.error });
+    if (!result.ok) return envelope({ ok: false, code: result.code, error: result.error });
 
     const { logs, line_count, truncated } = truncateLogs(result.data.logs, args.max_lines);
     return envelope({

@@ -93,7 +93,7 @@ const prWaitCiHandler: HandlerDef = {
     if ('platform_unsupported' in result) {
       return envelope({ ok: true, platform_unsupported: true, hint: result.hint });
     }
-    if (!result.ok) return envelope({ ok: false, error: result.error });
+    if (!result.ok) return envelope({ ok: false, code: result.code, error: result.error });
     // FlightDeck emit (S1.5, additive) — ci_wait for the terminal check state.
     // Scope to the handler's explicit repo (else a guarded project dir) so scope
     // resolution can't throw outside the emit guard. Fire-and-forget; the

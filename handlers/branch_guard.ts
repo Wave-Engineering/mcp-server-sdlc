@@ -85,7 +85,7 @@ const branchGuardHandler: HandlerDef = {
     if ('platform_unsupported' in defRes) {
       return envelope({ ok: false, error: `default-branch resolution unsupported: ${defRes.hint}` });
     }
-    if (!defRes.ok) return envelope({ ok: false, error: defRes.error });
+    if (!defRes.ok) return envelope({ ok: false, code: defRes.code, error: defRes.error });
     const default_branch = defRes.data.default_branch;
 
     // -- Resolve B, the branch to verdict --------------------------------------

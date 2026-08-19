@@ -106,12 +106,17 @@ const waveInitHandler: HandlerDef = {
       if (args.kahuna !== undefined) {
         const slug = args.repo ?? parseRepoSlug() ?? undefined;
         const adapter = getAdapter({ repo: slug });
-        const resolveDefault = async (): Promise<{ ok: true; branch: string } | { ok: false; error: string }> => {
+        const resolveDefault = async (): Promise<
+          { ok: true; branch: string } | { ok: false; error: string; code?: string }
+        > => {
           const defRes = await adapter.resolveDefaultBranch({ repo: slug, cwd });
           if ('platform_unsupported' in defRes) {
+            // platform_unsupported carries a hint, not a typed code — no code to thread.
             return { ok: false, error: `default-branch resolution unsupported: ${defRes.hint}` };
           }
-          if (!defRes.ok) return { ok: false, error: defRes.error };
+          // #527: thread the adapter's typed code through the wrapper so the
+          // relays below can preserve it instead of collapsing to {ok,error}.
+          if (!defRes.ok) return { ok: false, error: defRes.error, code: defRes.code };
           return { ok: true, branch: defRes.data.default_branch };
         };
         // Base branch: the plan's explicit base_branch wins; otherwise resolve the
@@ -135,12 +140,12 @@ const waveInitHandler: HandlerDef = {
             const defRes = await resolveDefault();
             // Fail loud rather than proceed with the guard disabled — a bootstrap that
             // silently skips its trunk check is the failure mode this guard exists for.
-            if (!defRes.ok) return envelope({ ok: false, error: defRes.error });
+            if (!defRes.ok) return envelope({ ok: false, code: defRes.code, error: defRes.error });
             defaultBranch = defRes.branch;
           }
         } else {
           const defRes = await resolveDefault();
-          if (!defRes.ok) return envelope({ ok: false, error: defRes.error });
+          if (!defRes.ok) return envelope({ ok: false, code: defRes.code, error: defRes.error });
           baseBranch = defRes.branch;
           defaultBranch = defRes.branch; // same ref — the guard's base check covers it
         }

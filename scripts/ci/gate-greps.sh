@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# Adapter-retrofit gate-greps (R-09, R-10).
+# Handler discipline gate-greps (R-09, R-10, #527).
 #
-# Two greps run against handlers/*.ts MINUS the entries in
+# Three greps run against handlers/*.ts MINUS the entries in
 # scripts/ci/migration-allowlist.txt:
 #
-#   1. `if (platform === 'github'|'gitlab')` — inline platform branching
+#   1. `if (platform === 'github'|'gitlab')` — inline platform branching (R-09)
 #   2. `execSync('gh ...'|'glab ...')` or `Bun.spawnSync(...)` — direct
-#       subprocess invocation
+#       subprocess invocation (R-10)
+#   3. `envelope({ ok: false, error: result.error })` — dropping the adapter's
+#       typed error `code` on the ok:false path (#527)
 #
 # The allowlist is the EXCLUDE list: handlers in it are exempt from the gate
 # until their migration story removes them. Handlers NOT in the allowlist must
@@ -77,6 +79,34 @@ if grep -nE "execSync\(['\"\`](gh|glab) |Bun\.spawnSync" "${handlers_to_check[@]
     echo ""
     echo "GATE FAIL [R-10]: direct subprocess to gh/glab/Bun.spawnSync in non-allowlisted handler(s)."
     echo "  Subprocess invocation lives in lib/adapters/<method>-<platform>.ts files only."
+    failed=1
+fi
+
+# Gate-grep #3 — dropping the adapter error `code` on the ok:false envelope (#527).
+# `if (!result.ok) return envelope({ ok: false, error: result.error })` silently
+# discards the typed `code` the adapter returned, un-typing every failure for MCP
+# callers (e.g. pr_merge_wait's pr_merge_blocked / enrolled_merge_failed). Preserve
+# it: `{ ok: false, code: result.code, error: result.error }` (code either side of
+# error is fine). The first grep finds an ok:false envelope relaying `result.error`;
+# the `grep -v code:` keeps only the lines with NO `code:` anywhere (the real drops),
+# so a preserve line — code before OR after error — is not flagged. Catch blocks are
+# excluded for free: they relay a thrown JS error via `error: err instanceof Error
+# ...`, not `result.error`, so the first grep never matches them.
+#
+# SCOPE — this is a HEURISTIC, not full class enforcement. It is keyed to the
+# dominant `result` variable name, and it is single-line. An AdapterResult bound
+# to another name (defRes, prResult, existing, created, …) or dropped across a
+# multi-line envelope is NOT caught here — a grep cannot distinguish an
+# AdapterResult (whose ok:false arm carries a required `code`) from a local result
+# type that legitimately has none (e.g. resolveArtifactsDir's {ok,error}). The
+# whole tree was swept clean of both shapes in #527; type-aware enforcement that a
+# grep cannot provide is tracked in #534. Do NOT read this gate's green as "the
+# class is closed" — it only guards the most likely recurrence (a new handler that
+# names the adapter result `result` and drops its code on one line).
+if grep -nE "ok:[[:space:]]*false,[[:space:]]*error:[[:space:]]*result\.error" "${handlers_to_check[@]}" | grep -v "code:"; then
+    echo ""
+    echo "GATE FAIL [#527]: handler drops the adapter error 'code' on an ok:false envelope."
+    echo "  Use { ok: false, code: result.code, error: result.error } so callers can branch on the failure type."
     failed=1
 fi
 
