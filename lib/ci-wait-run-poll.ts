@@ -20,6 +20,11 @@
  *   FULL `timeout_sec` — the appearance bound never caps completion.
  * - Phase 3: completed — map conclusion to `final_status`.
  *
+ * A pre-Phase-1 step also runs: for `require_merge_result`, resolve the #476
+ * freshness anchor (Phase 0); for the bare ref-only path, snapshot the call-time
+ * freshness baseline that drives the #523 `graded_run_stale_candidate` signal
+ * (Phase 0.5).
+ *
  * Injectable `now`/`sleep` makes tests instant. The adapter object is
  * injectable too (`deps.adapter`) so tests can drive it directly without
  * going through `getAdapter()`.
@@ -44,7 +49,17 @@
  * one. It is conservative by construction: it can HOLD a wave that should have
  * passed, but it can never PASS a wave on a pipeline that did not validate the
  * merge. Callers that legitimately watch a branch pipeline (e.g. the post-merge
- * `ci_wait_run(ref: 'main')` in /mmr) leave it off and are unaffected.
+ * `ci_wait_run(ref: 'main')` in /mmr) leave it off — the run they get is still
+ * graded (that contract is deliberately unchanged), but it is no longer reported
+ * SILENTLY: on the bare ref-only path (no `expected_sha`, no
+ * `require_merge_result`), a run that was ALREADY terminal when the wait began
+ * is flagged `graded_run_stale_candidate: true` alongside its `head_sha` (#523),
+ * because it may be a stale PREVIOUS run rather than the one the caller meant to
+ * wait for — the `waited_sec: 0` race. The precise fix is to pass `expected_sha`
+ * (run identity, not a timing heuristic); the flag makes the ambiguous case
+ * visible to callers that don't. Turning the flag into a refusal is opt-in
+ * (`require_fresh`, tracked separately) so the default never hangs a genuinely-
+ * current-but-already-finished run to a false-red timeout.
  */
 
 import { describeEmptyResult } from './shared/query-outcome.js';
@@ -132,6 +147,14 @@ export type WaitResult =
       sha?: string;
       waited_sec: number;
       message?: string;
+      /**
+       * #523: on the bare ref-only path, the graded run was ALREADY terminal
+       * when the wait began — so it may be a stale PREVIOUS run rather than the
+       * one this call meant to wait for (the `waited_sec: 0` race). Advisory
+       * only: the run is still graded and returned. Absent (not `false`) when it
+       * does not apply. Pass `expected_sha` to bind run identity precisely.
+       */
+      graded_run_stale_candidate?: boolean;
     }
   | {
       ok: false;
@@ -231,6 +254,16 @@ function snapshotFromRun(
     url: run.url,
     sha: run.head_sha,
   };
+}
+
+/**
+ * #523: is this run in a terminal (completed) state? Uses the SAME
+ * normalization as Phase 2's completion check (`snapshotFromRun(...).status ===
+ * 'completed'`) so "terminal" means exactly what the poll loop means by it —
+ * GitLab `success`/`failed`/`canceled`/`skipped` all fold to `completed`.
+ */
+function isTerminalRun(run: NormalizedCiRun, platform: 'github' | 'gitlab'): boolean {
+  return snapshotFromRun(run, platform).status === 'completed';
 }
 
 /**
@@ -373,7 +406,15 @@ async function resolveBranch(
 
 /** What `fetchSnapshot` found. Distinguishes "nothing yet" from "wrong kind". */
 type Fetched =
-  | { kind: 'run'; snapshot: RunSnapshot }
+  | {
+      kind: 'run';
+      snapshot: RunSnapshot;
+      /**
+       * #523: this run was already terminal when the wait began (bare ref-only
+       * path only) — grade it, but flag it as a possible stale PREVIOUS run.
+       */
+      staleCandidate?: boolean;
+    }
   | { kind: 'none' }
   /** Runs exist, but none is a merge-result run and the caller demanded one. */
   | { kind: 'not_merge_result'; sawBranchRun: boolean; skippedOnly: boolean }
@@ -411,11 +452,23 @@ function matchesAnchor(
   );
 }
 
+/**
+ * #523: freshness baseline for the bare ref-only path (no `expected_sha`, no
+ * `require_merge_result`). Nothing in a run list binds a run to THIS call's
+ * intent there, so the newest already-terminal run could be a PREVIOUS run.
+ * We snapshot the newest run that was ALREADY terminal at call time; grading it
+ * later sets `graded_run_stale_candidate` rather than being silent.
+ */
+interface FreshnessBaseline {
+  newestTerminalRunId?: number;
+}
+
 async function fetchSnapshot(
   args: WaitArgs,
   deps: WaitDeps,
   expectedSha: string | undefined,
   anchor: MergeAnchor,
+  baseline: FreshnessBaseline,
 ): Promise<Fetched> {
   const runs = await listRuns(deps, {
     ref: args.ref,
@@ -479,9 +532,18 @@ async function fetchSnapshot(
     ? runs.filter((r) => r.head_sha?.toLowerCase() === expectedSha.toLowerCase())
     : runs;
   const picked = pickRun(filtered, args.workflow_name, args.platform);
-  return picked
-    ? { kind: 'run', snapshot: snapshotFromRun(picked, args.platform) }
-    : { kind: 'none' };
+  if (!picked) return { kind: 'none' };
+
+  // #523: grade the newest run (contract unchanged), but if it is the SAME run
+  // that was already terminal when the wait began, flag it — it may be a stale
+  // PREVIOUS run graded with `waited_sec: 0`, not the one the caller meant to
+  // wait for. `baseline.newestTerminalRunId` is only set on the bare ref-only
+  // path; with `expected_sha` (head-sha filtered above) or `require_merge_result`
+  // (its own #476 anchor) the baseline is empty, so this never fires there.
+  const staleCandidate =
+    baseline.newestTerminalRunId !== undefined &&
+    picked.run_id === baseline.newestTerminalRunId;
+  return { kind: 'run', snapshot: snapshotFromRun(picked, args.platform), staleCandidate };
 }
 
 /** The full `ci_wait_run` state machine. Handler is a thin dispatcher around this. */
@@ -558,15 +620,42 @@ export async function waitForRun(
       anchor = res.data;
     }
 
+    // --- Phase 0.5: freshness baseline (bare ref-only path, #523) ---
+    // Snapshot the newest run that is ALREADY terminal right now. If we later
+    // grade exactly that run, it may be a stale PREVIOUS run (the `waited_sec:0`
+    // race), so we flag it — additively, without changing whether it is graded.
+    // A baseline-read failure falls back to no flagging rather than failing the
+    // wait. Skipped when `expected_sha` (identity) or `require_merge_result` (its
+    // own #476 anchor) already binds the run.
+    let baseline: FreshnessBaseline = {};
+    if (!args.require_merge_result && !expectedSha) {
+      try {
+        const initialRuns = await listRuns(deps, {
+          ref: args.ref,
+          workflow_name: args.workflow_name,
+          repo: args.repo,
+          limit: LIST_LIMIT,
+        });
+        const newest = pickRun(initialRuns, args.workflow_name, args.platform);
+        if (newest && isTerminalRun(newest, args.platform)) {
+          baseline = { newestTerminalRunId: newest.run_id };
+        }
+      } catch {
+        // Best-effort — proceed without the stale-candidate signal.
+      }
+    }
+
     // --- Phase 1: wait for a run to appear (no-run-yet window) ---
     let snapshot: RunSnapshot | null = null;
     let wrongKind: Extract<Fetched, { kind: 'not_merge_result' }> | null = null;
     let sawStale = false;
+    let gradedStaleCandidate = false;
 
     while (elapsedSec() < noRunYetWindowSec) {
-      const fetched = await fetchSnapshot(args, deps, expectedSha, anchor);
+      const fetched = await fetchSnapshot(args, deps, expectedSha, anchor, baseline);
       if (fetched.kind === 'run') {
         snapshot = fetched.snapshot;
+        gradedStaleCandidate = fetched.staleCandidate ?? false;
         wrongKind = null;
         break;
       }
@@ -700,13 +789,13 @@ export async function waitForRun(
         };
       }
       await deps.sleep(pollIntervalSec * 1000);
-      const refetched = await fetchSnapshot(args, deps, expectedSha, anchor);
-      const next = refetched.kind === 'run' ? refetched.snapshot : null;
-      if (!next) {
+      const refetched = await fetchSnapshot(args, deps, expectedSha, anchor, baseline);
+      if (refetched.kind !== 'run') {
         logPoll(args.ref, elapsedSec(), `${snapshot.status}(stale,no_run_returned)`);
         continue;
       }
-      snapshot = next;
+      snapshot = refetched.snapshot;
+      gradedStaleCandidate = refetched.staleCandidate ?? false;
       logPoll(args.ref, elapsedSec(), snapshot.status);
     }
 
@@ -774,6 +863,9 @@ export async function waitForRun(
       ref: args.ref,
       sha: snapshot.sha,
       waited_sec: elapsedSec(),
+      // #523: additive advisory — the graded run was already terminal at call
+      // time on the bare ref-only path, so it may be a stale previous run.
+      ...(gradedStaleCandidate ? { graded_run_stale_candidate: true } : {}),
     };
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);

@@ -873,3 +873,125 @@ describe('not-found reports an observation, not a cause (#492/#493)', () => {
     expect(err).not.toMatch(/--branch'? 'refs\/tags\//);
   });
 });
+
+describe('#523 — stale-run visibility (graded_run_stale_candidate)', () => {
+  // The exact #523 repro: ref-only (no expected_sha), a run for this ref is
+  // ALREADY completed and sitting in the list when the wait begins. The contract
+  // is unchanged — it is still graded — but it is flagged as a possible stale
+  // PREVIOUS run (with its head_sha) instead of being reported silently. RED-
+  // FIRST: `graded_run_stale_candidate` does not exist on the pre-fix envelope,
+  // so this assertion fails against main.
+  test('a run already terminal at call time is graded AND flagged, with head_sha', async () => {
+    const adapter = makeAdapter(async () => ({
+      ok: true,
+      data: [
+        ghRun({
+          run_id: 42,
+          status: 'completed',
+          conclusion: 'success',
+          head_sha: 'b'.repeat(40),
+        }),
+      ],
+    }));
+    const clock = fakeClock();
+    const r = await waitForRun(
+      { ref: 'main', platform: 'github' },
+      { adapter, sleep: clock.sleep, now: clock.now },
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('expected ok result');
+    // Contract unchanged: still graded.
+    expect(r.final_status).toBe('success');
+    expect(r.run_id).toBe(42);
+    // #523: flagged as a stale candidate, with the run's head_sha so the caller
+    // can cross-check it against the commit it actually cares about.
+    expect(r.graded_run_stale_candidate).toBe(true);
+    expect(r.sha).toBe('b'.repeat(40));
+  });
+
+  // Negative control: a run that was IN-PROGRESS at call time and completes
+  // during the wait is genuinely this call's run — it must NOT be flagged.
+  test('a run in-progress at call time then completing is NOT flagged', async () => {
+    let calls = 0;
+    const adapter = makeAdapter(async () => {
+      calls += 1;
+      // call 1 = baseline snapshot, call 2 = phase-1 fetch: in-progress; the
+      // phase-2 poll (call 3+) sees it completed.
+      const done = calls >= 3;
+      return {
+        ok: true,
+        data: [
+          ghRun({
+            run_id: 43,
+            status: done ? 'completed' : 'in_progress',
+            conclusion: done ? 'success' : null,
+          }),
+        ],
+      };
+    });
+    const clock = fakeClock();
+    const r = await waitForRun(
+      { ref: 'main', platform: 'github' },
+      { adapter, sleep: clock.sleep, now: clock.now },
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('expected ok result');
+    expect(r.final_status).toBe('success');
+    expect(r.run_id).toBe(43);
+    // In-progress at baseline → not a stale candidate → flag absent (not false).
+    expect(r.graded_run_stale_candidate).toBeUndefined();
+  });
+
+  // Negative control: a NEWER terminal run that appears after the baseline is
+  // this call's result, not the stale candidate — so it is graded WITHOUT the
+  // flag. Proves the flag is specific to the baseline run, not "any terminal run".
+  test('a newer terminal run appearing after the baseline is graded WITHOUT the flag', async () => {
+    let calls = 0;
+    const adapter = makeAdapter(async () => {
+      calls += 1;
+      const old = ghRun({
+        run_id: 50,
+        status: 'completed',
+        conclusion: 'success',
+        created_at: '2026-04-07T12:00:00Z',
+      });
+      const fresh = ghRun({
+        run_id: 51,
+        status: 'completed',
+        conclusion: 'success',
+        created_at: '2026-04-07T12:05:00Z',
+      });
+      // Baseline snapshot (call 1) sees only the old run; from call 2 the newer
+      // run is present too, and pickRun takes it (newest created_at).
+      return { ok: true, data: calls >= 2 ? [fresh, old] : [old] };
+    });
+    const clock = fakeClock();
+    const r = await waitForRun(
+      { ref: 'main', platform: 'github' },
+      { adapter, sleep: clock.sleep, now: clock.now },
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('expected ok result');
+    expect(r.run_id).toBe(51);
+    expect(r.graded_run_stale_candidate).toBeUndefined();
+  });
+
+  // expected_sha binds run identity, so the heuristic must never fire — the sha
+  // IS the freshness proof, and the flag would be noise.
+  test('expected_sha path never sets the stale-candidate flag', async () => {
+    const sha = 'c'.repeat(40);
+    const adapter = makeAdapter(async () => ({
+      ok: true,
+      data: [ghRun({ run_id: 44, status: 'completed', conclusion: 'success', head_sha: sha })],
+    }));
+    const clock = fakeClock();
+    const r = await waitForRun(
+      { ref: 'main', platform: 'github', expected_sha: sha },
+      { adapter, sleep: clock.sleep, now: clock.now },
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('expected ok result');
+    expect(r.final_status).toBe('success');
+    expect(r.graded_run_stale_candidate).toBeUndefined();
+  });
+});
