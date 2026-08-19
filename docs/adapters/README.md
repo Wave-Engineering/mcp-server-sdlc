@@ -34,9 +34,13 @@ export type AdapterResult<T> =
   meaningful equivalent on the active platform. This is the typed signal that
   replaces the pre-retrofit silent-ignore pattern (R-03).
 
-Pre-retrofit, the silent-ignore case collapsed into "fake success": e.g.
-`skip_train: true` on GitLab silently did nothing and returned `merged: true`.
-The third union arm makes the asymmetry an explicit, test-visible signal.
+Pre-retrofit, the silent-ignore case collapsed into wrong behavior: e.g.
+`work_item(type: "mr")` on GitHub silently ran the GitHub PR sub-command
+instead of refusing. The third union arm makes that asymmetry an explicit,
+test-visible signal (`{ platform_unsupported: true, hint: 'use type="pr" on
+GitHub' }`, #281). Not every asymmetry is typed this way, though — a flag that
+is merely meaningless, like `skip_train` on GitLab, is dropped with a
+`warnings` entry instead (§4.1).
 
 ### 1.2 `PlatformAdapter` interface
 
@@ -234,30 +238,32 @@ The gate-greps (§6) enforce the first two at CI time.
 Structural cross-platform differences — operations that exist on one platform
 but not the other, or flags whose semantics don't translate — surface as
 `{ platform_unsupported: true, hint: string }`. Callers handle that arm
-explicitly instead of receiving a misleading "success".
+explicitly instead of receiving a misleading "success". But **not every
+asymmetry is typed this way** — when the operation still succeeds and only a
+flag didn't apply, the adapter completes the call and adds a `warnings` entry
+instead (§4.1). Reach for `platform_unsupported` only when there is a genuine
+*refusal* the caller must handle.
 
-### 4.1 Example 1: `pr_merge` `skip_train` on GitLab
+### 4.1 The distinction: a `warnings` entry, not `platform_unsupported` (`skip_train`)
 
-GitHub exposes a merge queue; `skip_train` bypasses the queue and merges
-directly. GitLab has merge trains, but they're auto-managed by GitLab and
-there's no client-side control equivalent. Pre-retrofit, `skip_train: true`
-on GitLab silently did nothing and the handler returned a fake
-`merged: true`. The typed signal makes the asymmetry impossible to ignore:
+`skip_train` is the tempting-but-wrong case. GitHub's merge queue honors it;
+GitLab's merge trains are auto-managed at the project level with no
+client-side equivalent. Pre-retrofit, `skip_train: true` on GitLab silently
+did nothing while the handler returned a fake `merged: true`.
 
-```ts
-// lib/adapters/pr-merge-gitlab.ts (excerpt)
-if (args.skip_train === true) {
-  return {
-    platform_unsupported: true,
-    hint: 'merge trains are auto-managed by GitLab; skip_train is GitHub-merge-queue-only',
-  };
-}
-```
+The retrofit did **not** turn this into a typed asymmetry — because there is no
+refusal to surface. The merge still proceeds; the flag is simply meaningless.
+So `pr-merge-gitlab.ts` silently drops the flag and completes the merge, adding
+one `warnings` entry (#423):
 
-The pr_merge handler on GitLab now surfaces this to the caller instead of
-fabricating success. Bug closed: Dev Spec R-03.
+> `skip_train ignored on GitLab — merge trains are auto-managed at the project level`
 
-### 4.2 Example 2: `work_item` cross-platform PR/MR asymmetry
+That is the rule of thumb: `platform_unsupported` when the operation cannot be
+honored and the caller must handle a refusal; a `warnings` entry when it still
+succeeds but a flag or nuance didn't apply. `skip_train` is the latter. §4.2 is
+a genuine `platform_unsupported` case.
+
+### 4.2 Example: `work_item` cross-platform PR/MR asymmetry
 
 `WorkItemArgs.type` accepts both `'pr'` (GitHub-only) and `'mr'`
 (GitLab-only). Pre-retrofit, the handler dispatched to
@@ -288,7 +294,7 @@ if (args.type === 'mr') {
 
 Bug closed: #281.
 
-### 4.3 Example 3: `resolveBranchSha` on GitLab
+### 4.3 Example: `resolveBranchSha` on GitLab
 
 `ci_wait_run`'s Phase 0 merge-queue pre-flight resolves a branch name to a
 commit SHA so the polling loop can anchor against a specific commit. On
@@ -314,13 +320,17 @@ only when a real consumer arrives."
 
 ### 4.4 When to use `platform_unsupported`
 
-- A flag or operation is meaningful on one platform and genuinely has no
-  equivalent on the other (example 1).
+Use it only when the requested operation **cannot be honored** on the active
+platform and the caller must handle the refusal:
 - An argument value selects a sub-operation that only exists on one platform
-  (example 2).
-- A concept simply doesn't apply on the other platform (example 3).
+  (§4.2, `work_item` `type`).
+- A concept simply doesn't apply on the other platform (§4.3,
+  `resolveBranchSha`).
 
 Do NOT use `platform_unsupported` for:
+- A flag that is merely *meaningless* on the other platform while the operation
+  still succeeds — drop it and add a `warnings` entry instead (§4.1,
+  `skip_train` on GitLab).
 - Runtime failures (subprocess error, network failure) — those are `ok: false`.
 - Features that could be implemented on both platforms but just haven't been
   yet — those either stay on the stub (`hint: 'not yet migrated'`, see

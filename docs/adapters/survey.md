@@ -25,7 +25,7 @@ The Dev Spec (§5.5, §5.N, Wave Map) uses "22 remaining handlers" for the post-
 | 1.7 | `pr_status` | `pr-status-{github,gitlab}.ts` | `prStatus` |
 | 1.8 | `pr_comment` | `pr-comment-{github,gitlab}.ts` | `prComment` |
 | 1.9 | `pr_wait_ci` | `pr-wait-ci-{github,gitlab}.ts` | `prWaitCi` |
-| 1.10 | `pr_merge` | `pr-merge-{github,gitlab}.ts` | `prMerge` (typed `platform_unsupported` for `skip_train`) |
+| 1.10 | `pr_merge` | `pr-merge-{github,gitlab}.ts` | `prMerge` (`skip_train` silently dropped with a `warnings` entry on GitLab, #423 — not `platform_unsupported`) |
 | 1.11 | `pr_merge_wait` | `pr-merge-wait-{github,gitlab}.ts` + `fetch-pr-state-{github,gitlab}.ts` | `prMergeWait`, `fetchPrState` (**first hybrid sub-call**) |
 
 `lib/adapters/types.test.ts::MIGRATED_METHODS` is 10/25 at survey time. The 15 still-stubbed methods and their target handlers are the subject of this survey.
@@ -70,7 +70,7 @@ For each handler the survey answers three questions:
 - Platform-specific work: `fetchGithubRuns` (gh run list with expected_sha/workflow filters), `fetchGitlabPipelines` (gitlabApiCiList), and the GitHub-only `resolveBranchToSha` (used by the merge-queue pre-flight).
 - Proposed sub-calls:
   - `ciListRuns(args: { ref, workflow_name?, repo?, expected_sha?, limit }) → AdapterResult<NormalizedRun[]>` — the returned shape must expose `event` (for `merge_group` detection) and `head_sha` (for defense-in-depth filtering). GitLab's shape has no `event`; the field is `null` on GitLab.
-  - `resolveBranchSha(args: { branch, repo }) → AdapterResult<{ sha: string } | null>` — GitHub-only in practice; GitLab returns `{ platform_unsupported: true, hint: 'branch→SHA not needed — GitLab CI pipelines attach to branch names directly' }`. Typed asymmetry; same pattern as `skip_train` on GitLab.
+  - `resolveBranchSha(args: { branch, repo }) → AdapterResult<{ sha: string } | null>` — GitHub-only in practice; GitLab returns `{ platform_unsupported: true, hint: 'branch→SHA not needed — GitLab CI pipelines attach to branch names directly' }`. Typed asymmetry; same pattern as `work_item(type: "pr")` on GitLab (#281). (Note `skip_train` on GitLab is *not* this pattern — it is silently dropped with a `warnings` entry, #423.)
 - Rationale for hybrid: the polling loop is ~250 LoC of stateful non-platform logic (sleep injection, timeout accounting, two-phase window, merge-queue fast-path). Lifting it into each adapter doubles the logic — the same mistake `pr_merge_wait` avoided by keeping `pollUntilMerged` in `lib/`.
 
 ---
