@@ -211,6 +211,64 @@ describe('prMergeWaitGitlab — adapter orchestration (parity)', () => {
   // still-pending pipeline to the real merge — exactly like the GitHub queue
   // path.
 
+  // =========================================================================
+  // #518 — a NON-pipeline block (approvals, discussions, draft, conflicts)
+  // makes prMergeGitlab return ok:true, merged:false, enrolled:false with the
+  // reason in warnings (#461/#520). executeMergeWait must fail FAST with that
+  // reason instead of polling the dead MR for the full timeout — and never
+  // enter the poll loop where an out-of-band merge could spread a stale block
+  // warning onto a merged:true envelope.
+  // =========================================================================
+  test('#518 — blocked MR (enrolled:false) fails fast, names the block, does not poll', async () => {
+    // The narrow-but-real shape #520 surfaces: the deterministic
+    // --auto-merge=false attempt EXITS 0, yet the post-merge read classifies
+    // the MR as blocked — a block glab did not reject client-side (e.g. an
+    // external `blocked_status`), or the #424 read-after-write window. That
+    // makes prMergeGitlab report ok:true, merged:false, enrolled:false with the
+    // reason in warnings — the shape this guard must fail fast on.
+    //
+    // Contrast the sibling adapter test (pr-merge-gitlab.test.ts, "not_approved
+    // is not transient"): a block glab DOES catch client-side (not_approved)
+    // makes `glab mr merge` throw 405, so prMergeGitlab returns ok:false and
+    // executeMergeWait already reports pr_merge_failed BEFORE this guard. That
+    // path is not what #518 fixes, so this test must not model it.
+    //
+    // `blocked_status` classifies as a genuine block (not `ci_must_pass`, the
+    // one status the enrollment carve-out spares), so enrollment is NOT retried
+    // and the adapter reports enrolled:false. One body serves all three reads:
+    // fetchPrState (detect-and-skip), resolveHeadSha, and pollPostMergeState.
+    onExec(
+      'glab api projects/org%2Frepo/merge_requests/85',
+      JSON.stringify({
+        iid: 85,
+        state: 'opened',
+        detailed_merge_status: 'blocked_status',
+        source_branch: 'feature/x',
+        target_branch: 'main',
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/85',
+        labels: [],
+        sha: 'blockhead01',
+      }),
+    );
+    // Deterministic --auto-merge=false attempt exits 0; the MR then reads back
+    // opened + blocked_status → prMergeGitlab reports enrolled:false.
+    onExec('glab mr merge 85 --squash --remove-source-branch --yes', '');
+
+    const clock = fakeClock();
+    const result = await executeMergeWaitForTest(
+      { number: 85, repo: 'org/repo' },
+      { now: clock.now, sleep: clock.sleep, intervalMs: 1 },
+    );
+
+    expectErr(result);
+    expect(result.code).toBe('pr_merge_blocked');
+    expect(result.error).toContain('blocked_status');
+    expect(result.error).toContain('PR #85');
+    // The tell that no full-timeout poll happened: executeMergeWait's own poll
+    // loop never slept.
+    expect(clock.sleepCount()).toBe(0);
+  });
+
   test('pipeline-gated MR: deterministic attempt refused, retries and enrolls, then polls to merged', async () => {
     let mergeAttempts = 0;
     onExec('glab mr merge 65 --squash --remove-source-branch --yes', (cmd) => {
