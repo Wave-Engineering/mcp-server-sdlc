@@ -233,6 +233,11 @@ describe('wave_finalize handler', () => {
       plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
       target_branch: 'main',
+      // #528: isolate the state fallback too — without `root`, an empty artifact
+      // dir makes composeBody fall back to assembleBodyFromState(cwd), reading
+      // THIS repo's real .claude/status/state.json (green in a clean CI checkout,
+      // populated on a dev tree). Point it at the empty tmpRoot.
+      root: tmpRoot,
       body_artifacts_dir: tmpRoot, // empty directory
     });
     const data = parseResult(result);
@@ -250,6 +255,7 @@ describe('wave_finalize handler', () => {
       plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
       target_branch: 'main',
+      root: tmpRoot, // #528: isolate state fallback (see the no-flight-results test)
       body_artifacts_dir: tmpRoot,
     });
     const data = parseResult(result);
@@ -469,17 +475,25 @@ describe('wave_finalize handler', () => {
 
   // --- default body_artifacts_dir derivation ---
   test('default body_artifacts_dir derives from kahuna_branch slug', async () => {
+    // #528: use a guaranteed-unique slug so the DERIVED default artifact dir
+    // (/tmp/wavemachine/<slug>) can't collide with a real leftover wavemachine
+    // run on a dev machine — the shared-path dependence this issue exists to
+    // kill. `body_artifacts_dir` stays omitted, so default derivation is still
+    // exercised; the ls-remote stub matches the unique branch so the
+    // branch-exists check still passes and we reach the no_artifacts branch.
+    const uniqueBranch = `kahuna/42-nonexistent-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
     onExec('gh pr list', '[]');
-    onExec('ls-remote', 'abc\trefs/heads/kahuna/42-wave-status-cli');
+    onExec('ls-remote', `abc\trefs/heads/${uniqueBranch}`);
 
     const result = await handler.execute({
       plan_id: 42,
-      kahuna_branch: 'kahuna/42-wave-status-cli',
+      kahuna_branch: uniqueBranch,
       target_branch: 'main',
-      // body_artifacts_dir omitted — defaults to /tmp/wavemachine/42-wave-status-cli
+      root: tmpRoot, // #528: isolate the state fallback too
+      // body_artifacts_dir omitted — defaults to /tmp/wavemachine/<uniqueBranch slug>
     });
     const data = parseResult(result);
-    // Directory doesn't exist → no artifacts
+    // Derived default dir is guaranteed absent → no artifacts (bus AND state empty)
     expect(data.ok).toBe(false);
     expect(data.error).toBe('no_artifacts');
   });
@@ -602,6 +616,7 @@ describe('wave_finalize handler', () => {
       plan_id: 42,
       kahuna_branch: 'kahuna/42-foo',
       target_branch: 'main',
+      root: tmpRoot, // #528: isolate state fallback (see the no-flight-results test)
       body_artifacts_dir: tmpRoot,
     });
     const data = parseResult(result);
