@@ -7,7 +7,10 @@ const { default: handler } = await import('../handlers/wave_defer.ts');
 
 function resetMocks() {
   resetExecMock();
-  setExecMock(() => 'deferral recorded\n');
+  // #425: the real `wave-status defer` prints NOTHING on success (it saves state
+  // and returns). The previous mock returned 'deferral recorded\n', which
+  // masked the empty-output bug this fix addresses — so model reality here.
+  setExecMock(() => '');
 }
 
 function lastExec(): string {
@@ -27,7 +30,7 @@ describe('wave_defer handler', () => {
     expect(typeof handler.execute).toBe('function');
   });
 
-  test('happy_path — invokes wave-status defer with description + risk', async () => {
+  test('happy_path — invokes wave-status defer and surfaces the recorded deferral (#425)', async () => {
     const result = await handler.execute({
       description: 'flaky test',
       risk: 'low',
@@ -37,7 +40,38 @@ describe('wave_defer handler', () => {
     expect(lastExec()).toContain(' low');
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
-    expect(parsed.data).toBe('deferral recorded');
+    // #425: even though the CLI prints nothing, the response is NOT an empty
+    // no-op — it carries the recorded deferral so callers can tell "recorded"
+    // from "no-op" without a follow-up wave_show.
+    expect(parsed.deferral).toEqual({
+      description: 'flaky test',
+      risk: 'low',
+      status: 'pending',
+    });
+    expect(parsed.data).not.toBe('');
+  });
+
+  test('#425 — empty CLI output no longer surfaces as a bare no-op', async () => {
+    // The real `wave-status defer` prints nothing; pre-fix this returned
+    // { ok: true, data: "" }, indistinguishable from "nothing happened".
+    setExecMock(() => '');
+    const parsed = parseResult(await handler.execute({ description: 'x', risk: 'high' }));
+    expect(parsed.ok).toBe(true);
+    expect(parsed.deferral.status).toBe('pending');
+    expect(parsed.deferral.risk).toBe('high');
+    expect(parsed.deferral.description).toBe('x');
+    // The tell #425 called out — data:"" — is gone.
+    expect(parsed.data).not.toBe('');
+  });
+
+  test('#425 — a real CLI output, if ever emitted, is preserved in data', async () => {
+    // Additive/forward-compatible: if a future wave-status defer prints an
+    // envelope, the handler still relays it in `data` rather than discarding it.
+    setExecMock(() => 'recorded deferral #3\n');
+    const parsed = parseResult(await handler.execute({ description: 'y', risk: 'medium' }));
+    expect(parsed.ok).toBe(true);
+    expect(parsed.data).toBe('recorded deferral #3');
+    expect(parsed.deferral.risk).toBe('medium');
   });
 
   test('happy_path — accepts medium and high risk', async () => {

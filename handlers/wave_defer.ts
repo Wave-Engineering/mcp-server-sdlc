@@ -35,10 +35,30 @@ const waveDeferHandler: HandlerDef = {
       const output = execSync(cmd, {
         cwd: projectDir(),
         encoding: 'utf8',
-      });
+      }).trim();
+      // #425: `wave-status defer` RECORDS the deferral (it saves state and
+      // regenerates the dashboard) but prints NOTHING on success — unlike its
+      // sibling wave-status commands, which emit an envelope. A bare exit-0
+      // therefore left this returning `{ ok: true, data: "" }`, which reads as a
+      // no-op even though the deferral landed, forcing callers to follow up with
+      // wave_show to confirm. Exit 0 means the CLI reached its save step, so
+      // surface a structured confirmation of what was recorded. `data` is
+      // retained (additive, non-breaking) and still carries any CLI output if a
+      // future version starts emitting one.
       return {
         content: [
-          { type: 'text' as const, text: JSON.stringify({ ok: true, data: output.trim() }) },
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: true,
+              deferral: {
+                description: args.description,
+                risk: args.risk,
+                status: 'pending',
+              },
+              data: output || `deferral recorded (${args.risk}): ${args.description}`,
+            }),
+          },
         ],
       };
     } catch (err) {
