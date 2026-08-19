@@ -25,6 +25,7 @@ import {
   DEFAULT_TIMEOUT_SEC,
   POLL_INTERVAL_MS,
   type PrStateInfo,
+  type TerminalInfo,
 } from '../pr-merge-wait-poll.js';
 import { getAdapter } from './index.js';
 import type {
@@ -69,6 +70,10 @@ export interface ExecuteOverrides {
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   intervalMs?: number;
+  // #524: platform-aware terminal-state hook threaded into the shared poll
+  // loop. Supplied by prMergeWaitGitlab in production (GitHub passes none, so
+  // its queue path is unchanged); also injectable by tests.
+  checkTerminal?: () => Promise<TerminalInfo | null>;
 }
 
 /**
@@ -177,6 +182,9 @@ export async function executeMergeWait(
     timeoutMs,
     now: overrides?.now ?? Date.now,
     sleep: overrides?.sleep ?? defaultSleep,
+    // #524: GitLab supplies a terminal-state probe (fail fast on a failed
+    // enrolled pipeline); GitHub leaves it undefined and polls as before.
+    checkTerminal: overrides?.checkTerminal,
   });
 
   if (!poll.ok) {
@@ -192,6 +200,23 @@ export async function executeMergeWait(
         error:
           `pr_merge_wait polling failed for PR #${args.number} after enrollment ` +
           `(${lastSnippet}, queue.enforced: ${merge.queue.enforced}): ${poll.error}`,
+      };
+    }
+    if (poll.reason === 'terminal') {
+      // #524: the enrolled merge reached a state it will never leave by waiting
+      // (e.g. the pipeline failed/canceled, or a fresh non-transient block) —
+      // report the real cause promptly instead of a generic poll_timeout after
+      // the full wait. Before #488 this exact sub-case failed in seconds via the
+      // deterministic glab_mr_merge_failed path; this restores a fast, named
+      // failure for it.
+      return {
+        ok: false,
+        code: 'enrolled_merge_failed',
+        error:
+          `pr_merge_wait: PR #${args.number} was enrolled but will not merge — ` +
+          `${poll.terminal.reason} ` +
+          `(last_state: ${poll.lastState.state.toUpperCase()}). ` +
+          `Resolve the cause and retry.`,
       };
     }
     return {
