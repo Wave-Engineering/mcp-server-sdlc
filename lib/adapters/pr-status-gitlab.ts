@@ -57,7 +57,10 @@ function normalizeGitlabState(state: string): PrStatusState {
   return 'open';
 }
 
-function normalizeGitlabMergeState(
+// Exported for #461: pr-merge-gitlab.ts reuses this classification rather
+// than re-deriving its own subset of GitLab's `detailed_merge_status` values —
+// this function is the canonical mapping, kept in one place.
+export function normalizeGitlabMergeState(
   detailedMergeStatus: string | undefined,
   mergeStatus: string | undefined,
 ): PrStatusMergeState {

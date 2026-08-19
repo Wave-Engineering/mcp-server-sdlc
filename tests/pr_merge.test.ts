@@ -845,3 +845,295 @@ describe('#497 — branch-delete failure after successful merge', () => {
     expect(viewCalls).toHaveLength(0);
   });
 });
+
+// ===========================================================================
+// #461 — GitLab blocked MR surfaces the blocker instead of an ambiguous
+// enrolled:true/merged:false shape
+// ===========================================================================
+//
+// `glab mr merge` can exit 0 without merging (e.g. blocked on required
+// approvals, unresolved discussions, or draft status). Pre-#461 that read
+// back as `enrolled:true, merged:false` — indistinguishable from legitimate
+// merge-queue enrollment, even though GitLab has no queue concept. The
+// caller had to round-trip pr_status to learn why. This reuses
+// `normalizeGitlabMergeState` (the canonical classification already used by
+// pr_status) to surface `detailed_merge_status` directly, for every
+// terminal blocker that classification recognizes — not just approvals.
+
+describe('#461 — GitLab blocked merge surfaces the blocker', () => {
+  test('not_approved MR → enrolled:false with an explicit warning', async () => {
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git\n');
+    onExec('glab mr merge 84 --squash --remove-source-branch --yes', '');
+    // Every gitlabApiMr call (resolveHeadSha, fetchPrState, the #461 re-check)
+    // hits this same endpoint — one consistent MR shape services all three.
+    onExec(
+      'glab api projects/org%2Frepo/merge_requests/84',
+      JSON.stringify({
+        iid: 84,
+        state: 'opened',
+        detailed_merge_status: 'not_approved',
+        source_branch: 'feature/test',
+        target_branch: 'main',
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/84',
+        labels: [],
+        sha: 'head84aaaaaa',
+        merge_commit_sha: null,
+      }),
+    );
+
+    const result = await prMergeHandler.execute({ number: 84 });
+    const data = parseResult(result);
+
+    expect(data.ok).toBe(true);
+    expect(data.merged).toBe(false);
+    // The core of #461: a blocked MR is not enrollment.
+    expect(data.enrolled).toBe(false);
+    expect(data.pr_state).toBe('OPEN');
+    const w = (data.warnings as string[]).join(' ');
+    expect(w).toMatch(/not_approved/);
+  });
+
+  test('discussions_not_resolved → also enrolled:false (not just not_approved)', async () => {
+    // Regression guard for the code-review finding: the first cut of this
+    // fix keyed on the literal 'not_approved' only, leaving every OTHER
+    // terminal blocker in pr-status-gitlab.ts's own classification
+    // (discussions_not_resolved, draft_status, blocked_status, ci_must_pass)
+    // still reporting the ambiguous enrolled:true shape.
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git\n');
+    onExec('glab mr merge 87 --squash --remove-source-branch --yes', '');
+    onExec(
+      'glab api projects/org%2Frepo/merge_requests/87',
+      JSON.stringify({
+        iid: 87,
+        state: 'opened',
+        detailed_merge_status: 'discussions_not_resolved',
+        source_branch: 'feature/test',
+        target_branch: 'main',
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/87',
+        labels: [],
+        sha: 'head87aaaaaa',
+        merge_commit_sha: null,
+      }),
+    );
+
+    const result = await prMergeHandler.execute({ number: 87 });
+    const data = parseResult(result);
+
+    expect(data.ok).toBe(true);
+    expect(data.enrolled).toBe(false);
+    const w = (data.warnings as string[]).join(' ');
+    expect(w).toMatch(/discussions_not_resolved/);
+  });
+
+  test('unmerged for a genuinely in-progress reason → no false warning', async () => {
+    // A merge that simply has not landed yet for an in-progress reason (still
+    // checking mergeability) must not be mislabeled as blocked — this is the
+    // 'unknown' bucket in normalizeGitlabMergeState, not 'blocked'.
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git\n');
+    onExec('glab mr merge 85 --squash --remove-source-branch --yes', '');
+    onExec(
+      'glab api projects/org%2Frepo/merge_requests/85',
+      JSON.stringify({
+        iid: 85,
+        state: 'opened',
+        detailed_merge_status: 'checking',
+        source_branch: 'feature/test',
+        target_branch: 'main',
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/85',
+        labels: [],
+        sha: 'head85aaaaaa',
+        merge_commit_sha: null,
+      }),
+    );
+
+    const result = await prMergeHandler.execute({ number: 85 });
+    const data = parseResult(result);
+
+    expect(data.ok).toBe(true);
+    expect(data.merged).toBe(false);
+    // Genuinely in progress — the pre-#461 enrolled:true shape is still correct.
+    expect(data.enrolled).toBe(true);
+    expect(data.warnings).toEqual([]);
+  });
+
+  test('re-check API call throws → falls through to the pre-#461 shape, not a crash', async () => {
+    // The #461 re-check is best-effort: if the diagnostic call itself fails,
+    // the merge OUTCOME we already have (from fetchPrState) must still be
+    // returned rather than swallowed. Exercised via a call-counting responder
+    // so only the THIRD gitlabApiMr call (the re-check) fails — the first two
+    // (resolveHeadSha, fetchPrState) must succeed for the flow to reach it.
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git\n');
+    onExec('glab mr merge 88 --squash --remove-source-branch --yes', '');
+    let apiCallCount = 0;
+    onExec('glab api projects/org%2Frepo/merge_requests/88', () => {
+      apiCallCount += 1;
+      if (apiCallCount >= 3) {
+        const err = new Error('glab api: HTTP 500') as ThrowableError;
+        err.stderr = 'HTTP 500';
+        err.status = 1;
+        throw err;
+      }
+      return JSON.stringify({
+        iid: 88,
+        state: 'opened',
+        detailed_merge_status: 'not_approved',
+        source_branch: 'feature/test',
+        target_branch: 'main',
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/88',
+        labels: [],
+        sha: 'head88aaaaaa',
+        merge_commit_sha: null,
+      });
+    });
+
+    const result = await prMergeHandler.execute({ number: 88 });
+    const data = parseResult(result);
+
+    // The merge outcome (not merged) is still reported correctly — the
+    // re-check failure degrades the DIAGNOSTIC, not the result itself.
+    expect(data.ok).toBe(true);
+    expect(data.merged).toBe(false);
+    // Pre-#461 fallback shape: enrolled stays true, no warning added, since
+    // the re-check couldn't confirm a block.
+    expect(data.enrolled).toBe(true);
+    expect(data.warnings).toEqual([]);
+  });
+
+  test('a genuinely merged MR is unaffected — no re-check, no warning', async () => {
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git\n');
+    onExec('glab mr merge 86 --squash --remove-source-branch --yes', '');
+    onExec(
+      'glab api projects/org%2Frepo/merge_requests/86',
+      JSON.stringify({
+        iid: 86,
+        state: 'merged',
+        detailed_merge_status: 'mergeable',
+        source_branch: 'feature/test',
+        target_branch: 'main',
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/86',
+        labels: [],
+        sha: 'head86aaaaaa',
+        merge_commit_sha: 'cafebabe1234',
+      }),
+    );
+
+    const result = await prMergeHandler.execute({ number: 86 });
+    const data = parseResult(result);
+
+    expect(data.ok).toBe(true);
+    expect(data.merged).toBe(true);
+    expect(data.enrolled).toBe(true);
+    expect(data.warnings).toEqual([]);
+    // The title's claim, made assertable: exactly resolveHeadSha + fetchPrState
+    // — the #461 re-check must not have fired on the merged path.
+    const apiCalls = execCalls().filter((c) => c.includes('merge_requests/86'));
+    expect(apiCalls).toHaveLength(2);
+  });
+
+  test('conflict (dirty, not blocked) → enrolled stays true, no warning', async () => {
+    // Pins the other side of the classification boundary: `conflict` maps to
+    // 'dirty' in normalizeGitlabMergeState, not 'blocked' — a future widening
+    // of the blocked bucket must not silently swallow this case too.
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git\n');
+    onExec('glab mr merge 89 --squash --remove-source-branch --yes', '');
+    onExec(
+      'glab api projects/org%2Frepo/merge_requests/89',
+      JSON.stringify({
+        iid: 89,
+        state: 'opened',
+        detailed_merge_status: 'conflict',
+        source_branch: 'feature/test',
+        target_branch: 'main',
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/89',
+        labels: [],
+        sha: 'head89aaaaaa',
+        merge_commit_sha: null,
+      }),
+    );
+
+    const result = await prMergeHandler.execute({ number: 89 });
+    const data = parseResult(result);
+
+    expect(data.ok).toBe(true);
+    expect(data.merged).toBe(false);
+    expect(data.enrolled).toBe(true);
+    expect(data.warnings).toEqual([]);
+  });
+});
+
+// ===========================================================================
+// #497 (GitLab) — branch-delete failure after a successful merge reports
+// ok:true, mirroring the GitHub coverage above
+// ===========================================================================
+
+describe('#497 (GitLab) — branch-delete failure after successful merge', () => {
+  test('branch-delete failure + MR confirmed merged → ok:true with warning', async () => {
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git\n');
+    onExec('glab mr merge 90 --squash --remove-source-branch --yes', () => {
+      const err = new Error(
+        'could not delete source branch fix/90-foo: 500 Internal Server Error',
+      ) as ThrowableError;
+      err.stderr = err.message;
+      err.status = 1;
+      throw err;
+    });
+    // resolveHeadSha's pre-merge read, then fetchPrState's post-failure read —
+    // both see the same already-merged MR.
+    onExec(
+      'glab api projects/org%2Frepo/merge_requests/90',
+      JSON.stringify({
+        iid: 90,
+        state: 'merged',
+        detailed_merge_status: 'mergeable',
+        source_branch: 'feature/test',
+        target_branch: 'main',
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/90',
+        labels: [],
+        sha: 'head90aaaaaa',
+        merge_commit_sha: 'deadbeef9090',
+      }),
+    );
+
+    const result = await prMergeHandler.execute({ number: 90 });
+    const data = parseResult(result);
+
+    expect(data.ok).toBe(true);
+    expect(data.merged).toBe(true);
+    expect(data.merge_commit_sha).toBe('deadbeef9090');
+    const w = (data.warnings as string[]).join(' ');
+    expect(w).toMatch(/branch deletion failed/i);
+    expect(w).toMatch(/500/);
+  });
+
+  test('branch-delete failure + MR NOT confirmed merged → ok:false', async () => {
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git\n');
+    onExec('glab mr merge 91 --squash --remove-source-branch --yes', () => {
+      const err = new Error(
+        'could not delete source branch fix/91-foo: 500 Internal Server Error',
+      ) as ThrowableError;
+      err.stderr = err.message;
+      err.status = 1;
+      throw err;
+    });
+    onExec(
+      'glab api projects/org%2Frepo/merge_requests/91',
+      JSON.stringify({
+        iid: 91,
+        state: 'opened',
+        detailed_merge_status: 'not_approved',
+        source_branch: 'feature/test',
+        target_branch: 'main',
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/91',
+        labels: [],
+        sha: 'head91aaaaaa',
+        merge_commit_sha: null,
+      }),
+    );
+
+    const result = await prMergeHandler.execute({ number: 91 });
+    const data = parseResult(result);
+
+    // The merge did not land — must not be swallowed as a success.
+    expect(data.ok).toBe(false);
+  });
+});

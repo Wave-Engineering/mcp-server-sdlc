@@ -2,9 +2,11 @@
 // Subprocess + platform branching live in lib/adapters/pr-merge-{github,gitlab}.ts;
 // see docs/platform-adapter-retrofit-devspec.md §5 for the contract.
 //
-// **R-03 typed-asymmetry exemplar.** GitLab adapter returns
-// `{platform_unsupported, hint}` for `skip_train: true`; this handler surfaces
-// it as `{ok: true, platform_unsupported: true, hint}` per Dev Spec §4.4 step 4.
+// GitLab `skip_train: true` is silently dropped with a warning (#423) — merge
+// trains are auto-managed at the project level, so there is no typed refusal
+// to surface. (Superseded R-03 note: an earlier revision had the GitLab
+// adapter return `{platform_unsupported, hint}` here; that shape was replaced
+// by #423 and no longer exists in lib/adapters/pr-merge-gitlab.ts.)
 
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
@@ -32,10 +34,14 @@ const prMergeHandler: HandlerDef = {
     '{enrolled, merged, merge_method, queue:{enabled,position,enforced}, pr_state, warnings} — ' +
     'so the caller decides what "merged" means for their use case. On a merge-queue-enforced repo ' +
     'the response is eager: enrolled=true, merged=false, pr_state="OPEN" (the PR is queued, not yet ' +
-    'on main). For "block until commit lands on main", use pr_merge_wait. ' +
+    'on main). On GitLab, a merge blocked by a non-transient gate (unmet approvals, unresolved ' +
+    'discussions, draft status) returns enrolled=false with the blocker named in warnings — this is ' +
+    'NOT enrollment, nothing is in progress, do not poll it (see #461). ' +
+    'For "block until commit lands on main", use pr_merge_wait. ' +
     'skip_train=true bypasses the queue when commutativity_verify has proven the merge safe, except ' +
     'on queue-enforced repos where the flag is silently dropped (warning emitted). On GitLab, ' +
-    'skip_train returns {platform_unsupported: true, hint} — merge trains are auto-managed.',
+    'skip_train is silently dropped (merge trains are auto-managed) with a warning emitted — ' +
+    'proceeds with the merge, does not return platform_unsupported.',
   inputSchema,
   async execute(rawArgs: unknown) {
     let args;
