@@ -23,7 +23,7 @@ interface ThrowableError extends Error {
 
 installChildProcessMock();
 
-const { prMergeWaitGitlab } = await import('./pr-merge-wait-gitlab.ts');
+const { prMergeWaitGitlab, makeGitlabTerminalCheck } = await import('./pr-merge-wait-gitlab.ts');
 const { executeMergeWaitForTest } = await import('./pr-merge-wait-github.ts');
 
 function fakeClock(startMs: number = 0) {
@@ -319,4 +319,115 @@ describe('prMergeWaitGitlab — adapter orchestration (parity)', () => {
     expect(attemptCalls[0]).toContain('--auto-merge=false');
     expect(attemptCalls[1]).toContain('--auto-merge=true');
   }, 10000);
+
+  // =========================================================================
+  // #524 — an enrolled MR whose pipeline FAILS is reported promptly with the
+  // real cause, not a generic poll_timeout after the full wait.
+  // =========================================================================
+  test('#524 — enrolled-then-pipeline-fails reports the cause promptly, does not poll to timeout', async () => {
+    // Enroll exactly like the #488 test (deterministic --auto-merge=false
+    // refused, retried with --auto-merge=true), then the enrolled pipeline
+    // FAILS. `enrolled` flips the head-pipeline status to 'failed' the moment
+    // the auto-merge=true retry lands. pollPostMergeState still classifies the
+    // MR as enrollment (dm=ci_must_pass is carved out; it never looks at
+    // pipeline status), so prMerge returns enrolled:true and the wait polls.
+    // The #524 terminal probe reads the failed pipeline on the first poll and
+    // stops immediately — before any interval sleep.
+    let enrolled = false;
+    onExec('glab mr merge 67 --squash --remove-source-branch --yes', (cmd) => {
+      if (cmd.includes('--auto-merge=false')) {
+        const err = new Error('405 Method Not Allowed') as ThrowableError;
+        err.stderr = '405 Method Not Allowed — pipeline has not succeeded\n';
+        throw err;
+      }
+      enrolled = true; // --auto-merge=true retry: enrollment succeeds
+      return '';
+    });
+    onExec('glab api projects/org%2Frepo/merge_requests/67', () =>
+      JSON.stringify({
+        iid: 67,
+        state: 'opened',
+        detailed_merge_status: 'ci_must_pass',
+        source_branch: 'feature/x',
+        target_branch: 'main',
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/67',
+        labels: [],
+        sha: 'waithead06',
+        head_pipeline: {
+          id: 1,
+          sha: 'waithead06',
+          ref: 'feature/x',
+          status: enrolled ? 'failed' : 'running',
+          web_url: 'https://gitlab.com/org/repo/-/pipelines/1',
+        },
+      }),
+    );
+
+    const clock = fakeClock();
+    const result = await executeMergeWaitForTest(
+      { number: 67, repo: 'org/repo' },
+      {
+        now: clock.now,
+        sleep: clock.sleep,
+        intervalMs: 1,
+        checkTerminal: makeGitlabTerminalCheck({ number: 67, repo: 'org/repo' }),
+      },
+    );
+
+    expectErr(result);
+    expect(result.code).toBe('enrolled_merge_failed');
+    expect(result.error).toContain('pipeline failed');
+    expect(result.error).toContain('PR #67');
+    // Reported promptly: the terminal probe fired on the first poll, before any
+    // interval sleep — not after burning timeout_sec.
+    expect(clock.sleepCount()).toBe(0);
+  }, 10000);
+
+  // Focused classifier coverage for the #524 terminal probe.
+  test('#524 makeGitlabTerminalCheck: failed→terminal, running→keep polling, fresh block→terminal', async () => {
+    const mrBody = (
+      iid: number,
+      dms: string,
+      pipeline: string | null,
+    ) =>
+      JSON.stringify({
+        iid,
+        state: 'opened',
+        detailed_merge_status: dms,
+        source_branch: 'feature/x',
+        target_branch: 'main',
+        web_url: `https://gitlab.com/org/repo/-/merge_requests/${iid}`,
+        labels: [],
+        sha: 'h',
+        head_pipeline:
+          pipeline === null
+            ? null
+            : { id: 1, sha: 'h', ref: 'feature/x', status: pipeline, web_url: 'u' },
+      });
+
+    // Failed pipeline → terminal, names the pipeline state.
+    onExec('glab api projects/org%2Frepo/merge_requests/70', mrBody(70, 'ci_must_pass', 'failed'));
+    // Running pipeline (ci_must_pass) → still waiting, keep polling.
+    onExec('glab api projects/org%2Frepo/merge_requests/71', mrBody(71, 'ci_must_pass', 'running'));
+    // Fresh non-pipeline block (approval dismissed mid-enrollment), no pipeline → terminal.
+    onExec('glab api projects/org%2Frepo/merge_requests/72', mrBody(72, 'not_approved', null));
+
+    const failed = await makeGitlabTerminalCheck({ number: 70, repo: 'org/repo' })();
+    expect(failed?.reason).toContain('failed');
+
+    const running = await makeGitlabTerminalCheck({ number: 71, repo: 'org/repo' })();
+    expect(running).toBeNull();
+
+    const blocked = await makeGitlabTerminalCheck({ number: 72, repo: 'org/repo' })();
+    expect(blocked?.reason).toContain('not_approved');
+  });
+
+  // A read failure inside the probe must not abort the wait — swallow to null.
+  test('#524 makeGitlabTerminalCheck: read failure → null (keep polling), never throws', async () => {
+    onExec('glab api projects/org%2Frepo/merge_requests/73', () => {
+      throw new Error('glab: transient API error');
+    });
+    const verdict = await makeGitlabTerminalCheck({ number: 73, repo: 'org/repo' })();
+    expect(verdict).toBeNull();
+  });
 });

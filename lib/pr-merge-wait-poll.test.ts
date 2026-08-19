@@ -142,4 +142,69 @@ describe('pollUntilMerged (pure)', () => {
     expect(result.ok).toBe(false);
     expect(clock.sleepCount()).toBe(1);
   });
+
+  // #524: the optional terminal-state hook.
+  test('checkTerminal returning a verdict stops the poll immediately, before any sleep', async () => {
+    const clock = fakeClock();
+    const result = await pollUntilMerged({
+      fetchState: async () => ({ state: 'open', url: 'u' }),
+      intervalMs: 10000,
+      timeoutMs: 600000,
+      now: clock.now,
+      sleep: clock.sleep,
+      checkTerminal: async () => ({ reason: 'enrolled pipeline failed' }),
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok && result.reason === 'terminal') {
+      expect(result.terminal.reason).toBe('enrolled pipeline failed');
+      expect(result.lastState.state).toBe('open');
+    } else {
+      throw new Error('expected terminal variant');
+    }
+    // Fired on the first iteration — no interval was ever waited out.
+    expect(clock.sleepCount()).toBe(0);
+  });
+
+  test('checkTerminal returning null does not interfere — poll proceeds to merged', async () => {
+    const clock = fakeClock();
+    let calls = 0;
+    const result = await pollUntilMerged({
+      fetchState: async () => {
+        calls += 1;
+        return calls >= 3
+          ? { state: 'merged', url: 'u', mergeCommitSha: 'z' }
+          : { state: 'open', url: 'u' };
+      },
+      intervalMs: 1000,
+      timeoutMs: 600000,
+      now: clock.now,
+      sleep: clock.sleep,
+      checkTerminal: async () => null, // never terminal → keep polling
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.state.mergeCommitSha).toBe('z');
+  });
+
+  test('checkTerminal throwing is swallowed — poll keeps going (advisory probe)', async () => {
+    const clock = fakeClock();
+    let calls = 0;
+    const result = await pollUntilMerged({
+      fetchState: async () => {
+        calls += 1;
+        return calls >= 2
+          ? { state: 'merged', url: 'u', mergeCommitSha: 'ok' }
+          : { state: 'open', url: 'u' };
+      },
+      intervalMs: 1000,
+      timeoutMs: 600000,
+      now: clock.now,
+      sleep: clock.sleep,
+      checkTerminal: async () => {
+        throw new Error('probe read failed');
+      },
+    });
+    // A probe read failure must not abort a wait that then succeeds.
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.state.mergeCommitSha).toBe('ok');
+  });
 });

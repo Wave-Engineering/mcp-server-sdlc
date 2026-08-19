@@ -21,12 +21,30 @@ import type { PrStateInfo } from './adapters/types.js';
 
 export type { PrStateInfo };
 
+/**
+ * #524: the verdict a `checkTerminal` hook returns when an enrolled merge has
+ * reached a state it will never leave by waiting (a failed/canceled pipeline,
+ * or a fresh non-transient block). `reason` is surfaced verbatim in the
+ * caller's error so the failure names its actual cause.
+ */
+export interface TerminalInfo {
+  reason: string;
+}
+
 export interface PollDeps {
   fetchState: () => Promise<PrStateInfo>;
   intervalMs: number;
   timeoutMs: number;
   now: () => number;
   sleep: (ms: number) => Promise<void>;
+  // #524: optional platform-aware terminal-state hook, consulted each iteration
+  // (after the merged check, before the timeout check). A non-null return stops
+  // the poll immediately with a `terminal` result instead of burning the rest
+  // of the timeout on an enrolled merge that can no longer land. The loop stays
+  // platform-agnostic — it only sees an opaque probe; the GitLab wait wrapper
+  // supplies the classification. GitHub supplies none (its queue path has its
+  // own terminal handling), so the loop behaves exactly as before there.
+  checkTerminal?: () => Promise<TerminalInfo | null>;
 }
 
 export interface PollSuccess {
@@ -50,6 +68,14 @@ export interface PollFetchError {
   elapsedMs: number;
 }
 
+export interface PollTerminal {
+  ok: false;
+  reason: 'terminal';
+  terminal: TerminalInfo;
+  lastState: PrStateInfo;
+  elapsedMs: number;
+}
+
 // Pure poller — no module-level globals, no platform knowledge. Loops:
 // fetch → return on merged → check timeout → sleep. The sleep happens AFTER
 // the timeout check, so if the budget is already spent we don't waste another
@@ -62,7 +88,7 @@ export interface PollFetchError {
 // have no idea whether the merge itself failed or just the polling did.
 export async function pollUntilMerged(
   deps: PollDeps,
-): Promise<PollSuccess | PollTimeout | PollFetchError> {
+): Promise<PollSuccess | PollTimeout | PollFetchError | PollTerminal> {
   const start = deps.now();
   let lastState: PrStateInfo | null = null;
   while (true) {
@@ -82,6 +108,23 @@ export async function pollUntilMerged(
     const elapsedMs = deps.now() - start;
     if (info.state === 'merged') {
       return { ok: true, state: info, elapsedMs };
+    }
+    // #524: consult the terminal-state hook before deciding to keep waiting. A
+    // failed enrolled pipeline (or a fresh non-transient block) will never
+    // resolve to `merged` by polling, so report the real cause promptly rather
+    // than timing out. The hook's own read failing is treated as "can't
+    // classify, keep polling" — the primary fetchState above stays the ground
+    // truth for merged/timeout, so an advisory-probe blip never aborts the wait.
+    if (deps.checkTerminal) {
+      let verdict: TerminalInfo | null = null;
+      try {
+        verdict = await deps.checkTerminal();
+      } catch {
+        verdict = null;
+      }
+      if (verdict) {
+        return { ok: false, reason: 'terminal', terminal: verdict, lastState: info, elapsedMs };
+      }
     }
     if (elapsedMs >= deps.timeoutMs) {
       return { ok: false, reason: 'timeout', lastState: info, elapsedMs };
