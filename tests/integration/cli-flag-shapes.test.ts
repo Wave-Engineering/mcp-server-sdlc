@@ -230,11 +230,15 @@ describe('GitLab CLI flag shapes', () => {
     //   --sha        GitLab's stale-head guard. Without it, namespaces with
     //                `require_sha_for_merge` (now the DEFAULT for new groups)
     //                reject the merge with 400.
-    //   --auto-merge Passed as `--auto-merge=false`. It is a relatively recent
-    //                rename — older glab exposed this as
+    //   --auto-merge Passed explicitly as `--auto-merge=false` (pr_merge's
+    //                deterministic attempt, and pr_merge_wait's own first
+    //                attempt) or `--auto-merge=true` (pr_merge_wait's retry
+    //                after a pipeline-gated refusal — #488). It is a
+    //                relatively recent rename — older glab exposed this as
     //                `--when-pipeline-succeeds`. On a glab predating the
-    //                rename, `--auto-merge=false` is an UNKNOWN FLAG and every
-    //                GitLab merge fails, which is worse than the bug #486 fixed.
+    //                rename, either explicit form is an UNKNOWN FLAG and
+    //                every GitLab merge fails, which is worse than the bug
+    //                #486 fixed.
     const help = captureHelp('glab mr merge --help');
     matchOrSkip(help, /--sha/);
     matchOrSkip(help, /--auto-merge/);

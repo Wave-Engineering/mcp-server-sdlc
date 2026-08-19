@@ -81,6 +81,21 @@ export interface PrMergeArgs {
   use_merge_queue?: boolean;
   skip_train?: boolean;
   repo?: string;
+  /**
+   * GitLab-only internal adapter arg (#488) — NOT part of the `pr_merge`
+   * MCP tool schema. `pr_merge` never sets this: `glab mr merge` runs with
+   * `--auto-merge=false`, so a pipeline-gated MR refuses (loud failure)
+   * rather than silently enrolling — the deterministic, merge-now-or-fail
+   * contract `pr_merge` advertises (#486).
+   *
+   * `pr_merge_wait`'s executor sets this to `true`: its whole contract is
+   * poll-until-merged, so a pipeline-gated MR should enroll
+   * (merge-when-pipeline-succeeds) rather than fail outright — the wait loop
+   * (`pollUntilMerged`) is what then carries it to completion. GitHub's
+   * adapter ignores this field entirely; GitHub's queue path already has its
+   * own enrollment mechanism independent of this flag.
+   */
+  allow_gitlab_enrollment?: boolean;
 }
 
 export type PrMergeMethod = 'direct_squash' | 'merge_queue';

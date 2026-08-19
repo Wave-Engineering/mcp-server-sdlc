@@ -598,3 +598,204 @@ describe('prMergeGitlab — --sha stale-head guard (#486)', () => {
     expect(mergeCall).toContain(`-R '${deep}'`);
   });
 });
+
+// ===========================================================================
+// #488 — allow_gitlab_enrollment: pr_merge_wait's enrollment path
+// ===========================================================================
+//
+// pr_merge (allow_gitlab_enrollment unset/false) must keep forcing
+// --auto-merge=false — covered by the existing "auto-merge=false" assertion
+// above. These cover the OPT-IN side: when allow_gitlab_enrollment:true, the
+// command uses --auto-merge=true, and a pipeline-gated MR (enrolled, not yet
+// merged, not blocked) reports that state honestly rather than claiming
+// direct_squash.
+
+describe('#488 — allow_gitlab_enrollment opts into --auto-merge=true', () => {
+  test('deterministic attempt succeeds even with enrollment allowed → no retry, no --auto-merge=true', async () => {
+    // Code-review finding: enrolling UNCONDITIONALLY would change behavior
+    // for every GitLab merge, not just pipeline-gated ones (glab's own
+    // client-side auto-merge gating refuses on a failed/canceled pipeline
+    // and defers on a running one — cases where --auto-merge=false merges
+    // immediately). The fix always tries --auto-merge=false FIRST; a retry
+    // only happens on an actual refusal. This MR needs no enrollment at
+    // all — assert the first (and only) attempt uses --auto-merge=false,
+    // matching pr_merge's own behavior exactly.
+    onExec(
+      'glab api projects/org%2Frepo/merge_requests/60',
+      JSON.stringify({
+        iid: 60,
+        state: 'merged',
+        source_branch: 'feature/x',
+        target_branch: 'main',
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/60',
+        labels: [],
+        sha: 'head60aaaaaa',
+        merge_commit_sha: 'merged60',
+      }),
+    );
+    onExec('glab mr merge 60 --squash --remove-source-branch --yes', '');
+
+    const result = await prMergeGitlab({
+      number: 60,
+      repo: 'org/repo',
+      allow_gitlab_enrollment: true,
+    });
+    expectOk(result);
+
+    const mergeCalls = execCalls().filter((c) => c.startsWith('glab mr merge 60'));
+    expect(mergeCalls).toHaveLength(1);
+    expect(mergeCalls[0]).toContain('--auto-merge=false');
+    expect(mergeCalls[0]).not.toContain('--auto-merge=true');
+  });
+
+  test('pipeline-gated refusal + enrollment allowed → retries with --auto-merge=true, then enrolls honestly', async () => {
+    // The real #488 scenario: the deterministic attempt is genuinely
+    // refused (glab's client-side gate rejects because the pipeline hasn't
+    // passed yet), classified via detailed_merge_status (not stderr
+    // string-matching), and retried with --auto-merge=true — which is what
+    // makes glab enroll instead of refuse. ci_must_pass then persists
+    // across pollPostMergeState's whole internal budget (a real pipeline
+    // takes far longer than ~1s), so this asserts the exhausted-budget
+    // shape: not merged, not blocked (ci_must_pass excluded from 'blocked'
+    // when enrollment is allowed), reported as enrollment.
+    let mergeAttempts = 0;
+    onExec('glab mr merge 61 --squash --remove-source-branch --yes', (cmd) => {
+      mergeAttempts += 1;
+      if (cmd.includes('--auto-merge=false')) {
+        const err = new Error('405 Method Not Allowed') as ThrowableError;
+        err.stderr = '405 Method Not Allowed — pipeline has not succeeded\n';
+        throw err;
+      }
+      return ''; // --auto-merge=true retry succeeds (enrolls)
+    });
+    onExec(
+      'glab api projects/org%2Frepo/merge_requests/61',
+      JSON.stringify({
+        iid: 61,
+        state: 'opened',
+        detailed_merge_status: 'ci_must_pass',
+        source_branch: 'feature/x',
+        target_branch: 'main',
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/61',
+        labels: [],
+        sha: 'head61aaaaaa',
+        merge_commit_sha: null,
+      }),
+    );
+
+    const result = await prMergeGitlab({
+      number: 61,
+      repo: 'org/repo',
+      allow_gitlab_enrollment: true,
+    });
+    expectOk(result);
+
+    expect(mergeAttempts).toBe(2);
+    expect(result.data.merged).toBe(false);
+    expect(result.data.enrolled).toBe(true);
+    // The core of #488: an enrolled-not-merged MR must NOT claim direct_squash.
+    expect(result.data.merge_method).toBe('merge_queue');
+    expect(result.data.merge_method).not.toBe('direct_squash');
+    expect(result.data.warnings).toEqual([]);
+  }, 10000);
+
+  test('non-pipeline refusal + enrollment allowed → does NOT retry, fails loud (not_approved is not transient)', async () => {
+    // A refusal for a genuine, non-transient reason (unmet approvals) must
+    // not trigger the enrollment retry — enrolling would not resolve it,
+    // and pr_merge_wait should fail exactly like pr_merge does here.
+    let mergeAttempts = 0;
+    onExec('glab mr merge 64 --squash --remove-source-branch --yes', () => {
+      mergeAttempts += 1;
+      const err = new Error('405 Method Not Allowed') as ThrowableError;
+      err.stderr = '405 Method Not Allowed\n';
+      throw err;
+    });
+    onExec(
+      'glab api projects/org%2Frepo/merge_requests/64',
+      JSON.stringify({
+        iid: 64,
+        state: 'opened',
+        detailed_merge_status: 'not_approved',
+        source_branch: 'feature/x',
+        target_branch: 'main',
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/64',
+        labels: [],
+        sha: 'head64aaaaaa',
+        merge_commit_sha: null,
+      }),
+    );
+
+    const result = await prMergeGitlab({
+      number: 64,
+      repo: 'org/repo',
+      allow_gitlab_enrollment: true,
+    });
+    expectErr(result);
+
+    // Only the deterministic attempt ran — no retry for a non-transient refusal.
+    expect(mergeAttempts).toBe(1);
+    expect(result.code).toBe('glab_mr_merge_failed');
+  });
+
+  test('ci_must_pass WITHOUT enrollment allowed → still classifies as blocked (pr_merge unchanged)', async () => {
+    // Regression guard: the ci_must_pass carve-out is scoped to
+    // allow_gitlab_enrollment:true. pr_merge's deterministic mode (the
+    // default) must keep treating ci_must_pass as a real block, per #461 —
+    // auto-merge is forced off there, so a merge refused for this reason
+    // genuinely IS an immediate block, not a resolving-over-time enrollment.
+    onExec('glab mr merge 62 --squash --remove-source-branch --yes', '');
+    onExec(
+      'glab api projects/org%2Frepo/merge_requests/62',
+      JSON.stringify({
+        iid: 62,
+        state: 'opened',
+        detailed_merge_status: 'ci_must_pass',
+        source_branch: 'feature/x',
+        target_branch: 'main',
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/62',
+        labels: [],
+        sha: 'head62aaaaaa',
+        merge_commit_sha: null,
+      }),
+    );
+
+    const result = await prMergeGitlab({ number: 62, repo: 'org/repo' });
+    expectOk(result);
+
+    expect(result.data.merged).toBe(false);
+    expect(result.data.enrolled).toBe(false);
+    expect(result.data.merge_method).toBe('direct_squash');
+    const w = result.data.warnings.join(' ');
+    expect(w).toMatch(/ci_must_pass/);
+  });
+
+  test('genuinely merged, enrollment allowed → merge_method stays direct_squash', async () => {
+    // isEnrollment only fires for not-merged states — a real direct merge
+    // must not be relabeled just because enrollment was permitted.
+    onExec('glab mr merge 63 --squash --remove-source-branch --yes', '');
+    onExec(
+      'glab api projects/org%2Frepo/merge_requests/63',
+      JSON.stringify({
+        iid: 63,
+        state: 'merged',
+        detailed_merge_status: 'mergeable',
+        source_branch: 'feature/x',
+        target_branch: 'main',
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/63',
+        labels: [],
+        sha: 'head63aaaaaa',
+        merge_commit_sha: 'direct63',
+      }),
+    );
+
+    const result = await prMergeGitlab({
+      number: 63,
+      repo: 'org/repo',
+      allow_gitlab_enrollment: true,
+    });
+    expectOk(result);
+
+    expect(result.data.merged).toBe(true);
+    expect(result.data.merge_method).toBe('direct_squash');
+  });
+});
