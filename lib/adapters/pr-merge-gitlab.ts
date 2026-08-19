@@ -19,6 +19,7 @@
 import { execSync } from 'child_process';
 import { gitlabApiMr } from '../gitlab-api.js';
 import { getAdapter } from './index.js';
+import { normalizeGitlabMergeState } from './pr-status-gitlab.js';
 import type {
   AdapterResult,
   PrMergeArgs,
@@ -311,20 +312,52 @@ export async function prMergeGitlab(
       return { ok: false, code: stateResult.code, error: stateResult.error };
     }
     const info: PrStateInfo = stateResult.data;
+    const actuallyMerged = info.state === 'merged';
+
+    // #461: `glab mr merge` can exit 0 without merging — e.g. an MR blocked on
+    // required approvals, unresolved discussions, or draft status. That left
+    // the caller with `enrolled:true, merged:false`, indistinguishable from
+    // legitimate queue enrollment (GitHub's shape). GitLab has no queue
+    // concept, so re-check the MR's own `detailed_merge_status` and surface
+    // the blocker by name instead of making the caller round-trip pr_status
+    // to discover it. Reuses `normalizeGitlabMergeState` — the canonical
+    // classification `pr-status-gitlab.ts` already carries — rather than
+    // re-deriving a narrower, incomplete subset here. Best-effort: if the
+    // re-fetch itself fails, fall through with the pre-#461 shape rather than
+    // failing a merge attempt whose real outcome we already know.
+    let blockedReason: string | undefined;
+    if (!actuallyMerged) {
+      try {
+        const freshMr = gitlabApiMr(args.number, parseSlugOpts(args.repo));
+        const state = normalizeGitlabMergeState(freshMr.detailed_merge_status, freshMr.merge_status);
+        if (state === 'blocked') {
+          blockedReason = freshMr.detailed_merge_status ?? 'blocked_status';
+        }
+      } catch {
+        // best-effort — see comment above
+      }
+    }
+    const mergeBlocked = blockedReason !== undefined;
+
     return {
       ok: true,
       data: {
         number: args.number,
-        enrolled: true,
-        merged: info.state === 'merged',
+        // A blocked MR is not enrollment — nothing is in progress, the MR is
+        // simply blocked, and `enrolled:true` would misleadingly imply otherwise.
+        enrolled: !mergeBlocked,
+        merged: actuallyMerged,
         merge_method: 'direct_squash',
         queue: { enabled: false, position: null, enforced: false },
-        pr_state: info.state === 'merged' ? 'MERGED' : 'OPEN',
+        pr_state: actuallyMerged ? 'MERGED' : 'OPEN',
         url: info.url,
         merge_commit_sha: info.mergeCommitSha,
-        warnings: skippedTrain
-          ? ['skip_train ignored on GitLab — merge trains are auto-managed at the project level']
-          : [],
+        warnings: [
+          ...(skippedTrain
+            ? ['skip_train ignored on GitLab — merge trains are auto-managed at the project level']
+            : []),
+          ...(mergeBlocked ? [`merge blocked: ${blockedReason}`] : []),
+        ],
         // GitLab has no queue concept — queue_fallback always false. Required
         // by PrMergeResponse since bug #280 / #294 added the field.
         queue_fallback: false,

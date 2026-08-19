@@ -4,7 +4,7 @@ SDLC workflow MCP server for Claude Code agents.
 
 ## Adapter architecture
 
-This server is cross-platform — every tool that touches a code host (GitHub or GitLab) dispatches through a single typed **platform adapter** rather than shelling out to `gh` / `glab` inline. Handlers stay platform-agnostic: they resolve the adapter via `getAdapter()`, call one interface method, and unwrap a three-way `AdapterResult<T>` (`ok: true` for success, `ok: false` for runtime failure, `platform_unsupported: true` for structural cross-platform asymmetry). The third arm is what replaces the old silent-ignore bug class — e.g. `skip_train: true` on GitLab used to fake-succeed; it now surfaces as an explicit typed signal.
+This server is cross-platform — every tool that touches a code host (GitHub or GitLab) dispatches through a single typed **platform adapter** rather than shelling out to `gh` / `glab` inline. Handlers stay platform-agnostic: they resolve the adapter via `getAdapter()`, call one interface method, and unwrap a three-way `AdapterResult<T>` (`ok: true` for success, `ok: false` for runtime failure, `platform_unsupported: true` for structural cross-platform asymmetry). The third arm is what replaces the old silent-ignore bug class — e.g. `work_item(type: "mr")` on GitHub used to silently run the wrong sub-command; it now surfaces as an explicit typed signal (`{platform_unsupported: true, hint: 'use type="pr" on GitHub'}`, #281). Not every asymmetry gets this treatment, though — `skip_train: true` on GitLab (#423) is silently dropped with a `warnings` entry instead, since merge trains are auto-managed at the project level and there is no refusal to surface.
 
 The canonical exemplars of the pattern live in `lib/adapters/pr-merge-github.ts` and `lib/adapters/pr-merge-gitlab.ts` (per R-03 of the retrofit dev spec) — one pair of per-method per-platform files, colocated `.test.ts` files mocking at the `child_process` boundary, and an assembler (`lib/adapters/github.ts` / `lib/adapters/gitlab.ts`) that wires them into the `PlatformAdapter` interface declared in `lib/adapters/types.ts`.
 
@@ -147,7 +147,7 @@ Two tools, deliberately split by what the caller cares about:
 
 | Tool | Returns | Use when |
 |---|---|---|
-| `pr_merge` | Eager — `enrolled:true` always; `merged` reflects the moment-of-call truth (`true` for direct merge, `false` for queue path until the queue lands). | You need the platform to accept the merge, then keep working. Don't care exactly when the commit lands. |
+| `pr_merge` | Eager — `enrolled:true` for a merge in progress (direct merge, or a queue enrollment on GitHub); `merged` reflects the moment-of-call truth (`true` for direct merge, `false` for queue path until the queue lands). On GitLab, `enrolled:false` with a `warnings` entry when the MR is blocked (approvals, unresolved discussions, draft) rather than in progress — see #461. | You need the platform to accept the merge, then keep working. Don't care exactly when the commit lands. |
 | `pr_merge_wait` | Blocking — guarantees `merged:true, pr_state:"MERGED"` on success, or a timeout error. | You need the commit observable on `main` before the next step (e.g. `git pull`, post-merge CI, downstream wave work). |
 
 Both return the same aggregate envelope:
