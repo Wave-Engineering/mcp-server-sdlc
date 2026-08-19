@@ -71,6 +71,16 @@ function stderrIndicatesMergeQueue(text: string): boolean {
   return /merge\s*queue/i.test(text);
 }
 
+// Detect a post-merge branch-deletion failure (#497). `gh pr merge --delete-branch`
+// runs merge then deletion as a single command; if deletion fails AFTER the merge
+// lands the whole command exits non-zero. Observed phrasing:
+//   "failed to delete remote branch <name>: HTTP 503: No server is currently available"
+// The merge is the point of no return — if we can confirm it landed, the deletion
+// failure is cosmetic cleanup and belongs in `warnings`, not `ok:false`.
+function isBranchDeleteFailure(text: string): boolean {
+  return /failed to delete (remote )?branch/i.test(text);
+}
+
 function exec(cmd: string): string {
   return execSync(cmd, { encoding: 'utf8' });
 }
@@ -335,6 +345,39 @@ async function mergeGithubDirect(
     };
   } catch (err) {
     const fail = extractFailure(err);
+
+    // Branch deletion is post-merge cleanup (#497). `--delete-branch` runs the
+    // merge then the deletion in one command: if deletion fails AFTER the merge
+    // commits, the whole command exits non-zero with a "failed to delete remote
+    // branch" message. Verify the actual PR state; if it merged, return ok:true
+    // with a warning rather than ok:false — the two cases demand opposite caller
+    // responses and must not be conflated.
+    if (isBranchDeleteFailure(fail.message) || isBranchDeleteFailure(fail.stderr)) {
+      try {
+        const info = await fetchPrStateRouted(args.number, args.repo);
+        if (info.state === 'merged') {
+          return {
+            ok: true,
+            data: aggregateOk({
+              number: args.number,
+              enrolled: true,
+              merged: true,
+              method: 'direct_squash',
+              queue,
+              url: info.url,
+              mergeCommitSha: info.mergeCommitSha,
+              warnings: [
+                ...warnings,
+                `branch deletion failed after successful merge (cosmetic — the merge landed): ${fail.message}`,
+              ],
+            }),
+          };
+        }
+      } catch {
+        // fetchPrState failed — fall through to existing error handling
+      }
+    }
+
     const indicatesQueue =
       stderrIndicatesMergeQueue(fail.stderr) || stderrIndicatesMergeQueue(fail.message);
     // skip_train callers opt out of the queue path when possible, but a

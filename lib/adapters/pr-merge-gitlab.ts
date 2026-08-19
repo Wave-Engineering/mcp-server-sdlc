@@ -107,6 +107,15 @@ function resolveHeadSha(number: number, repo?: string): string {
   return sha.trim();
 }
 
+// Detect a post-merge branch-deletion failure (#497). `glab mr merge
+// --remove-source-branch` performs merge then deletion in one round-trip: if
+// deletion fails after the merge commits the command exits non-zero. Verify
+// actual state; if merged, surface the deletion error as a warning (#497).
+function isBranchDeleteFailure(text: string): boolean {
+  return /failed to delete (remote |source )?branch/i.test(text) ||
+    /could not delete (remote |source )?branch/i.test(text);
+}
+
 /**
  * True when a failed merge is GitLab rejecting our stale-head guard — i.e. the
  * source branch moved between resolving the sha and issuing the merge (#486).
@@ -227,6 +236,42 @@ export async function prMergeGitlab(
       } catch (err) {
         const failure = extractFailure(err).message;
         if (!isStaleShaRejection(failure)) {
+          // Branch deletion is post-merge cleanup (#497). Verify actual state;
+          // if the MR merged despite the error, surface it as a warning.
+          if (isBranchDeleteFailure(failure)) {
+            const stateResult = await getAdapter({ repo: args.repo }).fetchPrState({
+              number: args.number,
+              repo: args.repo,
+            });
+            if (
+              !('platform_unsupported' in stateResult) &&
+              stateResult.ok &&
+              stateResult.data.state === 'merged'
+            ) {
+              const info = stateResult.data;
+              return {
+                ok: true,
+                data: {
+                  number: args.number,
+                  enrolled: true,
+                  merged: true,
+                  merge_method: 'direct_squash',
+                  queue: { enabled: false, position: null, enforced: false },
+                  pr_state: 'MERGED',
+                  url: info.url,
+                  merge_commit_sha: info.mergeCommitSha,
+                  warnings: [
+                    ...(skippedTrain
+                      ? ['skip_train ignored on GitLab — merge trains are auto-managed at the project level']
+                      : []),
+                    `branch deletion failed after successful merge (cosmetic — the merge landed): ${failure}`,
+                  ],
+                  queue_fallback: false,
+                  graphql_fallback: false,
+                },
+              };
+            }
+          }
           return {
             ok: false,
             code: 'glab_mr_merge_failed',
