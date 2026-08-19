@@ -110,6 +110,14 @@ export async function executeMergeWait(
     use_merge_queue: args.use_merge_queue,
     skip_train: args.skip_train,
     repo: args.repo,
+    // #488: pr_merge_wait's whole contract is poll-until-merged, so a
+    // pipeline-gated GitLab MR should enroll (merge-when-pipeline-succeeds)
+    // rather than fail outright — this executor's own poll below then
+    // carries it to completion. Set unconditionally: this is a shared
+    // platform-agnostic executor (see the architectural-rule comment at the
+    // top of this file), and GitHub's adapter simply ignores a field it
+    // doesn't consume.
+    allow_gitlab_enrollment: true,
   });
 
   if ('platform_unsupported' in mergeResult) {

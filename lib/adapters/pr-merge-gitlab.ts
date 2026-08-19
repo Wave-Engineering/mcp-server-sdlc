@@ -186,12 +186,22 @@ interface PostMergeState {
   blockedReason: string | undefined;
 }
 
-function classifyPostMergeState(mr: GitlabMr): PostMergeState {
+// #488: `ci_must_pass` normally classifies as `blocked` (normalizeGitlabMergeState)
+// — correct for `pr_merge`'s deterministic mode, where a merge command refused
+// for that reason genuinely IS an immediate block (auto-merge is forced off).
+// But `pr_merge_wait`'s ENROLLED mode enrolls specifically so a pending pipeline
+// resolves on its own — `ci_must_pass` there means "waiting on CI", not
+// "permanently blocked", and misclassifying it would report an in-progress
+// enrollment as blocked (enrolled:false) when it is actually just not done yet.
+function classifyPostMergeState(mr: GitlabMr, allowPendingCi: boolean): PostMergeState {
   const merged = mr.state === 'merged';
   let blockedReason: string | undefined;
   if (!merged) {
     const cls = normalizeGitlabMergeState(mr.detailed_merge_status, mr.merge_status);
-    if (cls === 'blocked') blockedReason = mr.detailed_merge_status ?? 'blocked_status';
+    const isPendingCi = allowPendingCi && mr.detailed_merge_status?.toLowerCase() === 'ci_must_pass';
+    if (cls === 'blocked' && !isPendingCi) {
+      blockedReason = mr.detailed_merge_status ?? 'blocked_status';
+    }
   }
   return { mr, merged, blockedReason };
 }
@@ -202,15 +212,19 @@ function classifyPostMergeState(mr: GitlabMr): PostMergeState {
  * failure, matching how `resolveHeadSha` already handles its own read; the
  * caller converts that into a typed refusal.
  */
-async function pollPostMergeState(number: number, repo: string | undefined): Promise<PostMergeState> {
-  let state = classifyPostMergeState(gitlabApiMr(number, parseSlugOpts(repo)));
+async function pollPostMergeState(
+  number: number,
+  repo: string | undefined,
+  allowPendingCi: boolean,
+): Promise<PostMergeState> {
+  let state = classifyPostMergeState(gitlabApiMr(number, parseSlugOpts(repo)), allowPendingCi);
   for (
     let attempt = 1;
     attempt < MERGE_STATE_POLL_ATTEMPTS && !state.merged && state.blockedReason === undefined;
     attempt += 1
   ) {
     await sleep(MERGE_STATE_POLL_DELAY_MS);
-    state = classifyPostMergeState(gitlabApiMr(number, parseSlugOpts(repo)));
+    state = classifyPostMergeState(gitlabApiMr(number, parseSlugOpts(repo)), allowPendingCi);
   }
   return state;
 }
@@ -218,6 +232,7 @@ async function pollPostMergeState(number: number, repo: string | undefined): Pro
 function buildGitlabMergeCommand(
   number: number,
   sha: string,
+  autoMerge: boolean,
   squashMessage?: string,
   repo?: string,
 ): string {
@@ -233,9 +248,16 @@ function buildGitlabMergeCommand(
     // a pending pipeline gets ENROLLED (merge-when-pipeline-succeeds) rather
     // than merged, and this adapter would report `merged: false` /
     // `pr_state: 'OPEN'` while still claiming `merge_method: 'direct_squash'`.
-    // The sdlc contract distinguishes merging from enrollment, so we force the
-    // deterministic direct-merge semantics this adapter advertises.
-    '--auto-merge=false',
+    // The sdlc contract distinguishes merging from enrollment, so `pr_merge`
+    // forces the deterministic direct-merge semantics it advertises.
+    //
+    // #488: `pr_merge_wait` is the one caller that WANTS enrollment — its
+    // whole contract is poll-until-merged, so a pipeline-gated MR should
+    // enroll rather than fail outright (the wait loop then carries it to
+    // completion). `autoMerge` threads that choice through explicitly rather
+    // than relying on glab's own default, which #486 already showed is not
+    // safe to depend on implicitly.
+    `--auto-merge=${autoMerge ? 'true' : 'false'}`,
     // #486: GitLab's stale-head guard. Required (not optional) at the type
     // level so this command can never again be built without a sha.
     '--sha',
@@ -260,6 +282,10 @@ export async function prMergeGitlab(
   // merge — callers pass the flag unconditionally and expect the adapter to
   // handle the asymmetry without short-circuiting.
   const skippedTrain = args.skip_train === true;
+  // #488: internal-only, set by pr_merge_wait's executor. pr_merge itself
+  // never sets this — see PrMergeArgs.allow_gitlab_enrollment for the
+  // rationale.
+  const allowEnrollment = args.allow_gitlab_enrollment === true;
 
   try {
     // #486: two-step merge. Resolve the source-branch HEAD sha, then merge with
@@ -291,9 +317,20 @@ export async function prMergeGitlab(
         };
       }
 
+      // #488: ALWAYS attempt the deterministic merge first, regardless of
+      // allowEnrollment. Code review on this fix caught that enrolling
+      // unconditionally changes behavior on projects that do NOT require a
+      // green pipeline: glab's own client-side auto-merge gating refuses on
+      // a failed/canceled pipeline and defers on a running one — cases
+      // where auto-merge=false merges immediately today. Attempting false
+      // first means pr_merge and pr_merge_wait behave IDENTICALLY on every
+      // MR that doesn't actually need enrollment; only a genuine
+      // pipeline-gated refusal (checked below, by MR state — not by
+      // string-matching glab's stderr) falls back to enrollment.
       const cmd = buildGitlabMergeCommand(
         args.number,
         headSha,
+        false,
         args.squash_message,
         args.repo,
       );
@@ -314,7 +351,7 @@ export async function prMergeGitlab(
           // that's ok:false for a merge that actually succeeded.
           if (isBranchDeleteFailure(failure)) {
             try {
-              const postMerge = await pollPostMergeState(args.number, args.repo);
+              const postMerge = await pollPostMergeState(args.number, args.repo, allowEnrollment);
               if (postMerge.merged) {
                 return {
                   ok: true,
@@ -346,14 +383,62 @@ export async function prMergeGitlab(
               // glab_mr_merge_failed report below — no new uncertainty.
             }
           }
-          return {
-            ok: false,
-            code: 'glab_mr_merge_failed',
-            error: `glab mr merge failed: ${failure}`,
-          };
+
+          // #488: the deterministic attempt above was refused. If enrollment
+          // is allowed, check WHY via the MR's own detailed_merge_status —
+          // more reliable than string-matching glab's stderr, which (unlike
+          // GitHub's clean "merge queue" phrasing) has no stable "pipeline
+          // gated" marker. Only retry with auto-merge=true when the refusal
+          // is genuinely pipeline-related (still transient); any other
+          // reason (unmet approvals, conflicts, etc.) is a real refusal that
+          // enrollment would not resolve, so it still fails loud below.
+          if (allowEnrollment) {
+            let pipelinePending = false;
+            try {
+              const freshMr = gitlabApiMr(args.number, parseSlugOpts(args.repo));
+              const dm = freshMr.detailed_merge_status?.toLowerCase();
+              pipelinePending =
+                dm === 'ci_must_pass' || dm === 'ci_still_running' || dm === 'checking';
+            } catch {
+              // Can't classify — fall through to the ordinary failure report.
+            }
+            if (pipelinePending) {
+              const retryCmd = buildGitlabMergeCommand(
+                args.number,
+                headSha,
+                true,
+                args.squash_message,
+                args.repo,
+              );
+              try {
+                exec(retryCmd);
+                merged = true;
+              } catch (retryErr) {
+                return {
+                  ok: false,
+                  code: 'glab_mr_merge_failed',
+                  error:
+                    `glab mr merge failed (auto-merge retry after pipeline-gated refusal): ` +
+                    `${extractFailure(retryErr).message}`,
+                };
+              }
+            }
+          }
+
+          if (!merged) {
+            return {
+              ok: false,
+              code: 'glab_mr_merge_failed',
+              error: `glab mr merge failed: ${failure}`,
+            };
+          }
+          // merged via the enrollment retry above — fall out of the catch and
+          // the for-loop (condition `!merged` is now false) to the ordinary
+          // post-loop poll, which reports the enrollment honestly.
+        } else {
+          // Source branch moved mid-merge — loop to refetch the head and retry.
+          lastStaleRejection = failure;
         }
-        // Source branch moved mid-merge — loop to refetch the head and retry.
-        lastStaleRejection = failure;
       }
     }
 
@@ -378,7 +463,7 @@ export async function prMergeGitlab(
     // surfaces as a typed refusal rather than silently reporting a stale shape.
     let postMerge: PostMergeState;
     try {
-      postMerge = await pollPostMergeState(args.number, args.repo);
+      postMerge = await pollPostMergeState(args.number, args.repo, allowEnrollment);
     } catch (err) {
       return {
         ok: false,
@@ -392,6 +477,13 @@ export async function prMergeGitlab(
     // A blocked MR is not enrollment — nothing is in progress, the MR is
     // simply blocked, and `enrolled:true` would misleadingly imply otherwise.
     const mergeBlocked = blockedReason !== undefined;
+    // #488: not merged, not blocked, and enrollment was requested — this is
+    // GitLab's merge-when-pipeline-succeeds enrollment, the direct analog of
+    // GitHub's queue path. Report it honestly: `merge_method: 'direct_squash'`
+    // for an MR that never actually merged directly is exactly the dishonest
+    // shape #486 removed from the merged case — it must not return through
+    // this door for the enrolled case either.
+    const isEnrollment = !actuallyMerged && !mergeBlocked && allowEnrollment;
 
     return {
       ok: true,
@@ -399,7 +491,7 @@ export async function prMergeGitlab(
         number: args.number,
         enrolled: !mergeBlocked,
         merged: actuallyMerged,
-        merge_method: 'direct_squash',
+        merge_method: isEnrollment ? 'merge_queue' : 'direct_squash',
         queue: { enabled: false, position: null, enforced: false },
         pr_state: actuallyMerged ? 'MERGED' : 'OPEN',
         url: mr.web_url,

@@ -296,4 +296,37 @@ describe('prMergeWaitGithub — adapter orchestration', () => {
     expect(result.error).toContain('failed to read initial PR state');
     expect(result.error).toContain('PR not found');
   });
+
+  // #488: executeMergeWait now unconditionally sets allow_gitlab_enrollment
+  // on the shared PrMergeArgs it builds (see the file-level architectural
+  // comment — the executor is platform-agnostic). GitHub's command
+  // construction must be byte-identical regardless — it has no auto-merge
+  // concept and never reads that field.
+  test('#488 — GitHub merge command unaffected by allow_gitlab_enrollment', async () => {
+    stubNoQueue();
+    onExec('gh pr merge 66 --squash --delete-branch', '');
+    let viewCalls = 0;
+    onExec('gh pr view 66 --json state,url,mergeCommit', () => {
+      viewCalls += 1;
+      // Call 1 = detect-and-skip pre-check (must be OPEN so the merge
+      // command actually runs). Call 2 = post-merge state read.
+      const merged = viewCalls >= 2;
+      return JSON.stringify({
+        state: merged ? 'MERGED' : 'OPEN',
+        url: 'https://github.com/org/repo/pull/66',
+        mergeCommit: merged ? { oid: 'gh66merged' } : null,
+      });
+    });
+
+    const result = await executeMergeWaitForTest(
+      { number: 66 },
+      { now: () => 0, sleep: async () => {}, intervalMs: 1 },
+    );
+
+    expectOk(result);
+    expect(result.data.merged).toBe(true);
+    const mergeCall = execCalls().find((c) => c.startsWith('gh pr merge 66'));
+    expect(mergeCall).toBe("gh pr merge 66 --squash --delete-branch");
+    expect(mergeCall).not.toContain('auto-merge');
+  });
 });

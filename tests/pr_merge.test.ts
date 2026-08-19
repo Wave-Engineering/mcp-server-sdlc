@@ -847,6 +847,51 @@ describe('#497 — branch-delete failure after successful merge', () => {
 });
 
 // ===========================================================================
+// #488 — allow_gitlab_enrollment is NOT reachable via the pr_merge MCP tool
+// ===========================================================================
+//
+// #486's determinism guarantee for pr_merge (auto-merge always off) rests on
+// zod's default unknown-key-stripping: allow_gitlab_enrollment exists on the
+// internal PrMergeArgs type but is deliberately absent from pr_merge's zod
+// inputSchema. This pins that at the HANDLER level (schema parse boundary),
+// not just the adapter level — a caller cannot inject the flag through the
+// actual MCP tool surface, regardless of what the adapter itself supports.
+
+describe('#488 — pr_merge MCP schema cannot reach allow_gitlab_enrollment', () => {
+  test('passing allow_gitlab_enrollment:true through the tool is silently stripped — command stays --auto-merge=false', async () => {
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git\n');
+    onExec('glab mr merge 96 --squash --remove-source-branch --yes', '');
+    onExec(
+      'glab api projects/org%2Frepo/merge_requests/96',
+      JSON.stringify({
+        iid: 96,
+        state: 'merged',
+        detailed_merge_status: 'mergeable',
+        source_branch: 'feature/test',
+        target_branch: 'main',
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/96',
+        labels: [],
+        sha: 'head96aaaaaa',
+        merge_commit_sha: 'deadbeef9696',
+      }),
+    );
+
+    // allow_gitlab_enrollment is not in inputSchema — zod strips it silently
+    // rather than rejecting the call, so this must NOT change behavior.
+    const result = await prMergeHandler.execute({
+      number: 96,
+      allow_gitlab_enrollment: true,
+    } as unknown as Record<string, unknown>);
+    const data = parseResult(result);
+
+    expect(data.ok).toBe(true);
+    const mergeCall = execCalls().find((c) => c.startsWith('glab mr merge 96'));
+    expect(mergeCall).toContain('--auto-merge=false');
+    expect(mergeCall).not.toContain('--auto-merge=true');
+  });
+});
+
+// ===========================================================================
 // #461 — GitLab blocked MR surfaces the blocker instead of an ambiguous
 // enrolled:true/merged:false shape
 // ===========================================================================

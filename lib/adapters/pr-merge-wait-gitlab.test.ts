@@ -192,4 +192,73 @@ describe('prMergeWaitGitlab — adapter orchestration (parity)', () => {
     expectErr(result);
     expect(result.error).toContain('failed to read initial PR state');
   });
+
+  // =========================================================================
+  // #488 — pipeline-gated GitLab MR enrolls instead of failing outright
+  // =========================================================================
+  //
+  // Before #488: prMergeGitlab always forced --auto-merge=false (#486), so a
+  // pipeline-gated MR made glab REFUSE rather than enroll — prMerge returned
+  // ok:false and executeMergeWait short-circuited to pr_merge_failed without
+  // ever polling.
+  //
+  // executeMergeWait now sets allow_gitlab_enrollment:true, but (per code
+  // review) prMergeGitlab always attempts --auto-merge=false FIRST — enrolling
+  // unconditionally would change behavior for MRs that don't need it at all.
+  // So the realistic sequence is: deterministic attempt refused (glab's own
+  // client-side gate rejects because the pipeline hasn't passed), retried with
+  // --auto-merge=true (which enrolls), THEN this wait polls past the
+  // still-pending pipeline to the real merge — exactly like the GitHub queue
+  // path.
+
+  test('pipeline-gated MR: deterministic attempt refused, retries and enrolls, then polls to merged', async () => {
+    let mergeAttempts = 0;
+    onExec('glab mr merge 65 --squash --remove-source-branch --yes', (cmd) => {
+      mergeAttempts += 1;
+      if (cmd.includes('--auto-merge=false')) {
+        const err = new Error('405 Method Not Allowed') as ThrowableError;
+        err.stderr = '405 Method Not Allowed — pipeline has not succeeded\n';
+        throw err;
+      }
+      return ''; // --auto-merge=true retry succeeds (enrolls)
+    });
+    let apiCallCount = 0;
+    // Stays 'opened'/ci_must_pass for a while (long enough to exhaust
+    // pollPostMergeState's internal budget inside prMergeGitlab AND for
+    // pollUntilMerged's own first checks), then settles to merged — a
+    // pipeline that takes a few polls to finish.
+    onExec('glab api projects/org%2Frepo/merge_requests/65', () => {
+      apiCallCount += 1;
+      const merged = apiCallCount >= 9;
+      return JSON.stringify({
+        iid: 65,
+        state: merged ? 'merged' : 'opened',
+        detailed_merge_status: merged ? 'mergeable' : 'ci_must_pass',
+        source_branch: 'feature/x',
+        target_branch: 'main',
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/65',
+        labels: [],
+        sha: 'waithead05',
+        merge_commit_sha: merged ? 'enrolled65' : null,
+      });
+    });
+
+    const clock = fakeClock();
+    const result = await executeMergeWaitForTest(
+      { number: 65, repo: 'org/repo' },
+      { now: clock.now, sleep: clock.sleep, intervalMs: 1 },
+    );
+
+    expectOk(result);
+    expect(result.data.merged).toBe(true);
+    expect(result.data.merge_commit_sha).toBe('enrolled65');
+    expect(result.data.pr_state).toBe('MERGED');
+    // Confirms the retry actually happened — this reached the poll rather
+    // than short-circuiting to pr_merge_failed on the first refusal, which
+    // #488 exists to fix.
+    expect(mergeAttempts).toBe(2);
+    const attemptCalls = execCalls().filter((c) => c.startsWith('glab mr merge 65'));
+    expect(attemptCalls[0]).toContain('--auto-merge=false');
+    expect(attemptCalls[1]).toContain('--auto-merge=true');
+  }, 10000);
 });
