@@ -26,6 +26,13 @@
 //   FLIGHTDECK_EMIT_DISABLED — hard off switch (no-op emit).
 //   FLIGHTDECK_ACTIVITY_ID / FLIGHTDECK_AGENT / FLIGHTDECK_LOG_REF — scope
 //     defaults for emitStateEvent().
+//   FLIGHTDECK_SCOPE_MAX_AGE_SECONDS — max age (default 86400 = 24h) beyond
+//     which the durable per-repo scope marker is ignored as stale. The marker
+//     (<root>/.claude/status/flightdeck-scope.json, written live by the campaign
+//     driver — see readScopeMarker) takes PRIORITY over the ACTIVITY_ID / AGENT
+//     env above, so a server process already running when a campaign starts can
+//     still attribute its events to that campaign rather than the repo basename
+//     (#537). The env vars remain the fallback when no live marker exists.
 
 import { appendFileSync, mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -144,11 +151,71 @@ export function scopeRoot(explicit?: string | null): string {
 }
 
 /**
- * Derive a stable activityId for a repo `root`.
- * FLIGHTDECK_ACTIVITY_ID wins; else the repo directory name; else "unknown".
- * Never throws.
+ * Max age (seconds) beyond which a scope marker is treated as stale and ignored.
+ * FLIGHTDECK_SCOPE_MAX_AGE_SECONDS overrides; default 86400 (24h). A positive,
+ * finite override wins; anything else (unset, non-numeric, ≤0) falls back to the
+ * default. Mirrors scripts/oaw-vox-drain's MAX_AGE_SECONDS stale-backlog guard.
  */
-export function activityIdForRoot(root: unknown): string {
+function scopeMaxAgeSeconds(): number {
+  const raw = process.env.FLIGHTDECK_SCOPE_MAX_AGE_SECONDS;
+  if (raw) {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return 86400;
+}
+
+/**
+ * Read the durable per-repo FlightDeck scope marker for `root`, if a live one
+ * exists. Path: <root>/.claude/status/flightdeck-scope.json, shape
+ * { activityId, agent, updatedAt }. The campaign driver writes it the moment it
+ * knows its own scope (cc `wave-status emit` on activity_start; cleared on
+ * activity_end), so a server process ALREADY running when the campaign began can
+ * still learn the campaign's activityId/agent — the frozen-server-env gap #537
+ * fixes.
+ *
+ * Discipline (matches the rest of this file):
+ *   - NEVER throws (R-03). Missing file / malformed JSON / a directory in the
+ *     file's place / an unreadable path all resolve to null ("no live marker").
+ *   - NEVER caches. The marker changes mid-session as campaigns start and end; a
+ *     stale in-memory copy would reintroduce the misattribution #537 fixes, so it
+ *     is read fresh on every call.
+ *   - AGE-GUARDED. A campaign that crashes without emitting activity_end leaves a
+ *     marker that would otherwise misattribute every later, unrelated call in that
+ *     directory; a marker older than scopeMaxAgeSeconds() is ignored. An absent or
+ *     unparseable updatedAt fails closed (ignored) — an undatable marker cannot
+ *     prove it is live.
+ * Returns only the string fields actually present (activityId/agent); callers use
+ * `?.activityId` / `?.agent` and fall through to env when a field is absent.
+ */
+function readScopeMarker(root: unknown): { activityId?: string; agent?: string } | null {
+  try {
+    const path = join(resolve(String(root)), '.claude', 'status', 'flightdeck-scope.json');
+    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as unknown;
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
+    const m = parsed as Record<string, unknown>;
+    if (typeof m.updatedAt !== 'string') return null;
+    const updatedMs = Date.parse(m.updatedAt);
+    if (!Number.isFinite(updatedMs)) return null;
+    if ((Date.now() - updatedMs) / 1000 > scopeMaxAgeSeconds()) return null;
+    const out: { activityId?: string; agent?: string } = {};
+    if (typeof m.activityId === 'string' && m.activityId.length > 0) out.activityId = m.activityId;
+    if (typeof m.agent === 'string' && m.agent.length > 0) out.agent = m.agent;
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve an activityId from an ALREADY-READ scope marker (or null) plus `root`.
+ * marker.activityId → FLIGHTDECK_ACTIVITY_ID → repo directory name → "unknown".
+ * Taking the marker as a parameter lets a caller that has already read it (e.g.
+ * emitStateEvent, which also needs marker.agent) resolve activityId from that
+ * SAME snapshot without opening the file a second time. Never throws.
+ */
+function activityIdFromMarker(root: unknown, marker: { activityId?: string } | null): string {
+  if (marker?.activityId) return marker.activityId;
   const env = process.env.FLIGHTDECK_ACTIVITY_ID;
   if (env) return env;
   try {
@@ -157,6 +224,17 @@ export function activityIdForRoot(root: unknown): string {
   } catch {
     return 'unknown';
   }
+}
+
+/**
+ * Derive a stable activityId for a repo `root`.
+ * A live per-repo scope marker wins (#537 — reflects the CURRENT campaign even
+ * for a server process that was already running when it began); else
+ * FLIGHTDECK_ACTIVITY_ID; else the repo directory name; else "unknown".
+ * Never throws.
+ */
+export function activityIdForRoot(root: unknown): string {
+  return activityIdFromMarker(root, readScopeMarker(root));
 }
 
 // ---------------------------------------------------------------------------
@@ -470,9 +548,15 @@ export function emitStateEvent(
   opts: EmitOptions = {},
 ): FlightDeckEvent | null {
   try {
+    // One marker read serves both defaults, so activityId and agent come from a
+    // single consistent snapshot (activityIdFromMarker takes the marker as an arg
+    // rather than re-reading it). Each default resolves marker → env →
+    // (basename | null); an explicit opts.activityId/opts.agent still wins (spread
+    // last), the same precedence as the env fallback the marker now precedes.
+    const marker = readScopeMarker(root);
     return emit(kind, {
-      activityId: activityIdForRoot(root),
-      agent: process.env.FLIGHTDECK_AGENT ?? null,
+      activityId: activityIdFromMarker(root, marker),
+      agent: marker?.agent ?? process.env.FLIGHTDECK_AGENT ?? null,
       logRef: process.env.FLIGHTDECK_LOG_REF ?? null,
       ...opts,
     });
