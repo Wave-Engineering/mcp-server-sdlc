@@ -92,6 +92,7 @@ describe('flightdeck_emit (lib: buffer + validation + shipper)', () => {
     'FLIGHTDECK_ACTIVITY_ID',
     'FLIGHTDECK_AGENT',
     'FLIGHTDECK_LOG_REF',
+    'FLIGHTDECK_SCOPE_MAX_AGE_SECONDS',
   ] as const;
   let savedEnv: Record<string, string | undefined>;
 
@@ -108,6 +109,7 @@ describe('flightdeck_emit (lib: buffer + validation + shipper)', () => {
     delete process.env.FLIGHTDECK_ACTIVITY_ID;
     delete process.env.FLIGHTDECK_AGENT;
     delete process.env.FLIGHTDECK_LOG_REF;
+    delete process.env.FLIGHTDECK_SCOPE_MAX_AGE_SECONDS; // default 24h unless a test sets it
     __resetPoster();
   });
 
@@ -348,6 +350,135 @@ describe('flightdeck_emit (lib: buffer + validation + shipper)', () => {
       expect(line.agent).toBe('Gadget');
       expect(line.logRef).toBe('sess-123');
       expect(line.phase).toBe('P1');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // durable per-repo scope marker (#537) — live activityId/agent resolution
+  // -------------------------------------------------------------------------
+
+  describe('durable scope marker (#537)', () => {
+    // Write <root>/.claude/status/flightdeck-scope.json under a fresh root inside
+    // the per-test temp dir (afterEach rmSyncs `dir`, so cleanup is automatic).
+    // `marker` may be a string to inject a malformed-JSON body verbatim.
+    function markerRoot(name: string, marker: Record<string, unknown> | string): string {
+      const root = join(dir, name);
+      const statusDir = join(root, '.claude', 'status');
+      mkdirSync(statusDir, { recursive: true });
+      const body = typeof marker === 'string' ? marker : JSON.stringify(marker);
+      writeFileSync(join(statusDir, 'flightdeck-scope.json'), body, 'utf-8');
+      return root;
+    }
+    const isoAgo = (sec: number) => new Date(Date.now() - sec * 1000).toISOString();
+
+    test('marker activityId wins over FLIGHTDECK_ACTIVITY_ID env and the repo basename', () => {
+      process.env.FLIGHTDECK_ACTIVITY_ID = 'env-campaign';
+      const root = markerRoot('repo-basename', { activityId: 'marker-campaign', updatedAt: isoAgo(5) });
+      expect(activityIdForRoot(root)).toBe('marker-campaign');
+    });
+
+    test('no marker → falls through to env, then the repo basename (regression)', () => {
+      const root = join(dir, 'no-marker-repo'); // root exists, no marker file
+      mkdirSync(root, { recursive: true });
+      process.env.FLIGHTDECK_ACTIVITY_ID = 'env-campaign';
+      expect(activityIdForRoot(root)).toBe('env-campaign');
+      delete process.env.FLIGHTDECK_ACTIVITY_ID;
+      expect(activityIdForRoot(root)).toBe('no-marker-repo');
+    });
+
+    test('malformed JSON marker never throws and falls through to the basename', () => {
+      const root = markerRoot('bad-json-repo', '{ this is : not json ]');
+      let out: string | undefined;
+      expect(() => {
+        out = activityIdForRoot(root);
+      }).not.toThrow();
+      expect(out).toBe('bad-json-repo');
+    });
+
+    test('a directory in the marker-file position never throws and falls through', () => {
+      const root = join(dir, 'dir-not-file-repo');
+      // Create .../flightdeck-scope.json AS A DIRECTORY → readFileSync throws EISDIR.
+      mkdirSync(join(root, '.claude', 'status', 'flightdeck-scope.json'), { recursive: true });
+      let out: string | undefined;
+      expect(() => {
+        out = activityIdForRoot(root);
+      }).not.toThrow();
+      expect(out).toBe('dir-not-file-repo');
+    });
+
+    test('a marker older than the max age is ignored (treated as absent)', () => {
+      process.env.FLIGHTDECK_SCOPE_MAX_AGE_SECONDS = '100';
+      const root = markerRoot('stale-repo', { activityId: 'crashed-campaign', updatedAt: isoAgo(500) });
+      expect(activityIdForRoot(root)).toBe('stale-repo'); // stale → basename, not the marker
+    });
+
+    test('the age boundary: just-under is honored, just-over is ignored', () => {
+      process.env.FLIGHTDECK_SCOPE_MAX_AGE_SECONDS = '100';
+      const fresh = markerRoot('fresh-repo', { activityId: 'live-campaign', updatedAt: isoAgo(90) });
+      expect(activityIdForRoot(fresh)).toBe('live-campaign');
+      const overAge = markerRoot('over-repo', { activityId: 'old-campaign', updatedAt: isoAgo(140) });
+      expect(activityIdForRoot(overAge)).toBe('over-repo');
+    });
+
+    test('a marker with a missing or unparseable updatedAt fails closed (ignored)', () => {
+      const noDate = markerRoot('no-date-repo', { activityId: 'undatable' });
+      expect(activityIdForRoot(noDate)).toBe('no-date-repo');
+      const badDate = markerRoot('bad-date-repo', { activityId: 'undatable', updatedAt: 'not-a-date' });
+      expect(activityIdForRoot(badDate)).toBe('bad-date-repo');
+    });
+
+    test('markers in different roots do not leak into each other', () => {
+      const rootA = markerRoot('root-a', { activityId: 'campaign-a', updatedAt: isoAgo(5) });
+      const rootB = markerRoot('root-b', { activityId: 'campaign-b', updatedAt: isoAgo(5) });
+      expect(activityIdForRoot(rootA)).toBe('campaign-a');
+      expect(activityIdForRoot(rootB)).toBe('campaign-b');
+    });
+
+    test("emitStateEvent carries the marker's activityId and agent (agent beats env)", () => {
+      process.env.FLIGHTDECK_AGENT = 'env-agent'; // set, to prove the marker wins
+      const root = markerRoot('emit-repo', {
+        activityId: 'marker-campaign',
+        agent: 'marker-agent',
+        updatedAt: isoAgo(5),
+      });
+      emitStateEvent(root, 'phase', { phase: 'P1' });
+      const line = readLines(buf)[0];
+      expect(line.activityId).toBe('marker-campaign');
+      expect(line.agent).toBe('marker-agent');
+      expect(line.phase).toBe('P1');
+    });
+
+    test('an explicit opts.agent still overrides the marker agent', () => {
+      const root = markerRoot('override-repo', {
+        activityId: 'marker-campaign',
+        agent: 'marker-agent',
+        updatedAt: isoAgo(5),
+      });
+      emitStateEvent(root, 'phase', { phase: 'P1', agent: 'explicit-agent' });
+      const line = readLines(buf)[0];
+      expect(line.agent).toBe('explicit-agent');
+      expect(line.activityId).toBe('marker-campaign'); // activityId still from the marker
+    });
+
+    test('an explicit opts.activityId still overrides the marker activityId', () => {
+      const root = markerRoot('override-aid-repo', {
+        activityId: 'marker-campaign',
+        agent: 'marker-agent',
+        updatedAt: isoAgo(5),
+      });
+      emitStateEvent(root, 'phase', { phase: 'P1', activityId: 'explicit-camp' });
+      const line = readLines(buf)[0];
+      expect(line.activityId).toBe('explicit-camp');
+      expect(line.agent).toBe('marker-agent'); // agent still from the marker
+    });
+
+    test('a marker with an agent but no activityId: agent applies, activityId falls through', () => {
+      process.env.FLIGHTDECK_ACTIVITY_ID = 'env-campaign';
+      const root = markerRoot('agent-only-repo', { agent: 'marker-agent', updatedAt: isoAgo(5) });
+      emitStateEvent(root, 'phase', { phase: 'P1' });
+      const line = readLines(buf)[0];
+      expect(line.agent).toBe('marker-agent');
+      expect(line.activityId).toBe('env-campaign'); // no marker activityId → env fallback
     });
   });
 
