@@ -13,7 +13,7 @@
  *     pre-migration bug — `createGithubPR` ran against a GitLab origin).
  *
  * Argv composition:
- *   Issue types (plan | epic | story | bug | chore | docs | feature | fix):
+ *   Issue types (plan | epic | story | bug | chore | doc | feature | fix):
  *     glab issue create
  *       --title <title>
  *       --description <body>
@@ -54,7 +54,7 @@ const ISSUE_TYPE_LABELS: Record<string, string | null> = {
   feature: 'type::feature',
   bug: 'type::bug',
   chore: 'type::chore',
-  docs: 'type::docs',
+  doc: 'type::doc',
   fix: 'type::fix',
   pr: null,
   mr: null,
