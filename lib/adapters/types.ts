@@ -698,7 +698,7 @@ export interface LabelListResponse {
  * multi-shape "create an issue OR PR/MR" handler.
  *
  * `type` drives the sub-command an adapter picks:
- *   - issue types (`epic | story | bug | chore | docs | feature | fix`) →
+ *   - issue types (`epic | story | bug | chore | doc | feature | fix`) →
  *     `gh issue create` / `glab issue create`
  *   - `pr` → `gh pr create` (GitHub)    | GitLab returns `platform_unsupported`
  *   - `mr` → `glab mr create` (GitLab)  | GitHub returns `platform_unsupported`
@@ -723,7 +723,7 @@ export type WorkItemType =
   | 'feature'
   | 'bug'
   | 'chore'
-  | 'docs'
+  | 'doc'
   | 'fix'
   | 'pr'
   | 'mr';
