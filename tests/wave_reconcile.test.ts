@@ -127,14 +127,16 @@ const EMPTY_STATE: StateData = {
 // ---------------------------------------------------------------------------
 
 describe('lib/wave-reconcile pure helpers', () => {
-  test('issueNumberFromBranch matches feature/ fix/ chore/ doc/ bug/ singular prefixes', () => {
+  test('issueNumberFromBranch matches the full canonical singular prefix set (incl. kahuna)', () => {
     expect(issueNumberFromBranch('feature/540-do-a-thing')).toBe(540);
     expect(issueNumberFromBranch('fix/541-bug')).toBe(541);
     expect(issueNumberFromBranch('chore/542-cleanup')).toBe(542);
     expect(issueNumberFromBranch('doc/100-update-readme')).toBe(100);
     expect(issueNumberFromBranch('bug/200-crash')).toBe(200);
+    expect(issueNumberFromBranch('kahuna/542-wave-1')).toBe(542); // #449: kahuna was omitted
     expect(issueNumberFromBranch('main')).toBeNull();
     expect(issueNumberFromBranch('docs/foo-no-num')).toBeNull();
+    expect(issueNumberFromBranch('docs/500-plural-rejected')).toBeNull(); // plural is not canonical
     expect(issueNumberFromBranch('feature/540')).toBeNull(); // needs trailing `-`
   });
 

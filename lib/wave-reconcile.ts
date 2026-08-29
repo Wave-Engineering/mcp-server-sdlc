@@ -11,6 +11,7 @@
 // handler — see `handlers/wave_reconcile_mrs.ts` — and is untouched here.
 
 import { join } from 'path';
+import { BRANCH_PREFIXES } from './shared/branch-prefixes.js';
 
 export function projectDir(): string {
   return process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
@@ -157,14 +158,18 @@ export function parseDepIssueNumber(dep: string | number): number | null {
   return parseInt(m[1] ?? m[2], 10);
 }
 
+// Derived from the shared canonical prefix set so this parser can never drift
+// from `handlers/ibm.ts` (branch-format validation) — both consume
+// `lib/shared/branch-prefixes.ts`. Prefixes are singular (`doc/` not `docs/`).
+const ISSUE_BRANCH_PATTERN = new RegExp(`^(?:${BRANCH_PREFIXES.join('|')})\\/(\\d+)-`);
+
 /**
- * Match a PR's head branch against our `feature/<N>-*` convention and
- * return the issue number, or `null` if the branch doesn't match. Also
- * handles `fix/`, `chore/`, `doc/`, `bug/` singular prefixes per CLAUDE.md
- * branch-prefix convention.
+ * Match a PR's head branch against the canonical `<type>/<N>-*` convention and
+ * return the issue number, or `null` if the branch doesn't match. The accepted
+ * `<type>` prefixes are the shared `BRANCH_PREFIXES` set.
  */
 export function issueNumberFromBranch(head: string): number | null {
-  const m = /^(?:feature|fix|chore|doc|bug)\/(\d+)-/.exec(head);
+  const m = ISSUE_BRANCH_PATTERN.exec(head);
   return m ? parseInt(m[1], 10) : null;
 }
 
