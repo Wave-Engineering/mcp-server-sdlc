@@ -20,6 +20,10 @@ const inputSchema = z.object({
   squash_message: z.string().optional(),
   use_merge_queue: z.boolean().optional(),
   skip_train: z.boolean().optional(),
+  // #474: caller-selected merge strategy, threaded through to the underlying
+  // pr_merge. Default `squash` preserves prior behavior. Same queue caveat as
+  // pr_merge — see this tool's description.
+  merge_method: z.enum(['squash', 'merge', 'rebase']).default('squash'),
   // GitLab nested groups need arbitrary `/` depth — see lib/schemas/repo.ts (#290).
   repo: repoOptionalSchema,
   timeout_sec: z
@@ -37,11 +41,12 @@ const prMergeWaitHandler: HandlerDef = {
   name: 'pr_merge_wait',
   description:
     'Merge a PR/MR and BLOCK until the commit is observable on main (or timeout). ' +
-    'Same input as pr_merge plus timeout_sec (default 600). Returns the same aggregate ' +
-    'envelope as pr_merge with merged=true, pr_state="MERGED" guaranteed on success. ' +
-    'Detects "already merged" and short-circuits without re-attempting the merge. ' +
-    'Use this when downstream work needs the commit on main; use pr_merge when ' +
-    'enrollment is enough.',
+    'Same input as pr_merge (including merge_method: squash|merge|rebase, default squash) plus ' +
+    'timeout_sec (default 600). Returns the same aggregate envelope as pr_merge with merged=true, ' +
+    'pr_state="MERGED" guaranteed on success. Detects "already merged" and short-circuits without ' +
+    're-attempting the merge. Use this when downstream work needs the commit on main; use pr_merge ' +
+    'when enrollment is enough. merge_method is authoritative only on the immediate (non-queue) ' +
+    'path; on a merge-queue-ENFORCED repo the queue\'s own configured method governs the merge.',
   inputSchema,
   async execute(rawArgs: unknown) {
     let args;

@@ -156,6 +156,16 @@ describe('GitHub CLI flag shapes', () => {
     matchOrSkip(help, /--delete-branch/);
   });
 
+  test('gh pr merge accepts --merge and --rebase strategy flags (#474)', () => {
+    // Used by pr_merge / pr_merge_wait via pr-merge-github when merge_method is
+    // 'merge' or 'rebase'. Unit tests assert against a MOCKED argv string and
+    // would stay green against a gh that rejects these flags, so verify the
+    // real CLI accepts them.
+    const help = captureHelp('gh pr merge --help');
+    matchOrSkip(help, /--merge/);
+    matchOrSkip(help, /--rebase/);
+  });
+
   test('gh run list accepts --commit, --json flags', () => {
     // Used by ci_wait_run handler (via ci-runs-for-branch-github adapter)
     const help = captureHelp('gh run list --help');
@@ -219,6 +229,15 @@ describe('GitLab CLI flag shapes', () => {
     const help = captureHelp('glab mr merge --help');
     matchOrSkip(help, /--yes/);
     matchOrSkip(help, /--remove-source-branch/);
+  });
+
+  test('glab mr merge accepts --squash and --rebase strategy flags (#474)', () => {
+    // Used by pr_merge / pr_merge_wait via pr-merge-gitlab when merge_method is
+    // 'squash' or 'rebase' ('merge' uses glab's default = no flag). Unit tests
+    // assert against a MOCKED argv string, so verify the real CLI accepts them.
+    const help = captureHelp('glab mr merge --help');
+    matchOrSkip(help, /--squash/);
+    matchOrSkip(help, /--rebase/);
   });
 
   test('glab mr merge accepts --sha and --auto-merge flags (#486)', () => {
