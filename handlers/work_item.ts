@@ -27,12 +27,10 @@ import { validateBodyStructure } from '../lib/spec_parser';
 const BODY_GRAMMAR_TYPES = new Set(['plan', 'epic', 'story', 'feature', 'bug', 'chore', 'doc', 'fix']);
 
 const inputSchema = z.object({
-  // `doc` is the canonical singular type (→ type::doc), consistent with every
-  // other singular type (feature/bug/chore/fix/…). `docs` is a TRANSITIONAL
-  // alias only — normalized to `doc` in execute() so type::docs is never created
-  // again; its removal is tracked by #540, once cc-workflow's /issue skill emits
-  // `doc` directly instead of shimming doc→docs.
-  type: z.enum(['plan', 'epic', 'story', 'feature', 'bug', 'chore', 'doc', 'docs', 'fix', 'pr', 'mr']),
+  // `doc` is the canonical singular type (→ type::doc). The transitional `docs`
+  // alias was retired in #540 once cc-workflow's /issue skill (cc-workflow#1191)
+  // began emitting `doc` directly; `docs` is now rejected, not normalized.
+  type: z.enum(['plan', 'epic', 'story', 'feature', 'bug', 'chore', 'doc', 'fix', 'pr', 'mr']),
   title: z.string().min(1, 'title must be a non-empty string'),
   body: z.string().optional(),
   labels: z.array(z.string()).optional(),
@@ -60,11 +58,7 @@ const workItemHandler: HandlerDef = {
       return envelope({ ok: false, error: err instanceof Error ? err.message : String(err) });
     }
 
-    // Normalize the transitional `docs` alias to canonical `doc` before dispatch,
-    // so no downstream path (adapter type→label map, the emitted label) ever sees
-    // the plural. The ternary also narrows the type to WorkItemType (`doc`, no
-    // `docs`). Scaffold removal: #540.
-    const type = args.type === 'docs' ? 'doc' : args.type;
+    const type = args.type;
     const adapter = getAdapter({ repo: args.repo });
     const result = await adapter.workItem({ ...args, type });
 

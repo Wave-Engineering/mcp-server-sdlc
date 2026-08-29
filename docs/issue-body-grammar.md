@@ -64,9 +64,9 @@ loaded, rather than later at the `/precheck` gate.
 `body_grammar` is emitted only when BOTH hold:
 
 - the issue **type** is body-bearing — `plan`, `epic`, `story`, `feature`, `bug`,
-  `chore`, `doc`, `fix` (the `BODY_GRAMMAR_TYPES` set). `docs` is normalized to
-  `doc` first. Cross-platform PR/MR types (`pr`, `mr`) are excluded — they use the
-  PR-body shape (Summary / Changes / Linked Issues / Test Plan), not this grammar.
+  `chore`, `doc`, `fix` (the `BODY_GRAMMAR_TYPES` set). Cross-platform PR/MR types
+  (`pr`, `mr`) are excluded — they use the PR-body shape (Summary / Changes /
+  Linked Issues / Test Plan), not this grammar.
 - a non-empty `body` was supplied.
 
 The field mirrors `spec_validate_structure`: `{ valid, missing_sections }`, plus
