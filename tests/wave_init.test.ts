@@ -893,6 +893,107 @@ describe('wave_init handler', () => {
     expect((mockExecSync.mock.calls[0][0] as string)).toContain('wave-status init');
   });
 
+  // ---- atomicity (#406) — Step-4 (set-kahuna-branch) failure recovery -----
+  //
+  // A prior run can fail at Step 4 AFTER Steps 2+3 succeeded: the plan is fully
+  // persisted (state.json + phases-waves.json) AND the branch is on the remote,
+  // but state.json's kahuna_branch is null. A naive retry would re-enter Step 3
+  // (`wave-status init` non-extend) and REINITIALIZE the persisted plan. These
+  // pin the resume: skip the reinit, record the branch, converge.
+
+  test('atomicity (#406) — Step-4 resume: persisted plan + orphan branch + null state → records branch, NO reinit', async () => {
+    // The half-state fixture: phases-waves.json on disk (Step 3 succeeded),
+    // state.json with kahuna_branch null (Step 4 never landed), and the branch
+    // present on the remote (Step 2 created it).
+    await setupStatusFixture(
+      { waves: { 'W-1': { status: 'pending' } }, kahuna_branch: null },
+      { phases: [{ waves: [{ id: 'W-1' }] }] }
+    );
+    setExecRoutes([
+      { match: 'git remote get-url', respond: 'git@github.com:org/repo.git' },
+      { match: 'git ls-remote --heads origin', respond: 'abc123\trefs/heads/kahuna/42-resume-test' },
+      { match: 'wave-status set-kahuna-branch', respond: '' },
+    ]);
+
+    const result = await handler.execute({
+      plan_json: JSON.stringify({ phases: [{ name: 'p', waves: [{ id: 'W-1', issues: [] }] }] }),
+      kahuna: { plan_id: 42, slug: 'resume-test' },
+    });
+    const parsed = parseResult(result);
+
+    expect(parsed.ok).toBe(true);
+    expect(parsed.resumed).toBe('step4');
+    expect(parsed.kahuna_branch).toBe('kahuna/42-resume-test');
+    expect(parsed.kahuna_created).toBe(false);
+
+    const calls = mockExecSync.mock.calls.map(c => unquote(c[0] as string));
+    // The load-bearing guarantee: `wave-status init` did NOT run — the persisted
+    // plan was not reinitialized.
+    expect(calls.some(c => c.includes('wave-status init'))).toBe(false);
+    // No new branch was cut — the orphan was claimed.
+    expect(calls.some(c => c.includes('git/refs -X POST'))).toBe(false);
+    // But the branch WAS recorded (Step 4 completed on the retry).
+    const rawCalls = mockExecSync.mock.calls.map(c => c[0] as string);
+    expect(rawCalls.some(c => c.includes("wave-status set-kahuna-branch 'kahuna/42-resume-test'"))).toBe(true);
+  });
+
+  test('atomicity (#406) — no false positive: persisted plan but branch ABSENT on remote → fresh create + init runs', async () => {
+    // Same persisted-plan fixture, but the branch is NOT on the remote. This is
+    // NOT the Step-4 half-state (Step 2 never created the branch), so the handler
+    // must NOT resume — it creates the branch and runs its normal persist path.
+    await setupStatusFixture(
+      { kahuna_branch: null },
+      { phases: [{ waves: [{ id: 'W-1' }] }] }
+    );
+    setExecRoutes([
+      { match: 'git remote get-url', respond: 'git@github.com:org/repo.git' },
+      { match: 'git ls-remote --heads origin', respond: '' }, // branch absent
+      { match: 'gh api repos/org/repo/git/refs/heads/main', respond: '8888888888888888888888888888888888888888' },
+      { match: 'gh api repos/org/repo/git/refs -X POST', respond: '' },
+      { match: 'wave-status set-kahuna-branch', respond: '' },
+    ]);
+
+    const result = await handler.execute({
+      plan_json: JSON.stringify({ phases: [] }),
+      kahuna: { plan_id: 42, slug: 'resume-test' },
+    });
+    const parsed = parseResult(result);
+
+    expect(parsed.ok).toBe(true);
+    expect(parsed.resumed).toBeUndefined();
+    expect(parsed.kahuna_created).toBe(true);
+    const calls = mockExecSync.mock.calls.map(c => unquote(c[0] as string));
+    expect(calls.some(c => c.includes('wave-status init'))).toBe(true);
+    expect(calls.some(c => c.includes('git/refs -X POST'))).toBe(true);
+  });
+
+  test('atomicity (#406) — resume does NOT fire in extend mode: init runs with --extend', async () => {
+    // In extend mode the same surface conditions hold (persisted plan, null
+    // kahuna_branch, branch on remote) but the caller wants to ADD waves — the
+    // resume must NOT swallow the `wave-status init --extend`.
+    await setupStatusFixture(
+      { waves: { 'W-1': { status: 'completed' } }, kahuna_branch: null },
+      { phases: [{ waves: [{ id: 'W-1' }] }] }
+    );
+    setExecRoutes([
+      { match: 'git remote get-url', respond: 'git@github.com:org/repo.git' },
+      { match: 'git ls-remote --heads origin', respond: 'abc123\trefs/heads/kahuna/42-resume-test' },
+      { match: 'wave-status set-kahuna-branch', respond: '' },
+    ]);
+
+    const result = await handler.execute({
+      plan_json: JSON.stringify({ phases: [{ name: 'p2', waves: [{ id: 'W-2', issues: [{ number: 20 }] }] }] }),
+      extend: true,
+      kahuna: { plan_id: 42, slug: 'resume-test' },
+    });
+    const parsed = parseResult(result);
+
+    expect(parsed.ok).toBe(true);
+    expect(parsed.resumed).toBeUndefined();
+    const calls = mockExecSync.mock.calls.map(c => unquote(c[0] as string));
+    expect(calls.some(c => c.includes('wave-status init') && c.includes('--extend'))).toBe(true);
+  });
+
   // ---- extend_missing_state -----------------------------------------------
   test('extend_missing_state — returns ok:false without throwing', async () => {
     // Point at a fresh empty tempdir; no state.json exists.
