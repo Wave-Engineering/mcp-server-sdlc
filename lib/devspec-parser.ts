@@ -204,36 +204,50 @@ export function parseMvIds(section64Md: string): string[] {
 // -----------------------------------------------------------------------------
 
 /**
- * Parse a bolded metadata line like "**Wave:** 2 | 1.1, 1.2" and return
- * JUST the wave number (the part before the first `|`), stripping any
- * dependency annotations.
+ * Parse a bolded metadata line and return JUST the wave token, stripping any
+ * dependency annotations. Recognizes both metadata-line forms:
+ *   - `·`-separated: "**Wave:** P1W1 · **Dependencies:** 1.1, 0.1"
+ *   - legacy `|`-delimited: "**Wave:** 2 | 1.1, 1.2"
  *
- * This fixes Bug 3 — stories are now grouped by wave number alone, not by
- * the full "wave | dependencies" string.
+ * This fixes Bug 3 / #463 — stories are grouped by the wave token alone
+ * (`PxWy` or a plain number), never by the full "wave · dependencies" string,
+ * which previously split one nominal wave into many groups.
  */
 export function parseWaveNumber(line: string): string | null {
   const m = /^\*\*Wave:\*\*\s*(.*)$/.exec(line.trim());
   if (!m) return null;
-  const full = m[1].trim();
-  // Strip everything after the first `|` (dependencies).
+  let full = m[1].trim();
+  // Strip a `·`-separated trailing clause (e.g. "· **Dependencies:** …").
+  const dotIdx = full.indexOf('·');
+  if (dotIdx !== -1) {
+    full = full.slice(0, dotIdx).trim();
+  }
+  // Strip a legacy `|`-delimited dependency suffix.
   const pipeIdx = full.indexOf('|');
   if (pipeIdx !== -1) {
-    return full.slice(0, pipeIdx).trim();
+    full = full.slice(0, pipeIdx).trim();
   }
   return full;
 }
 
 /**
- * Parse a bolded "**Dependencies:**" line and extract a comma-separated list
- * of story IDs (like "1.1, 2.3, 3.1"). Returns an array of dependency IDs.
+ * Extract a comma-separated list of story IDs from a "**Dependencies:**"
+ * clause. The clause may be on its own line OR embedded inline after a
+ * `·`-separated "**Wave:** PxWy ·" prefix — so the label is matched anywhere
+ * on the line, not only at line-start. "None" (any case) → [].
  *
- * This fixes Bug 3 (continued) — dependencies are extracted as a separate
- * per-story field, not embedded in the wave grouping key.
+ * This fixes Bug 3 / #463 — the inline dependency topology (used by
+ * /prepwaves for wave ordering) is no longer silently dropped.
  */
 export function parseDependencies(line: string): string[] | null {
-  const m = /^\*\*Dependencies:\*\*\s*(.*)$/i.exec(line.trim());
+  const m = /\*\*Dependencies:\*\*\s*(.*)$/i.exec(line.trim());
   if (!m) return null;
-  const value = m[1].trim();
+  let value = m[1].trim();
+  // Cut off any further `·`-separated clause that trails the dependencies.
+  const dotIdx = value.indexOf('·');
+  if (dotIdx !== -1) {
+    value = value.slice(0, dotIdx).trim();
+  }
   if (/^none$/i.test(value)) return [];
   return value.split(',').map(s => s.trim()).filter(Boolean);
 }
