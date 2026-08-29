@@ -23,13 +23,15 @@ import { detectMergeQueue, type MergeQueueInfo } from '../merge_queue_detect.js'
 import { parseRepoSlug } from '../shared/parse-repo-slug.js';
 import { runArgv } from '../shared/error-norm.js';
 import { getAdapter } from './index.js';
-import type {
-  AdapterResult,
-  PrMergeArgs,
-  PrMergeResponse,
-  PrMergeQueueState,
-  PrMergeMethod,
-  PrStateInfo,
+import {
+  directMergeMethodLabel,
+  type AdapterResult,
+  type PrMergeArgs,
+  type PrMergeResponse,
+  type PrMergeQueueState,
+  type PrMergeMethod,
+  type MergeMethod,
+  type PrStateInfo,
 } from './types.js';
 
 interface ExecError extends Error {
@@ -151,15 +153,28 @@ function writeTempMessageFile(message: string): string {
   return path;
 }
 
+// Map the caller-selected method to its `gh pr merge` strategy flag (#474).
+function githubMergeFlag(method: MergeMethod): string {
+  if (method === 'merge') return '--merge';
+  if (method === 'rebase') return '--rebase';
+  return '--squash';
+}
+
 function buildGithubMergeCommand(
   number: number,
+  method: MergeMethod,
   auto: boolean,
   squashMessage?: string,
   repo?: string,
 ): string {
-  const parts = ['gh', 'pr', 'merge', String(number), '--squash', '--delete-branch'];
+  const parts = ['gh', 'pr', 'merge', String(number), githubMergeFlag(method), '--delete-branch'];
   if (auto) parts.push('--auto');
-  if (squashMessage !== undefined && squashMessage.length > 0) {
+  // The message body applies to the commit `gh` synthesizes — the squash commit
+  // (`--squash`) or the merge commit (`--merge`). A rebase preserves each
+  // commit's own message and has no synthesized commit, so `gh pr merge
+  // --rebase --body ...` is rejected; skip the body there (#474). `squash_message`
+  // being ignored for rebase is documented in the tool description.
+  if (method !== 'rebase' && squashMessage !== undefined && squashMessage.length > 0) {
     if (squashMessage.includes('\n')) {
       const tempFile = writeTempMessageFile(squashMessage);
       parts.push('--body-file', shellEscape(tempFile));
@@ -281,7 +296,12 @@ async function mergeGithubViaQueue(
   queue: PrMergeQueueState,
   warnings: string[],
 ): Promise<AdapterResult<PrMergeResponse>> {
-  const cmd = buildGithubMergeCommand(args.number, true, args.squash_message, args.repo);
+  // The strategy flag is still passed so `gh pr merge --auto` has an explicit
+  // method, but on an enforced queue the queue's OWN configured method governs
+  // the eventual merge — so the reported `merge_method` stays `merge_queue`,
+  // not `direct_<method>` (#474 queue caveat).
+  const method = args.merge_method ?? 'squash';
+  const cmd = buildGithubMergeCommand(args.number, method, true, args.squash_message, args.repo);
   try {
     exec(cmd);
   } catch (err) {
@@ -315,8 +335,11 @@ async function mergeGithubDirect(
   queue: PrMergeQueueState,
   warnings: string[],
 ): Promise<AdapterResult<PrMergeResponse>> {
+  const method = args.merge_method ?? 'squash';
+  const directLabel = directMergeMethodLabel(method);
   const directCmd = buildGithubMergeCommand(
     args.number,
+    method,
     false,
     args.squash_message,
     args.repo,
@@ -336,7 +359,7 @@ async function mergeGithubDirect(
         number: args.number,
         enrolled: true,
         merged: actuallyMerged,
-        method: actuallyMerged ? 'direct_squash' : 'merge_queue',
+        method: actuallyMerged ? directLabel : 'merge_queue',
         queue,
         url: info.url,
         mergeCommitSha: info.mergeCommitSha,
@@ -362,7 +385,7 @@ async function mergeGithubDirect(
               number: args.number,
               enrolled: true,
               merged: true,
-              method: 'direct_squash',
+              method: directLabel,
               queue,
               url: info.url,
               mergeCommitSha: info.mergeCommitSha,
@@ -413,7 +436,9 @@ async function mergeGithubDirect(
   // error, fall back to GraphQL enqueuePullRequest (bug #284 — repos with
   // merge-queue-on but enablePullRequestAutoMerge off).
   const fallbackQueue: PrMergeQueueState = { enabled: true, position: null, enforced: true };
-  const autoCmd = buildGithubMergeCommand(args.number, true, args.squash_message, args.repo);
+  // Queue-enqueue fallback: pass the requested strategy flag, but the enrolled
+  // PR is governed by the queue's own method — reported as `merge_queue` (#474).
+  const autoCmd = buildGithubMergeCommand(args.number, method, true, args.squash_message, args.repo);
   try {
     exec(autoCmd);
     // --auto succeeded — enrolled via the queue. No GraphQL fallback needed.

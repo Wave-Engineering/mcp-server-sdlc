@@ -15,6 +15,15 @@ bun run lint
 echo "--- adapter-retrofit gate-greps ---"
 ./scripts/ci/gate-greps.sh
 
+# Type-aware, name-agnostic enforcement of adapter error-code preservation
+# (#534). gate-greps.sh #3 above is the cheap single-line first-pass keyed to
+# the `result` name; THIS is the authoritative class check — it asks the type
+# checker whether the ok:false relay operand is an AdapterResult (its ok:false
+# arm carries a required `code`) and flags any drop regardless of variable name
+# or single/multi-line shape. See the script header for the full rationale.
+echo "--- adapter error-code preservation (type-aware, #534) ---"
+bun run scripts/ci/check-adapter-error-code.ts
+
 echo "--- shellcheck ---"
 shopt -s nullglob
 scripts=( scripts/ci/*.sh )

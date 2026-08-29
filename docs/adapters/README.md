@@ -666,3 +666,54 @@ This catches argv-confusion bugs that slip past pure argv-equality checks.
     last-write-wins; install your own mock before `await import`.
   - `lesson_mcp_binary_staleness.md` — MCP behavior disagrees with source?
     Suspect stale binary first.
+
+---
+
+## 10. CLI toolchain — minimum supported versions
+
+The adapters shell out to `gh` (GitHub) and `glab` (GitLab). The flags below are
+**load-bearing**: an unrecognised flag makes the operation fail outright, so the
+minimum versions here are a real dependency, not a nicety. `tests/integration/
+cli-flag-shapes.test.ts` is the guard that verifies these flags still exist on
+the installed CLI (it execs the real binary's `--help`).
+
+### 10.1 `glab` — minimum **1.36.0**
+
+`glab 1.36.0` is the only version verified end-to-end for this repo (the box
+these adapters were built and exercised on). **No fleet survey of the `glab`
+versions on other hosts or CI images has been done** (#496), so 1.36.0 is the
+recorded floor by verification, not by a proven-minimum bisection — treat a
+lower version as unsupported until surveyed.
+
+Flags the GitLab adapters depend on (`lib/adapters/pr-merge-gitlab.ts`,
+`pr-create-gitlab.ts`, `gitlab-api.ts`, …):
+
+| flag | subcommand | why it is load-bearing |
+|---|---|---|
+| `--sha` | `glab mr merge` | GitLab's stale-head guard; namespaces with `require_sha_for_merge` (now the default for new groups) reject an unguarded merge with `400`. |
+| `--auto-merge=<bool>` | `glab mr merge` | Passed explicitly to force a direct merge (`false`) or enrol (`true`, `pr_merge_wait`). **It is a rename of the older `--when-pipeline-succeeds`** — on a `glab` predating the rename, every GitLab merge fails. This is the exact drift #496's post-condition guard defends against. |
+| `--squash` / `--rebase` | `glab mr merge` | Strategy selection (#474); a merge commit is glab's default (no flag). |
+| `--squash-message` | `glab mr merge` | Squash-commit subject (squash-only). |
+| `--remove-source-branch`, `--yes` | `glab mr merge` | Delete source branch; non-interactive. |
+| `-R` | `glab mr merge`, `glab mr create` | Target repo (GitLab uses `-R`, **not** `--repo` — see `lesson_origin_ops_pitfalls.md`). |
+| `--title`, `--description`, `--source-branch`, `--target-branch`, `--draft` | `glab mr create` | MR creation. |
+| `glab api <path>` (URL-encoded project paths) | `glab api` | The REST client (`gitlab-api.ts`); `--jq`, `-F/--format`, `--output json` are all **absent** on 1.36.0 — JSON is parsed in-process. |
+
+### 10.2 `gh` — minimum **2.45.0**
+
+`gh 2.45.0` ships on Ubuntu 24.04 / `ubuntu-latest` runners and is the verified
+floor. Note `gh pr checks --json` does **not** exist at this version (added
+~2.50); the adapters use `gh pr view --json statusCheckRollup` instead
+(regression guard for #220). Merge uses `--squash`/`--merge`/`--rebase`,
+`--auto`, `--delete-branch`.
+
+### 10.3 CI coverage gap (#496)
+
+The default CI image installs `gh` (present on `ubuntu-latest`) but **not**
+`glab`, so the GitLab half of `cli-flag-shapes.test.ts` is **skipped** in CI
+today — reported as an observable `skip`, never a silent pass. Until the
+workflow installs `glab`, the `--sha`/`--auto-merge` flag-shape guard runs only
+locally. Installing `glab` in CI (pinned at or above the 1.36.0 floor) is the
+follow-up that closes this; it was deferred from #496 because pinning a `glab`
+release into CI is unverifiable from the flight worktree and a wrong pin turns
+CI red for a reason that cannot be diagnosed there.

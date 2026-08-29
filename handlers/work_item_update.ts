@@ -13,6 +13,7 @@
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { getAdapter } from '../lib/adapters/index.js';
+import { repoOptionalSchema } from '../lib/schemas/repo.js';
 
 const issueRefSchema = z
   .string()
@@ -50,10 +51,8 @@ const inputSchema = z.object({
   issue_ref: issueRefSchema,
   patch: patchSchema,
   dry_run: z.boolean().optional(),
-  repo: z
-    .string()
-    .regex(/^[a-zA-Z0-9._/-]+\/[a-zA-Z0-9._-]+$/, 'repo must be owner/repo format')
-    .optional(),
+  // GitLab nested groups need arbitrary `/` depth — see lib/schemas/repo.ts (#290).
+  repo: repoOptionalSchema,
 });
 
 function envelope(payload: unknown) {

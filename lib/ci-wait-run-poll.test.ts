@@ -995,3 +995,193 @@ describe('#523 — stale-run visibility (graded_run_stale_candidate)', () => {
     expect(r.graded_run_stale_candidate).toBeUndefined();
   });
 });
+
+describe('#531 — require_fresh (opt-in enforcement of the #523 stale signal)', () => {
+  // Canonical: test_require_fresh_refuses_terminal_at_call_time_run.
+  // ref-only + require_fresh:true. A completed run is ALREADY in the list at
+  // call time (the exact #523 stale race) → it is HELD, not graded. A fresher
+  // run then appears → THAT one is graded. Proving run_id===61 (the fresh run),
+  // not 60 (the stale one), is proof it held rather than grading immediately.
+  test('a terminal-at-call-time run is HELD; a fresher run that appears is graded', async () => {
+    let calls = 0;
+    const adapter = makeAdapter(async () => {
+      calls += 1;
+      const stale = ghRun({
+        run_id: 60,
+        status: 'completed',
+        conclusion: 'success',
+        created_at: '2026-04-07T12:00:00Z',
+      });
+      const fresh = ghRun({
+        run_id: 61,
+        status: 'completed',
+        conclusion: 'success',
+        created_at: '2026-04-07T12:05:00Z',
+      });
+      // calls 1–2 (baseline + first phase-1 fetch) see only the stale run → held;
+      // from call 3 the fresher run is present and pickRun takes it (newest).
+      return { ok: true, data: calls >= 3 ? [fresh, stale] : [stale] };
+    });
+    const clock = fakeClock();
+    const r = await waitForRun(
+      { ref: 'main', platform: 'github', require_fresh: true },
+      { adapter, sleep: clock.sleep, now: clock.now },
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('expected ok result');
+    // Held: the stale run (60) was NOT graded; the fresh run (61) was.
+    expect(r.run_id).toBe(61);
+    expect(r.final_status).toBe('success');
+    // Fresh run is not the baseline run → not a stale candidate.
+    expect(r.graded_run_stale_candidate).toBeUndefined();
+  });
+
+  // A fresher run that appears IN PROGRESS is likewise this call's run: held
+  // through Phase 1, then polled to completion in Phase 2.
+  test('a fresher IN-PROGRESS run releases the hold and is polled to completion', async () => {
+    let calls = 0;
+    const adapter = makeAdapter(async () => {
+      calls += 1;
+      const stale = ghRun({
+        run_id: 62,
+        status: 'completed',
+        conclusion: 'success',
+        created_at: '2026-04-07T12:00:00Z',
+      });
+      const fresh = (done: boolean) =>
+        ghRun({
+          run_id: 63,
+          status: done ? 'completed' : 'in_progress',
+          conclusion: done ? 'success' : null,
+          created_at: '2026-04-07T12:05:00Z',
+        });
+      // 1–2: only the stale terminal run → held. 3: fresh appears in-progress.
+      // 4+: fresh completed.
+      if (calls <= 2) return { ok: true, data: [stale] };
+      return { ok: true, data: [fresh(calls >= 4), stale] };
+    });
+    const clock = fakeClock();
+    const r = await waitForRun(
+      { ref: 'main', platform: 'github', require_fresh: true },
+      { adapter, sleep: clock.sleep, now: clock.now },
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('expected ok result');
+    expect(r.run_id).toBe(63);
+    expect(r.final_status).toBe('success');
+    expect(r.graded_run_stale_candidate).toBeUndefined();
+  });
+
+  // AC #4: opt in, no fresh/in-progress run ever appears → CLASSIFIED not-found
+  // (reason: no_fresh_run), NEVER a silent grade of the stale run.
+  test('no fresh run within the window → classified no_fresh_run, never a silent grade', async () => {
+    // Only the stale terminal run is EVER present.
+    const adapter = makeAdapter(async () => ({
+      ok: true,
+      data: [ghRun({ run_id: 70, status: 'completed', conclusion: 'success' })],
+    }));
+    const clock = fakeClock();
+    const r = await waitForRun(
+      { ref: 'main', platform: 'github', require_fresh: true },
+      { adapter, sleep: clock.sleep, now: clock.now },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error('expected a classified not-found');
+    expect(r.reason).toBe('no_fresh_run');
+    // The whole point: it did NOT silently grade run 70 as success.
+    expect(r.final_status).not.toBe('success');
+    expect(r.error).toMatch(/already terminal/i);
+  });
+
+  // Canonical: test_require_fresh_default_false_grades_as_before.
+  // WITHOUT the flag, the ref-only path still grades the terminal-at-call-time
+  // run and flags it (post-#523 behavior — byte-identical, AC #2).
+  test('default (require_fresh absent) grades the current run, unchanged from #523', async () => {
+    const adapter = makeAdapter(async () => ({
+      ok: true,
+      data: [
+        ghRun({
+          run_id: 42,
+          status: 'completed',
+          conclusion: 'success',
+          head_sha: 'b'.repeat(40),
+        }),
+      ],
+    }));
+    const clock = fakeClock();
+    const r = await waitForRun(
+      { ref: 'main', platform: 'github' }, // no require_fresh
+      { adapter, sleep: clock.sleep, now: clock.now },
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('expected ok result');
+    expect(r.run_id).toBe(42);
+    expect(r.final_status).toBe('success');
+    // #523 visibility signal still fires — the flag is off, so it is graded.
+    expect(r.graded_run_stale_candidate).toBe(true);
+  });
+
+  // Canonical: test_require_fresh_noop_with_expected_sha.
+  // require_fresh + expected_sha → the sha filter binds identity, the baseline
+  // is never captured, so the flag is a no-op: a terminal run is still graded.
+  test('no-op with expected_sha — identity binds the run, terminal run still graded', async () => {
+    const sha = 'c'.repeat(40);
+    const adapter = makeAdapter(async () => ({
+      ok: true,
+      data: [ghRun({ run_id: 44, status: 'completed', conclusion: 'success', head_sha: sha })],
+    }));
+    const clock = fakeClock();
+    const r = await waitForRun(
+      { ref: 'main', platform: 'github', expected_sha: sha, require_fresh: true },
+      { adapter, sleep: clock.sleep, now: clock.now },
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('expected ok result');
+    expect(r.run_id).toBe(44);
+    expect(r.final_status).toBe('success');
+    expect(r.graded_run_stale_candidate).toBeUndefined();
+  });
+
+  // AC #3: no-op with require_merge_result too — its #476 anchor already proves
+  // freshness, and the baseline is never captured on that path, so a current
+  // merge-result run that is already terminal is still accepted (not held).
+  test('no-op with require_merge_result — a current merge-result run is still graded', async () => {
+    const PR = 108;
+    const HEAD_PIPELINE = 500;
+    const anchorOk = async () => ({
+      ok: true as const,
+      data: { head_sha: 'b'.repeat(40), head_pipeline_id: HEAD_PIPELINE },
+    });
+    const adapter = makeAdapter(
+      async () => ({
+        ok: true,
+        data: [
+          glPipeline({
+            run_id: HEAD_PIPELINE,
+            event: 'merge_request_event',
+            head_branch: 'refs/merge-requests/108/merge',
+            head_sha: 'f'.repeat(40),
+            status: 'success', // already terminal at call time
+          }),
+        ],
+      }),
+      undefined,
+      anchorOk,
+    );
+    const clock = fakeClock();
+    const r = await waitForRun(
+      {
+        ref: 'kahuna/1-x',
+        platform: 'gitlab',
+        require_merge_result: true,
+        pr_number: PR,
+        require_fresh: true, // no-op here
+      },
+      { adapter, sleep: clock.sleep, now: clock.now },
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('expected ok result');
+    expect(r.final_status).toBe('success');
+    expect(r.run_id).toBe(HEAD_PIPELINE);
+  });
+});

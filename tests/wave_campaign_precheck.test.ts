@@ -3,11 +3,14 @@ import {
   installChildProcessMock,
   setExecMock,
   resetExecMock,
+  execCalls,
 } from '../lib/test-support/mock-child-process.ts';
 
 // Mock only execSync so the test intercepts the read-only git probes
-// (`git branch --list`, `git ls-remote`, `git merge-base --is-ancestor`)
-// without disturbing fs — state/plan fixtures are written to a real /tmp dir.
+// (`git branch --list`, `git ls-remote`, `git merge-base --is-ancestor`) AND the
+// adapter's live default-branch resolution (`git remote get-url origin` +
+// `gh repo view`, #465/#466) — without disturbing fs; state/plan fixtures are
+// written to a real /tmp dir.
 installChildProcessMock();
 
 const { default: handler } = await import('../handlers/wave_campaign_precheck.ts');
@@ -33,11 +36,15 @@ async function writeStatus(dir: string, plan: object | null, state: object | nul
  *   locals: local branch names returned by `git branch --list`
  *   remotes: [{name, sha}] returned by `git ls-remote --heads`
  *   merged: predicate(refSubstr) → true means merge-base exits 0 (merged)
+ *   defaultBranch: the live default the adapter resolves (default 'main').
+ *     Served by the `git remote get-url origin` (platform detect → github) +
+ *     `gh repo view` pair that `resolveProtectedBranch` now drives (#465/#466).
  */
 function gitMock(opts: {
   locals?: string[];
   remotes?: Array<{ name: string; sha: string }>;
   merged?: (cmd: string) => boolean;
+  defaultBranch?: string;
 }) {
   // runArgv shell-escapes every token, so the cmd string looks like
   // `'git' 'branch' '--list' 'kahuna/*'`. Match on distinctive single tokens
@@ -53,6 +60,9 @@ function gitMock(opts: {
       if (opts.merged && opts.merged(cmd)) return ''; // exit 0 → merged
       throw new Error('not an ancestor'); // non-zero → not merged
     }
+    // Adapter live default-branch resolution (resolveProtectedBranch, #465/#466).
+    if (cmd.includes('get-url')) return 'git@github.com:org/repo.git\n'; // → platform github
+    if (cmd.includes('repo') && cmd.includes('view')) return `${opts.defaultBranch ?? 'main'}\n`;
     return '';
   };
 }
@@ -250,6 +260,57 @@ describe('wave_campaign_precheck handler', () => {
     expect(parsed.residue.pending_waves).toEqual(['w1', 'w2']);
     expect(parsed.residue.promoted_waves).toEqual([]);
     expect(parsed.residue.kahuna_branches).toEqual([]);
+  });
+
+  test('live_default_branch — protected branch = live adapter default, .claude-project.md ignored (#466)', async () => {
+    // The protected branch must come from the LIVE default resolver, never the
+    // cached `.claude-project.md` "Default branch:" value. Write a stale cache
+    // that says `stale-cached`, set the live default to `trunk-live`, and make
+    // the ancestry probe pass ONLY when it targets `trunk-live`. If the handler
+    // read the cache (or the old hardcoded 'main'), the probe targets the wrong
+    // base → not-merged → this expectation fails. Green proves the live default.
+    const dir = freshDir('livedefault');
+    await writeStatus(
+      dir,
+      { phases: [{ waves: [{ id: 'w1' }] }] },
+      { waves: { w1: { status: 'completed' } }, kahuna_branch: 'kahuna/77-foo' },
+    );
+    await Bun.write(`${dir}/.claude-project.md`, 'Default branch: **stale-cached**\n');
+    process.env.CLAUDE_PROJECT_DIR = dir;
+    setExecMock(
+      gitMock({
+        locals: ['kahuna/77-foo'],
+        defaultBranch: 'trunk-live',
+        merged: (cmd: string) => cmd.includes('trunk-live'),
+      }),
+    );
+    const parsed = parseResult(await handler.execute({}));
+    expect(parsed.state).toBe('residue_found');
+    expect(parsed.residue.kahuna_branches[0].merged_into_protected).toBe(true);
+    expect(parsed.classification).toBe('dead'); // merged + no pending → dead
+  });
+
+  test('override_short_circuits — explicit protected_branch wins with no default-branch host query (#466)', async () => {
+    const dir = freshDir('override');
+    await writeStatus(
+      dir,
+      { phases: [{ waves: [{ id: 'w1' }] }] },
+      { waves: { w1: { status: 'completed' } }, kahuna_branch: 'kahuna/77-foo' },
+    );
+    process.env.CLAUDE_PROJECT_DIR = dir;
+    setExecMock(
+      gitMock({
+        locals: ['kahuna/77-foo'],
+        // Would resolve a DIFFERENT live default if consulted; the override must
+        // win, so the ancestry probe is expected to target 'my-protected'.
+        defaultBranch: 'trunk-live',
+        merged: (cmd: string) => cmd.includes('my-protected'),
+      }),
+    );
+    const parsed = parseResult(await handler.execute({ protected_branch: 'my-protected' }));
+    expect(parsed.residue.kahuna_branches[0].merged_into_protected).toBe(true);
+    // The override short-circuits before any adapter call: no `gh repo view`.
+    expect(execCalls().some(c => c.includes('repo') && c.includes('view'))).toBe(false);
   });
 
   test('schema_validation — rejects unknown fields', async () => {

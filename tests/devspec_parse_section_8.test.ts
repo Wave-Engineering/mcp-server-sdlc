@@ -260,6 +260,57 @@ const MALFORMED_STORY = `## 8. Phased Implementation Plan
 - [ ] It works
 `;
 
+// #463 — the standard §8 metadata line joins Wave and Dependencies with `·`.
+// Three stories share one PxWy token but carry differing dependency text.
+// Before the fix these split into 3 wave-groups with empty depends_on; after,
+// they must collapse into ONE wave with correct per-story dependencies.
+const DOT_SEPARATED_WAVE = `# Spec
+
+## 8. Phased Implementation Plan
+
+### Phase 1: Foundation
+
+#### Phase 1 Definition of Done
+
+- [ ] Foundation done
+
+#### Story 1.1: Alpha
+
+**Wave:** P1W1 · **Dependencies:** None
+
+**Implementation Steps:**
+
+1. Build alpha
+
+**Acceptance Criteria:**
+
+- [ ] Alpha works
+
+#### Story 1.2: Beta
+
+**Wave:** P1W1 · **Dependencies:** 1.1
+
+**Implementation Steps:**
+
+1. Build beta
+
+**Acceptance Criteria:**
+
+- [ ] Beta works
+
+#### Story 1.3: Gamma
+
+**Wave:** P1W1 · **Dependencies:** 1.1, 1.2
+
+**Implementation Steps:**
+
+1. Build gamma
+
+**Acceptance Criteria:**
+
+- [ ] Gamma works
+`;
+
 describe('devspec_parse_section_8 handler', () => {
   test('handler exports valid HandlerDef shape', () => {
     expect(handler.name).toBe('devspec_parse_section_8');
@@ -405,6 +456,35 @@ describe('devspec_parse_section_8 handler', () => {
     const result = await handler.execute({ path: '' });
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(false);
+  });
+
+  test('#463: `·`-separated Wave/Dependencies collapse to ONE wave with per-story deps', async () => {
+    const path = await writeTempFile(DOT_SEPARATED_WAVE);
+    const result = await handler.execute({ path });
+    const parsed = parseResult(result);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.phases.length).toBe(1);
+
+    const phase = parsed.phases[0];
+    // Wave grouping keys on the PxWy token only, not the full metadata line —
+    // so all three stories land in ONE wave, not three.
+    expect(phase.waves.length).toBe(1);
+    const wave = phase.waves[0];
+    expect(wave.number).toBe('P1W1');
+    expect(wave.stories.length).toBe(3);
+
+    // depends_on is populated from the inline **Dependencies:** clause.
+    const byTitle = Object.fromEntries(
+      wave.stories.map((s: { title: string; dependencies: string[] }) => [s.title, s.dependencies]),
+    );
+    expect(byTitle['Alpha']).toEqual([]);
+    expect(byTitle['Beta']).toEqual(['1.1']);
+    expect(byTitle['Gamma']).toEqual(['1.1', '1.2']);
+
+    // Every story keeps the shared wave token.
+    for (const s of wave.stories) {
+      expect(s.wave).toBe('P1W1');
+    }
   });
 
   test('missing file returns structured error', async () => {

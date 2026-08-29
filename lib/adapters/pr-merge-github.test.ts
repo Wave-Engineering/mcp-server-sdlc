@@ -579,6 +579,115 @@ describe('prMergeGithub — subprocess boundary', () => {
     expect(result.data.queue_position).toBeUndefined();
   });
 
+  // =========================================================================
+  // #474 — merge_method (squash | merge | rebase)
+  // =========================================================================
+
+  test('#474 merge_method:merge → --merge flag, reports direct_merge', async () => {
+    stubNoQueue();
+    onExec('gh pr merge 470 --merge --delete-branch', '');
+    onExec(
+      'gh pr view 470 --json state,url,mergeCommit',
+      JSON.stringify({
+        state: 'MERGED',
+        url: 'https://github.com/org/repo/pull/470',
+        mergeCommit: { oid: 'mrg470' },
+      }),
+    );
+
+    const result = await prMergeGithub({ number: 470, merge_method: 'merge' });
+    expectOk(result);
+    expect(result.data.merge_method).toBe('direct_merge');
+    expect(result.data.merged).toBe(true);
+    const mergeCall = findCall('gh pr merge 470');
+    expect(mergeCall).toContain('--merge');
+    expect(mergeCall).not.toContain('--squash');
+    expect(mergeCall).not.toContain('--rebase');
+  });
+
+  test('#474 merge_method:rebase → --rebase flag, reports direct_rebase', async () => {
+    stubNoQueue();
+    onExec('gh pr merge 471 --rebase --delete-branch', '');
+    onExec(
+      'gh pr view 471 --json state,url,mergeCommit',
+      JSON.stringify({
+        state: 'MERGED',
+        url: 'https://github.com/org/repo/pull/471',
+        mergeCommit: { oid: 'reb471' },
+      }),
+    );
+
+    const result = await prMergeGithub({ number: 471, merge_method: 'rebase' });
+    expectOk(result);
+    expect(result.data.merge_method).toBe('direct_rebase');
+    const mergeCall = findCall('gh pr merge 471');
+    expect(mergeCall).toContain('--rebase');
+    expect(mergeCall).not.toContain('--squash');
+  });
+
+  test('#474 merge_method:rebase drops squash_message (gh rejects --body with --rebase)', async () => {
+    stubNoQueue();
+    onExec('gh pr merge 472 --rebase --delete-branch', '');
+    onExec(
+      'gh pr view 472 --json state,url,mergeCommit',
+      JSON.stringify({
+        state: 'MERGED',
+        url: 'https://github.com/org/repo/pull/472',
+        mergeCommit: { oid: 'reb472' },
+      }),
+    );
+
+    const result = await prMergeGithub({
+      number: 472,
+      merge_method: 'rebase',
+      squash_message: 'irrelevant for rebase',
+    });
+    expectOk(result);
+    const mergeCall = findCall('gh pr merge 472');
+    expect(mergeCall).not.toContain('--body');
+  });
+
+  test('#474 default (merge_method omitted) → --squash, reports direct_squash', async () => {
+    stubNoQueue();
+    onExec('gh pr merge 473 --squash --delete-branch', '');
+    onExec(
+      'gh pr view 473 --json state,url,mergeCommit',
+      JSON.stringify({
+        state: 'MERGED',
+        url: 'https://github.com/org/repo/pull/473',
+        mergeCommit: { oid: 'sq473' },
+      }),
+    );
+
+    const result = await prMergeGithub({ number: 473 });
+    expectOk(result);
+    expect(result.data.merge_method).toBe('direct_squash');
+    expect(findCall('gh pr merge 473')).toContain('--squash');
+  });
+
+  test('#474 enforced queue governs method — merge_method:merge still reports merge_queue', async () => {
+    stubEnforcedQueue();
+    onExec('gh pr merge 474 --merge --delete-branch --auto', '');
+    onExec(
+      'gh pr view 474 --json state,url,mergeCommit',
+      JSON.stringify({
+        state: 'OPEN',
+        url: 'https://github.com/org/repo/pull/474',
+        mergeCommit: null,
+      }),
+    );
+
+    const result = await prMergeGithub({ number: 474, merge_method: 'merge' });
+    expectOk(result);
+    // The queue's OWN configured method governs the enrolled PR — the reported
+    // method is merge_queue, NOT direct_merge (the #474 queue caveat).
+    expect(result.data.merge_method).toBe('merge_queue');
+    // The requested strategy flag is still forwarded to `gh pr merge --auto`.
+    const autoCall = findCall('gh pr merge 474');
+    expect(autoCall).toContain('--merge');
+    expect(autoCall).toContain('--auto');
+  });
+
   test('pr-merge-github — unrelated failure surfaces error, no GraphQL fallback', async () => {
     // gh fails for a non-queue reason (e.g., CI red, conflicts). The adapter
     // should NOT invoke GraphQL enqueuePullRequest fallback, just surface the error.

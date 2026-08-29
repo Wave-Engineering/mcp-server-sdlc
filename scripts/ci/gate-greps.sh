@@ -93,16 +93,21 @@ fi
 # excluded for free: they relay a thrown JS error via `error: err instanceof Error
 # ...`, not `result.error`, so the first grep never matches them.
 #
-# SCOPE — this is a HEURISTIC, not full class enforcement. It is keyed to the
-# dominant `result` variable name, and it is single-line. An AdapterResult bound
-# to another name (defRes, prResult, existing, created, …) or dropped across a
-# multi-line envelope is NOT caught here — a grep cannot distinguish an
-# AdapterResult (whose ok:false arm carries a required `code`) from a local result
-# type that legitimately has none (e.g. resolveArtifactsDir's {ok,error}). The
-# whole tree was swept clean of both shapes in #527; type-aware enforcement that a
-# grep cannot provide is tracked in #534. Do NOT read this gate's green as "the
-# class is closed" — it only guards the most likely recurrence (a new handler that
-# names the adapter result `result` and drops its code on one line).
+# SCOPE — this is a HEURISTIC first-pass, NOT the authoritative class check. It is
+# keyed to the dominant `result` variable name, and it is single-line. An
+# AdapterResult bound to another name (defRes, prResult, existing, created, …) or
+# dropped across a multi-line envelope is NOT caught here — a grep cannot
+# distinguish an AdapterResult (whose ok:false arm carries a required `code`) from
+# a local result type that legitimately has none (e.g. resolveArtifactsDir's
+# {ok,error}). The whole tree was swept clean of both shapes in #527.
+#
+# The authoritative, name-agnostic, type-aware enforcement now lives in
+# scripts/ci/check-adapter-error-code.ts (#534), wired into validate.sh right
+# after this script. That rule asks the TypeScript type checker whether the
+# ok:false relay operand is an AdapterResult and flags any drop regardless of
+# variable name or line shape — the class this grep can only approximate. This
+# grep is RETAINED as a cheap first-pass (no program build); do NOT read its
+# green as "the class is closed" — that guarantee is the #534 rule's job.
 if grep -nE "ok:[[:space:]]*false,[[:space:]]*error:[[:space:]]*result\.error" "${handlers_to_check[@]}" | grep -v "code:"; then
     echo ""
     echo "GATE FAIL [#527]: handler drops the adapter error 'code' on an ok:false envelope."

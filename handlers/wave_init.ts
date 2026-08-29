@@ -2,10 +2,10 @@
 // `getAdapter()`; plan/state helpers live in `lib/wave_init_plan.ts`.
 // Story 2.22 (#316).
 //
-// Atomicity guarantee (#378). The handler interleaves the kahuna bootstrap
-// around the `wave-status init` plan-persist call so a kahuna failure can
-// never leave a half-state where the plan is on disk but the kahuna branch
-// is missing from remote. Sequence:
+// Atomicity guarantee (#378, extended #406). The handler interleaves the
+// kahuna bootstrap around the `wave-status init` plan-persist call so a failure
+// at ANY step leaves only a half-state that a plain retry can recover — no
+// `--force`, no `extend: true`. Sequence:
 //
 //   1. Validate input (zod) and run extend-mode pre-scan against existing
 //      state.json (read-only — no mutation).
@@ -18,12 +18,19 @@
 //      set-kahuna-branch` (must run after step 3 — set-kahuna-branch
 //      requires state.json to exist).
 //
-// Failure semantics:
+// Failure semantics (every step is retry-safe — full atomicity):
 // - Step 2 fails → no plan persisted. Retry converges trivially.
-// - Step 3 fails → branch exists on remote, no state.json. Retry's step 2
+// - Step 3 fails → branch exists on remote, no plan on disk. Retry's step 2
 //   sees the existing branch and claims it as idempotent reuse (see the
 //   "recorded === null + branch present" path in `bootstrapKahunaBranchRemote`),
-//   then proceeds to retry step 3.
+//   then proceeds to run step 3.
+// - Step 4 fails → plan IS persisted AND branch is on remote, but state.json's
+//   kahuna_branch is still null (#406). A naive retry would re-enter step 2
+//   (claim the branch) then step 3 (`wave-status init` WITHOUT --extend),
+//   REINITIALIZING the persisted plan. The handler detects this half-state
+//   before step 3 — plan fully persisted + branch claimed via reuse + state
+//   unrecorded — and SKIPS step 3, jumping straight to step 4 to record the
+//   branch. The retry needs no `--force` or `extend: true`.
 import { execSync } from 'child_process';
 import { join } from 'path';
 import { z } from 'zod';
@@ -163,14 +170,43 @@ const waveInitHandler: HandlerDef = {
         kahunaPreviouslyRecorded = remote.previously_recorded;
       }
 
-      // ---- Step 3: persist plan to disk -----------------------------------
-      const planFile = writePlanFile(args.plan_json);
-      const extendFlag = args.extend ? ' --extend' : '';
-      const forceFlag = args.force ? ' --force' : '';
-      const repoFlag = args.repo ? ` --repo ${shellQuote(args.repo)}` : '';
-      execSync(`wave-status init${extendFlag}${forceFlag}${repoFlag} ${planFile}`, { cwd, encoding: 'utf8' });
+      // ---- Step-4-failure half-state resume (#406) ------------------------
+      // A prior run can fail at Step 4 (`set-kahuna-branch`) AFTER Steps 2 and
+      // 3 both succeeded: the plan is fully persisted (state.json +
+      // phases-waves.json on disk) AND the branch is on the remote, but
+      // state.json's kahuna_branch is still null. In that case Step 2 above
+      // just re-claimed the orphan branch via the reuse path — i.e. we neither
+      // created it (`!kahunaCreated`) nor found it already recorded in state
+      // (`!kahunaPreviouslyRecorded`). Re-running `wave-status init` (non-extend)
+      // would REINITIALIZE the persisted plan, so detect the half-state and skip
+      // Step 3, jumping straight to Step 4 to record the branch. Non-extend only:
+      // an --extend retry legitimately adds new waves and must run its init — and
+      // an explicit `--force` must REINITIALIZE, so it likewise bypasses the
+      // resume-skip: an operator (e.g. wave_campaign_precheck's `replace` recovery,
+      // #466) passing force:true wants the stale on-disk plan overwritten, not
+      // silently preserved. Omitting !args.force here downgrades force to a no-op.
+      let planAlreadyPersisted = false;
+      if (kahunaBranch !== undefined && !args.extend && !args.force && !kahunaCreated && !kahunaPreviouslyRecorded) {
+        const dir = await statusDir(cwd);
+        planAlreadyPersisted =
+          (await fileExists(join(dir, 'phases-waves.json'))) &&
+          (await fileExists(join(dir, 'state.json')));
+      }
 
-      const counts = countIssuesFromPlan(plan);
+      // ---- Step 3: persist plan to disk (skipped on a Step-4 resume) -------
+      if (!planAlreadyPersisted) {
+        const planFile = writePlanFile(args.plan_json);
+        const extendFlag = args.extend ? ' --extend' : '';
+        const forceFlag = args.force ? ' --force' : '';
+        const repoFlag = args.repo ? ` --repo ${shellQuote(args.repo)}` : '';
+        execSync(`wave-status init${extendFlag}${forceFlag}${repoFlag} ${planFile}`, { cwd, encoding: 'utf8' });
+      }
+
+      // A resume added nothing this call — the plan was persisted by the prior
+      // run — so report zero deltas; totals still reflect what is on disk.
+      const counts = planAlreadyPersisted
+        ? { phases_added: 0, waves_added: 0, issues_added: 0 }
+        : countIssuesFromPlan(plan);
       const totals = await readPhasesWavesTotals(cwd);
 
       // ---- Step 4: record kahuna branch in state.json ---------------------
@@ -188,7 +224,12 @@ const waveInitHandler: HandlerDef = {
         kahuna = { kahuna_branch: kahunaBranch, kahuna_created: kahunaCreated };
       }
 
-      return envelope({ ok: true, mode: args.extend ? 'extend' : 'init', ...counts, ...totals, ...(kahuna ?? {}) });
+      return envelope({
+        ok: true,
+        mode: args.extend ? 'extend' : 'init',
+        ...(planAlreadyPersisted ? { resumed: 'step4' } : {}),
+        ...counts, ...totals, ...(kahuna ?? {}),
+      });
     } catch (err) {
       return envelope({ ok: false, error: err instanceof Error ? err.message : String(err) });
     }

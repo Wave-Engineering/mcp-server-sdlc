@@ -19,6 +19,7 @@
  */
 
 import { execSync } from 'child_process';
+import { shellEscape } from '../shared/shell-escape.js';
 import {
   defaultDeps,
   runPollLoop,
@@ -40,8 +41,15 @@ function exec(cmd: string): string {
   return execSync(cmd, { encoding: 'utf8' }).trim();
 }
 
+// Defence-in-depth: shell-escape `repo` before it is concatenated into the
+// command string that `exec()` hands to `execSync`. `repoOptionalSchema` already
+// rejects shell metacharacters at the handler boundary, so this is not
+// exploitable through the normal path — but any future internal caller or
+// refactor that bypasses the schema must not open a shell-injection surface.
+// Mirrors the sibling fixes in #403/#407 (pr-merge-github.ts) and #408
+// (pr-merge-gitlab.ts). See #409.
 function repoFlag(repo: string | undefined): string {
-  return repo !== undefined ? ` --repo ${repo}` : '';
+  return repo !== undefined ? ` --repo ${shellEscape(repo)}` : '';
 }
 
 // One item from `gh pr view --json statusCheckRollup`. Comes in two flavors:

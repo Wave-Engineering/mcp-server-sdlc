@@ -89,6 +89,83 @@ describe('prMergeGitlab — subprocess boundary', () => {
     expect(execCalls().find((c) => c.includes('gh api graphql'))).toBeUndefined();
   });
 
+  // #474 — merge_method (squash | merge | rebase). A merge commit is glab's
+  // DEFAULT (no strategy flag); squash/rebase are explicit flags.
+  test('#474 merge_method:merge → no --squash/--rebase flag, reports direct_merge', async () => {
+    onExec('glab mr merge 460 --remove-source-branch --yes', '');
+    onExec(
+      'glab api projects/org%2Frepo/merge_requests/460',
+      JSON.stringify({
+        iid: 460,
+        state: 'merged',
+        source_branch: 'feature/mc',
+        target_branch: 'main',
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/460',
+        labels: [],
+        sha: 'head460aaaaa',
+        merge_commit_sha: 'mc460commit',
+      }),
+    );
+
+    const result = await prMergeGitlab({ number: 460, merge_method: 'merge', repo: 'org/repo' });
+    expectOk(result);
+    expect(result.data.merge_method).toBe('direct_merge');
+    expect(result.data.merged).toBe(true);
+    const mergeCall = findCall('glab mr merge 460');
+    expect(mergeCall).not.toContain('--squash');
+    expect(mergeCall).not.toContain('--rebase');
+  });
+
+  test('#474 merge_method:rebase → --rebase flag, reports direct_rebase', async () => {
+    onExec('glab mr merge 461 --rebase --remove-source-branch --yes', '');
+    onExec(
+      'glab api projects/org%2Frepo/merge_requests/461',
+      JSON.stringify({
+        iid: 461,
+        state: 'merged',
+        source_branch: 'feature/rb',
+        target_branch: 'main',
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/461',
+        labels: [],
+        sha: 'head461bbbbb',
+        merge_commit_sha: 'rb461commit',
+      }),
+    );
+
+    const result = await prMergeGitlab({ number: 461, merge_method: 'rebase', repo: 'org/repo' });
+    expectOk(result);
+    expect(result.data.merge_method).toBe('direct_rebase');
+    const mergeCall = findCall('glab mr merge 461');
+    expect(mergeCall).toContain('--rebase');
+    expect(mergeCall).not.toContain('--squash');
+  });
+
+  test('#474 merge_method:merge drops --squash-message (squash-specific)', async () => {
+    onExec('glab mr merge 462 --remove-source-branch --yes', '');
+    onExec(
+      'glab api projects/org%2Frepo/merge_requests/462',
+      JSON.stringify({
+        iid: 462,
+        state: 'merged',
+        source_branch: 'feature/mc2',
+        target_branch: 'main',
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/462',
+        labels: [],
+        sha: 'head462ccccc',
+        merge_commit_sha: 'mc462commit',
+      }),
+    );
+
+    const result = await prMergeGitlab({
+      number: 462,
+      merge_method: 'merge',
+      squash_message: 'should be dropped',
+      repo: 'org/repo',
+    });
+    expectOk(result);
+    expect(findCall('glab mr merge 462')).not.toContain('--squash-message');
+  });
+
   test('skip_train is silently dropped — merge proceeds with warning (#423)', async () => {
     onExec('glab mr merge 9 --squash --remove-source-branch --yes', '');
     onExec(
@@ -795,6 +872,70 @@ describe('#488 — allow_gitlab_enrollment opts into --auto-merge=true', () => {
     });
     expectOk(result);
 
+    expect(result.data.merged).toBe(true);
+    expect(result.data.merge_method).toBe('direct_squash');
+  });
+});
+
+// ===========================================================================
+// #496 — post-condition guard: never report a successful merge the server
+// does not confirm as `merged`.
+// ===========================================================================
+//
+// The deterministic path passes `--auto-merge=false`, so today a merge that
+// exits 0 really merges. But nothing DETECTS the bad state if that flag ever
+// stops taking effect (a future glab renaming/dropping it — `--auto-merge` is
+// itself a rename of `--when-pipeline-succeeds`): the MR would be ENROLLED, not
+// merged, while glab still prints `✓ Merged`. Without enrollment requested, the
+// adapter must refuse rather than return `direct_squash` for an unmerged MR.
+describe('#496 — merge post-condition guard', () => {
+  test('merge command exits 0 but MR is still `opened` (no enrollment) → gitlab_merge_not_confirmed', async () => {
+    // glab reports success...
+    onExec('glab mr merge 70 --squash --remove-source-branch --yes', '');
+    // ...but the server's own state never reports `merged` — the enrolled-not-
+    // merged shape. `mergeable` (not a blocking detailed_merge_status) proves
+    // the refusal is driven by `state`, not by a block classification.
+    onExec(
+      'glab api projects/org%2Frepo/merge_requests/70',
+      JSON.stringify({
+        iid: 70,
+        state: 'opened',
+        detailed_merge_status: 'mergeable',
+        source_branch: 'feature/enrolled',
+        target_branch: 'main',
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/70',
+        labels: [],
+        sha: 'head70aaaaaa',
+        merge_commit_sha: null,
+      }),
+    );
+
+    const result = await prMergeGitlab({ number: 70, repo: 'org/repo' });
+    expectErr(result);
+    // The load-bearing assertion: NOT a `direct_squash` success envelope.
+    expect(result.code).toBe('gitlab_merge_not_confirmed');
+    expect(result.error).toContain('does not report it as `merged`');
+  }, 10000);
+
+  test('merge command exits 0 and MR reports `merged` → unchanged success (regression guard)', async () => {
+    onExec('glab mr merge 71 --squash --remove-source-branch --yes', '');
+    onExec(
+      'glab api projects/org%2Frepo/merge_requests/71',
+      JSON.stringify({
+        iid: 71,
+        state: 'merged',
+        detailed_merge_status: 'mergeable',
+        source_branch: 'feature/ok',
+        target_branch: 'main',
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/71',
+        labels: [],
+        sha: 'head71aaaaaa',
+        merge_commit_sha: 'merged71',
+      }),
+    );
+
+    const result = await prMergeGitlab({ number: 71, repo: 'org/repo' });
+    expectOk(result);
     expect(result.data.merged).toBe(true);
     expect(result.data.merge_method).toBe('direct_squash');
   });

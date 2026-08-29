@@ -2,7 +2,8 @@ import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 
 // This handler uses Bun.file() for local reads and does not shell out, so
 // tests operate against real temp files in /tmp. No module mocks are needed
-// (and per lesson_mcp_gotchas.md we avoid partial mock.module('fs') anyway).
+// (and per lesson_mcp_gotchas.md we avoid a partial `fs` module mock anyway;
+// the shared surface, when a file does need it, is lib/test-support/mock-fs.ts, #456).
 
 const { default: handler } = await import('../handlers/devspec_finalize.ts');
 

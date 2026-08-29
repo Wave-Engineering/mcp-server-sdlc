@@ -38,13 +38,32 @@ function captureHelp(cmd: string): string | null {
   }
 }
 
-// matchOrSkip: assert the pattern matches, but skip the assertion if help
-// capture returned null (environment can't capture CLI help output). This
-// keeps the test useful in dev environments without blocking CI on a
-// known-empty environment quirk.
+// #496: distinguish "did not run" from "ran and passed". A silent skip that
+// leaves the test green is indistinguishable from a real pass — the exact
+// "a guard that skips silently cannot tell you it did not run" failure class as
+// #491/#492/#494. So a skip must be OBSERVABLE, and in CI it must FAIL:
+// locally, a missing `gh`/`glab` (or an environment that can't capture help)
+// is a convenience skip; in CI it is a configuration error — the whole point of
+// this suite is catching a CLI that rejects a flag we depend on, and it cannot
+// do that while quietly no-op'ing.
+function isCI(): boolean {
+  return process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true';
+}
+
+// matchOrSkip: assert the pattern matches. If help capture returned null
+// (environment couldn't capture CLI help output) FAIL in CI — an unverifiable
+// flag-shape guard there is a config error, not a pass — and emit an observable
+// skip locally.
 function matchOrSkip(help: string | null, pattern: RegExp): void {
   if (help === null) {
-    console.log('  ℹ skipping flag check — CLI help capture returned empty');
+    if (isCI()) {
+      throw new Error(
+        `CLI help capture returned empty in CI — cannot verify flag ${String(pattern)}. ` +
+          `A flag-shape check that cannot run in CI is a configuration error: a silent skip ` +
+          `is indistinguishable from a check that ran and passed.`,
+      );
+    }
+    console.log(`  ⚠ NOT RUN (skipped locally) — help capture empty; cannot verify ${String(pattern)}`);
     return;
   }
   expect(help).toMatch(pattern);
@@ -52,7 +71,14 @@ function matchOrSkip(help: string | null, pattern: RegExp): void {
 
 function notMatchOrSkip(help: string | null, pattern: RegExp): void {
   if (help === null) {
-    console.log('  ℹ skipping negative flag check — CLI help capture returned empty');
+    if (isCI()) {
+      throw new Error(
+        `CLI help capture returned empty in CI — cannot verify absence of ${String(pattern)}. ` +
+          `A flag-shape check that cannot run in CI is a configuration error: a silent skip ` +
+          `is indistinguishable from a check that ran and passed.`,
+      );
+    }
+    console.log(`  ⚠ NOT RUN (skipped locally) — help capture empty; cannot verify absence of ${String(pattern)}`);
     return;
   }
   expect(help).not.toMatch(pattern);
@@ -82,7 +108,19 @@ function hasGlab(): boolean {
 
 describe('GitHub CLI flag shapes', () => {
   if (!hasGh()) {
-    test.skip('gh not installed — skipping GitHub integration tests', () => {});
+    // #496: gh ships on the default CI image (ubuntu-latest), so its absence
+    // there is a configuration error rather than a convenience — fail loudly so
+    // a guard that never ran is not reported as a pass. Locally it is a skip.
+    if (isCI()) {
+      test('gh must be installed in CI — GitHub flag-shape guards cannot run without it', () => {
+        throw new Error(
+          'gh is not installed in CI: GitHub flag-shape guards did NOT run. This is a ' +
+            'configuration error, not a skip — a guard that cannot run cannot catch a broken flag.',
+        );
+      });
+    } else {
+      test.skip('gh not installed — GitHub flag-shape guards NOT RUN (local convenience skip)', () => {});
+    }
     return;
   }
 
@@ -156,6 +194,16 @@ describe('GitHub CLI flag shapes', () => {
     matchOrSkip(help, /--delete-branch/);
   });
 
+  test('gh pr merge accepts --merge and --rebase strategy flags (#474)', () => {
+    // Used by pr_merge / pr_merge_wait via pr-merge-github when merge_method is
+    // 'merge' or 'rebase'. Unit tests assert against a MOCKED argv string and
+    // would stay green against a gh that rejects these flags, so verify the
+    // real CLI accepts them.
+    const help = captureHelp('gh pr merge --help');
+    matchOrSkip(help, /--merge/);
+    matchOrSkip(help, /--rebase/);
+  });
+
   test('gh run list accepts --commit, --json flags', () => {
     // Used by ci_wait_run handler (via ci-runs-for-branch-github adapter)
     const help = captureHelp('gh run list --help');
@@ -174,7 +222,17 @@ describe('GitHub CLI flag shapes', () => {
 
 describe('GitLab CLI flag shapes', () => {
   if (!hasGlab()) {
-    test.skip('glab not installed — skipping GitLab integration tests', () => {});
+    // #496: glab is NOT installed on the default CI image, so these flag-shape
+    // guards do not run there today — a known gap recorded in
+    // docs/adapters/README.md (§10, "CLI toolchain"). This skip is OBSERVABLE
+    // (bun reports it as skipped, distinct from a pass) rather than a silent
+    // green. To make the guard actually run in CI — the guard whose whole
+    // purpose is catching a glab that rejects --sha/--auto-merge (#486) — the
+    // CI workflow must install glab; see §10 for the recorded minimum version.
+    test.skip(
+      'glab not installed — GitLab flag-shape guards NOT RUN (see docs/adapters/README.md §10)',
+      () => {},
+    );
     return;
   }
 
@@ -219,6 +277,15 @@ describe('GitLab CLI flag shapes', () => {
     const help = captureHelp('glab mr merge --help');
     matchOrSkip(help, /--yes/);
     matchOrSkip(help, /--remove-source-branch/);
+  });
+
+  test('glab mr merge accepts --squash and --rebase strategy flags (#474)', () => {
+    // Used by pr_merge / pr_merge_wait via pr-merge-gitlab when merge_method is
+    // 'squash' or 'rebase' ('merge' uses glab's default = no flag). Unit tests
+    // assert against a MOCKED argv string, so verify the real CLI accepts them.
+    const help = captureHelp('glab mr merge --help');
+    matchOrSkip(help, /--squash/);
+    matchOrSkip(help, /--rebase/);
   });
 
   test('glab mr merge accepts --sha and --auto-merge flags (#486)', () => {
@@ -268,7 +335,12 @@ describe('GitLab CLI flag shapes', () => {
 
 describe('API-based operations (URL encoding)', () => {
   if (!hasGlab()) {
-    test.skip('glab not installed — skipping API tests', () => {});
+    // #496: observable skip — see the GitLab flag-shapes block and
+    // docs/adapters/README.md §10. Not a silent green.
+    test.skip(
+      'glab not installed — GitLab API-shape guards NOT RUN (see docs/adapters/README.md §10)',
+      () => {},
+    );
     return;
   }
 
