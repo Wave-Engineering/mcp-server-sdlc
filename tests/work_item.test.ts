@@ -228,3 +228,158 @@ describe('work_item handler', () => {
     expect(String(data.error)).toContain('gh issue create failed');
   });
 });
+
+// ---- #487: body-grammar warning at creation (warn, never reject) ----
+//
+// work_item is the single choke point every issue passes through, so it runs
+// the spec_validate_structure grammar against the supplied body and surfaces
+// misses in an additive `body_grammar` field. The issue is ALWAYS created; the
+// caller just learns immediately (while the fix-context is still loaded) instead
+// of at the /precheck gate. These tests own the warn-not-reject contract.
+
+describe('work_item — body-grammar warning (#487)', () => {
+  function mockCreate(number = 42) {
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
+    onExec('gh issue create', `https://github.com/org/repo/issues/${number}\n`);
+  }
+
+  interface BodyGrammar {
+    valid: boolean;
+    missing_sections: string[];
+    accepted_headings?: Record<string, string[]>;
+  }
+
+  const VALID_BODY =
+    '## Changes\nc\n## Tests\nt\n## Acceptance Criteria\n- [ ] ok\n';
+
+  test('body missing ## Tests → issue created, body_grammar flags tests', async () => {
+    mockCreate(42);
+    const result = await handler.execute({
+      type: 'chore',
+      title: 'Missing tests',
+      body: '## Changes\nc\n## Acceptance Criteria\n- [ ] ok\n',
+    });
+    const data = parseResult(result.content);
+    // Creation still succeeds — warn, never reject.
+    expect(data.ok).toBe(true);
+    expect(data.number).toBe(42);
+
+    const bg = data.body_grammar as BodyGrammar;
+    expect(bg.valid).toBe(false);
+    expect(bg.missing_sections).toEqual(['tests']);
+    expect(bg.accepted_headings?.tests).toEqual(
+      expect.arrayContaining(['## Tests', '## Test Procedures']),
+    );
+  });
+
+  test('accepted aliases (## Implementation Steps / ## Test Procedures) → valid, no warning', async () => {
+    mockCreate(43);
+    const result = await handler.execute({
+      type: 'story',
+      title: 'Alias body',
+      body: '## Implementation Steps\n1. do it\n## Test Procedures\n- unit\n## Acceptance Criteria\n- [ ] ok\n',
+    });
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(true);
+    expect(data.number).toBe(43);
+
+    const bg = data.body_grammar as BodyGrammar;
+    expect(bg.valid).toBe(true);
+    expect(bg.missing_sections).toEqual([]);
+    // "No warning": accepted_headings is only emitted when something is missing.
+    expect(bg.accepted_headings).toBeUndefined();
+  });
+
+  // All near-miss headings observed in the field (AC #5): reasonable-looking
+  // headings a careful writer picks unprompted, that simply aren't in the alias
+  // set. Each must be flagged, and the response must name the accepted set.
+  const NEAR_MISSES: Array<{ heading: string; body: string; missing: string; alias: string }> = [
+    // babelfish (cc-workflow#915): used `## Fix` for the changes section.
+    {
+      heading: '## Fix',
+      body: '## Fix\nthe thing\n## Tests\nt\n## Acceptance Criteria\n- [ ] ok\n',
+      missing: 'changes',
+      alias: '## Changes',
+    },
+    // polyjuice (mcp-server-discord-watcher#28): used `## Proposed fix` for changes.
+    {
+      heading: '## Proposed fix',
+      body: '## Proposed fix\nthe thing\n## Tests\nt\n## Acceptance Criteria\n- [ ] ok\n',
+      missing: 'changes',
+      alias: '## Changes',
+    },
+    // polyjuice (mcp-server-discord-watcher#28): used `## Test Plan` for tests.
+    {
+      heading: '## Test Plan',
+      body: '## Changes\nc\n## Test Plan\n- run it\n## Acceptance Criteria\n- [ ] ok\n',
+      missing: 'tests',
+      alias: '## Tests',
+    },
+  ];
+
+  for (const { heading, body, missing, alias } of NEAR_MISSES) {
+    test(`near-miss heading ${heading} → flagged with accepted_headings present`, async () => {
+      mockCreate(50);
+      const result = await handler.execute({ type: 'chore', title: `Uses ${heading}`, body });
+      const data = parseResult(result.content);
+      expect(data.ok).toBe(true);
+      expect(data.number).toBe(50);
+
+      const bg = data.body_grammar as BodyGrammar;
+      expect(bg.valid).toBe(false);
+      expect(bg.missing_sections).toContain(missing);
+      expect(bg.accepted_headings).toBeDefined();
+      expect(bg.accepted_headings?.[missing]).toEqual(expect.arrayContaining([alias]));
+    });
+  }
+
+  test('type carrying no structured body (pr) → no body_grammar, no behavior change', async () => {
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
+    onExec('gh pr create', 'https://github.com/org/repo/pull/77\n');
+    const result = await handler.execute({
+      type: 'pr',
+      title: 'A PR',
+      head_branch: 'feature/1-foo',
+      base_branch: 'main',
+      // A PR body uses Summary/Changes/Linked Issues/Test Plan — not the issue grammar.
+      body: '## Summary\nx\n## Changes\ny\n',
+    });
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(true);
+    expect(data.number).toBe(77);
+    expect(data.body_grammar).toBeUndefined();
+  });
+
+  test('issue type with no body → no body_grammar (nothing to validate)', async () => {
+    mockCreate(88);
+    const result = await handler.execute({ type: 'chore', title: 'Bodyless chore' });
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(true);
+    expect(data.number).toBe(88);
+    expect(data.body_grammar).toBeUndefined();
+  });
+
+  test('fully valid body → body_grammar present with valid:true, no accepted_headings', async () => {
+    mockCreate(90);
+    const result = await handler.execute({ type: 'feature', title: 'Good body', body: VALID_BODY });
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(true);
+    const bg = data.body_grammar as BodyGrammar;
+    expect(bg.valid).toBe(true);
+    expect(bg.accepted_headings).toBeUndefined();
+  });
+
+  test('additive only — existing number/url envelope keys are unchanged', async () => {
+    mockCreate(91);
+    const result = await handler.execute({
+      type: 'bug',
+      title: 'Backcompat',
+      body: '## Changes\nc\n',
+    });
+    const data = parseResult(result.content);
+    // Pre-#487 callers read these; body_grammar is purely additive alongside them.
+    expect(data.ok).toBe(true);
+    expect(data.number).toBe(91);
+    expect(data.url).toBe('https://github.com/org/repo/issues/91');
+  });
+});

@@ -14,6 +14,14 @@ import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { getAdapter } from '../lib/adapters/index.js';
 import { repoOptionalSchema } from '../lib/schemas/repo.js';
+import { validateBodyStructure } from '../lib/spec_parser';
+
+// Issue types whose body follows the `## Changes` / `## Tests` /
+// `## Acceptance Criteria` spec grammar. `pr`/`mr` use a different body shape
+// (Summary/Changes/Linked Issues/Test Plan) and are deliberately excluded —
+// running the issue grammar against a PR body would emit spurious warnings.
+// See #487 and docs/issue-body-grammar.md.
+const BODY_GRAMMAR_TYPES = new Set(['plan', 'epic', 'story', 'feature', 'bug', 'chore', 'doc']);
 
 const inputSchema = z.object({
   // `doc` is the canonical singular type (→ type::doc), consistent with every
@@ -61,7 +69,24 @@ const workItemHandler: HandlerDef = {
       return envelope({ ok: false, platform_unsupported: true, error: result.hint });
     }
     if (!result.ok) return envelope({ ok: false, code: result.code, error: result.error });
-    return envelope({ ok: true, ...result.data });
+
+    // Body-grammar warning (#487): the issue is already created — never reject
+    // on grammar. When a body-bearing issue type ships a non-empty body, surface
+    // any missing spec sections (and the headings that would satisfy them) in an
+    // additive `body_grammar` field, so the caller learns while the context to
+    // amend is still loaded rather than at the /precheck gate. Absent/empty body
+    // and non-spec types (pr/mr) get no field — no warning, no behavior change.
+    const payload: Record<string, unknown> = { ok: true, ...result.data };
+    if (BODY_GRAMMAR_TYPES.has(type) && typeof args.body === 'string' && args.body.trim().length > 0) {
+      const grammar = validateBodyStructure(args.body);
+      const bodyGrammar: Record<string, unknown> = {
+        valid: grammar.valid,
+        missing_sections: grammar.missing_sections,
+      };
+      if (grammar.missing_sections.length > 0) bodyGrammar.accepted_headings = grammar.accepted_headings;
+      payload.body_grammar = bodyGrammar;
+    }
+    return envelope(payload);
   },
 };
 
