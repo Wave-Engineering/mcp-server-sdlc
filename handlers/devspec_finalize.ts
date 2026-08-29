@@ -9,6 +9,7 @@ import {
   stripMdDecoration,
   hasPath,
   hasNAOptOut,
+  looksLikeFailedNAOptOut,
 } from '../lib/devspec-parser.js';
 import { runArgv } from '../lib/shared/error-norm.js';
 import { PROTECTED_BRANCH_PATTERN } from '../lib/shared/protected-branch.js';
@@ -57,6 +58,22 @@ interface CheckResult {
   pass: boolean;
   evidence: string;
 }
+
+// -----------------------------------------------------------------------------
+// Enriched §5.A failure-evidence guidance (#440)
+//
+// These strings enrich the evidence on the strictness quirks whose bare
+// messages did not say what shape the parser wanted. Message-only — the
+// pass/fail logic is untouched.
+// -----------------------------------------------------------------------------
+
+/** The "because" trip-wire on the tier1 N/A opt-out form. */
+const NA_BECAUSE_GUIDANCE =
+  'N/A opt-out must include the literal word "because" after the dash (e.g. "N/A — because <reason>")';
+
+/** MV-XX items in §6.4 require an explicit Tier 2 manual-test row, not prose. */
+const TIER2_ROW_GUIDANCE =
+  '§6.4 declares MV-XX items but no Tier 2 row with "manual" + "test/verification/procedure" was found in the Deliverables Manifest — folding into Tier 1 prose does not satisfy this; add an explicit Tier 2 row';
 
 // extractSection now imported from devspec-parser.js
 
@@ -132,13 +149,18 @@ function checkTier1Paths(rows: ManifestRow[], hasSection5A: boolean): CheckResul
     return {
       check: 'tier1_paths',
       pass: false,
-      evidence: 'no Tier 1 rows found in Deliverables Manifest',
+      evidence:
+        'no Tier 1 rows found — the Deliverables Manifest table must have a "Tier" column whose value is "1" for each Tier 1 deliverable',
     };
   }
   const missing: string[] = [];
+  let sawFailedNAOptOut = false;
   for (const row of tier1) {
     if (!hasPath(row) && !hasNAOptOut(row)) {
       missing.push(row.id || row.deliverable || '(unnamed row)');
+      // A row that reads as an N/A opt-out attempt yet fell through here did so
+      // because it omitted the literal "because" — surface that trip-wire.
+      if (looksLikeFailedNAOptOut(row)) sawFailedNAOptOut = true;
     }
   }
   if (missing.length === 0) {
@@ -148,10 +170,11 @@ function checkTier1Paths(rows: ManifestRow[], hasSection5A: boolean): CheckResul
       evidence: `${tier1.length}/${tier1.length} Tier 1 rows have paths or N/A`,
     };
   }
+  const naHint = sawFailedNAOptOut ? ` — ${NA_BECAUSE_GUIDANCE}` : '';
   return {
     check: 'tier1_paths',
     pass: false,
-    evidence: `${tier1.length - missing.length}/${tier1.length} Tier 1 rows have paths or N/A; missing: ${missing.join(', ')}`,
+    evidence: `${tier1.length - missing.length}/${tier1.length} Tier 1 rows have paths or N/A; missing: ${missing.join(', ')}${naHint}`,
   };
 }
 
@@ -190,7 +213,7 @@ function checkTier2Triggers(rows: ManifestRow[], mvIds: string[]): CheckResult {
   return {
     check: 'tier2_triggers',
     pass: false,
-    evidence: `missing manifest row(s) for fired trigger(s): ${unsatisfied.map(t => t.name).join('; ')}`,
+    evidence: `${TIER2_ROW_GUIDANCE} (unsatisfied: ${unsatisfied.map(t => t.name).join('; ')})`,
   };
 }
 
@@ -248,7 +271,7 @@ function checkMvCoverage(rows: ManifestRow[], mvIds: string[]): CheckResult {
   return {
     check: 'mv_coverage',
     pass: false,
-    evidence: `${mvIds.join(', ')} in Section 6.4 but no Manual Test Procedures row in manifest`,
+    evidence: `${TIER2_ROW_GUIDANCE} (declared: ${mvIds.join(', ')})`,
   };
 }
 
