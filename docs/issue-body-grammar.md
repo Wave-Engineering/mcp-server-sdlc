@@ -52,6 +52,28 @@ object naming the H2 forms that would have satisfied each missing key.
 |---------------|----------------------|
 | `dependencies` | `## Dependencies` |
 
+## work_item body_grammar (#487)
+
+`work_item` is the single choke point every issue passes through, so at creation
+it runs the same required-section grammar as `spec_validate_structure` (above)
+against the supplied body and returns the result in an additive `body_grammar`
+field. The issue is **always created** — this warns, it never rejects — so the
+caller learns of missing spec sections while the authoring context is still
+loaded, rather than later at the `/precheck` gate.
+
+`body_grammar` is emitted only when BOTH hold:
+
+- the issue **type** is body-bearing — `plan`, `epic`, `story`, `feature`, `bug`,
+  `chore`, `doc`, `fix` (the `BODY_GRAMMAR_TYPES` set). `docs` is normalized to
+  `doc` first. Cross-platform PR/MR types (`pr`, `mr`) are excluded — they use the
+  PR-body shape (Summary / Changes / Linked Issues / Test Plan), not this grammar.
+- a non-empty `body` was supplied.
+
+The field mirrors `spec_validate_structure`: `{ valid, missing_sections }`, plus
+`accepted_headings` (the H2 forms that would satisfy each missing key) only when
+something is missing. An absent/empty body, or a non-body-bearing type, yields no
+field — no warning, no behavior change.
+
 ## epic_sub_issues
 
 Extracts ordered sub-issue references from an epic body.
