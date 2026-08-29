@@ -37,13 +37,27 @@ gh project item-add <project-number> --owner <owner> --url <issue-url>
 
 When work is done, run `/precheck` immediately — don't ask permission, just run it. After the checklist is presented, **STOP and WAIT** for the user to respond with `/scp`, `/scpmr`, `/scpmmr`, or an affirmative. No autonomous commits. No diff presentation. If in doubt, ask.
 
-**AUTO-RUN — do NOT ask.** When implementation is complete, invoke `/precheck` in the SAME response. The checklist is the approval gate — asking permission to START the gate is a redundant pause that wastes the user's time. If you catch yourself typing any of these, delete it and run the skill instead:
-- ~~"Shall I run precheck?"~~
-- ~~"Ready for precheck?"~~
-- ~~"Would you like me to run /precheck?"~~
-- ~~"Let me know when you'd like to run precheck"~~
+**Never write phrases like "shall I run /precheck?", "ready for precheck?", "let me know when to run /precheck." Asking is itself a violation of this rule. The checklist that `/precheck` presents is the approval gate; the *start* of `/precheck` is unilateral. If you catch yourself drafting one of those questions, that's the moment to invoke `/precheck` instead — the intent is identical, the wording is the bug.**
 
 The full procedure lives in `/precheck` (`skills/precheck/SKILL.md`).
+
+### Exception: Kahuna Sandbox Auto-Approval
+
+The "explicit user approval" requirement is **suspended** — and only suspended — when **both** of the following hold:
+
+1. The Flight Agent is operating inside a **Kahuna sandbox** — i.e. the current branch's base ref matches the regex `^kahuna/[0-9]+-` (a per-wave integration branch, not `main`).
+2. The full `/precheck` checklist has passed end-to-end: validation, code-reviewer (no unresolved high+ findings), trivy dependency scan, plus the Discord `#precheck` post and `vox` announcement.
+
+When both conditions are met, `/precheck` emits the sentinel line `[AUTO-APPROVED: kahuna sandbox]` and invokes `/scpmmr` directly — no human STOP. The exception is enforced **by `/precheck`'s own detection logic, not by agent discretion**: an agent on a `main`-targeted feature branch never qualifies, regardless of context. Outside the sandbox the original rule is unchanged — checklist, STOP, wait for `/scp` / `/scpmr` / `/scpmmr` / affirmative.
+
+**Platform prerequisite** (load-bearing — without it, the auto-approval is unsafe):
+
+- **GitHub:** branch-protection rules / rulesets scoped to the `kahuna/*` pattern must permit the Flight Agent's auto-merge path while leaving `main`'s required reviews intact. Standard Wave-Engineering merge-config policy provisions this.
+- **GitLab:** a `kahuna-zero-approvals` MR approval rule with `approvals_required: 0`, scoped via `protected_branch_ids` to the protected `kahuna/*` pattern, must exist. **Must NOT use `merge_request_approval_settings`** (that endpoint is project-wide and would unprotect main). Standard deployment: `gl-settings kahuna-sandbox <project-url>` (composite operation from `gl-settings#27`).
+
+If the platform-specific config is not in place, `/precheck` emits a `[WARNING: kahuna sandbox — ... not detected]` checklist line; the wave Orchestrator and operator are the final safety net for missing prerequisites.
+
+Authoritative rule: Dev Spec §5.2.1. Mechanical detection + sentinel + per-platform prerequisite check: `skills/precheck/SKILL.md` ("Sandbox Auto-Approval (KAHUNA Flight Agents)").
 
 ---
 
@@ -69,6 +83,31 @@ Every issue MUST be wave-pattern quality: detailed enough that a spec-driven age
 
 ---
 
+## MANDATORY: WAVE_AXIOMS
+
+**Read `WAVE_AXIOMS.md` before any wave-pattern work** — resolve it from the repo root, or the kit-installed `~/.claude/WAVE_AXIOMS.md` in repos that don't carry it (the same resolution applies to the `docs/…` pointers elsewhere in this file: repo root, else `~/.claude/docs/…`). The binding axioms — violation is a bug. Disagreement is a reason to PR the file, never to override in the moment.
+
+---
+
+## MANDATORY: Default to Action — never stop on a question you can answer
+
+**If you know what needs doing and it is safe, understood, and in your lane, DO IT. Do not stop to ask.** Stopping is not the safe default — it blocks every agent and human downstream and spends the user's attention, the scarcest resource. Acting on a reversible, understood step is cheap; a needless halt is expensive. This is enforced, not just advised: the `stop-action-bias-detector.sh` Stop hook blocks a turn that ends by asking permission to do something you already know how to do.
+
+**Before you stop, you must be able to name a specific, current reason.** A legitimate stop is exactly one of:
+
+- a genuinely NEW irreversible or production-affecting action the user has **not already agreed to** (per the ABSOLUTE prod rule), or
+- a real architectural / design fork where the user's choice changes what you build.
+
+If you cannot name one of those, you do not stop — you act, then report what you did.
+
+**Agreement persists.** Once the user has directed or agreed to a line of work, you do not re-confirm each step of it. Completing directed work — including a fleet deploy you were told to do — is not a new gate. Re-asking is the failure, not the safety.
+
+**The tell.** The moment you draft "want me to…", "should I…", "shall I…", "ready for me to…", or present a known next step as a question — that is the signal to delete the question and take the step. The checklist a gate already presents (e.g. `/precheck`) is the approval surface; narrating a second one is stalling.
+
+Rationale memories: `principle_user_attention_is_the_cost`, `principle_cost_asymmetry_continue_vs_exit`, `feedback_bj_throughput_dont_wait`.
+
+---
+
 ## Branching Strategy
 
 Trunk-based flow. Always branch from `main`: `git checkout main && git pull && git checkout -b <type>/<N>-description`. PR/MRs target `main`.
@@ -82,6 +121,12 @@ Canonical `<type>` prefixes are singular (the prefix names the topic, not a file
 ## Code Standards
 
 Discover the project's tooling rather than assuming a stack. Check in order: `Makefile` targets (`lint`, `format`, `test`), config files (`pyproject.toml`, `package.json`, `Cargo.toml`, `go.mod`, etc.), then `scripts/ci/`. Use whatever the project provides; don't introduce new formatters or linters.
+
+---
+
+## Infrastructure Verification: Config Existence ≠ Config Works
+
+When changing GitHub Actions workflows, branch protection, rulesets, or any CI/CD plumbing: verifying the configuration is in place (API returns the ID, it is active, required checks are listed) is **necessary but not sufficient**. The contract is end-to-end behavior — open a throwaway **red** PR and confirm it is BLOCKED, and a **green** one and confirm it merges. A gate that blocks everything is as broken as one that blocks nothing; only the pair proves it. The 2026-04-07 outage (postmortem #299) is the canonical example: 6 repos had correctly-configured rulesets that silently broke every PR for hours, because a workflow producing a required check was never invoked and the check therefore never reported. Runbook: `docs/operations/branch-protection-checklist.md`.
 
 ---
 
@@ -147,6 +192,8 @@ On session start, run `/engage` to detect platform, resolve identity, load conte
 
 If the session was started with `--channels`, a Discord watcher will push notifications. See `docs/discord-watcher.md` for the addressing convention, signature format, and echo-filter rules.
 
+The MCP fleet writes a unified structured-event log to `~/.claude/logs/mcp.jsonl`. Rotation policy and operational commands: `docs/operations/log-rotation.md`.
+
 ---
 
 ## MANDATORY: Post-Compaction Rules Confirmation
@@ -190,6 +237,6 @@ Two layers: **Dev-Team** (persisted here, per-project) and **Dev-Name/Dev-Avatar
 
 ### Reading Identity
 
-Identity files are keyed by md5 hash of the project root directory (`/tmp/claude-agent-<dir_hash>.json`). Any skill or behavior that needs agent identity should resolve this file. The full pick procedure lives in `/name` (`skills/name/SKILL.md`).
+The canonical identity file is `<project_root>/.claude/agent-identity.json` — reboot-durable, gitignored, no md5 keying. Any skill or behavior that needs agent identity should resolve this path, with a read fallback to the legacy `/tmp/claude-agent-<md5(project_root)>.json` while the fleet cycles (transition window). The full pick procedure lives in `/name` (`skills/name/SKILL.md`).
 
 Dev-Team: cc-workflow
