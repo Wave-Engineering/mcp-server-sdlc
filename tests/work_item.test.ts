@@ -100,18 +100,16 @@ describe('work_item handler', () => {
     expect(call).not.toContain('type::docs'); // the plural myth is never emitted
   });
 
-  test('github — transitional type:docs normalizes to type::doc, never type::docs (#380/#540)', async () => {
-    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
-    onExec('gh issue create', 'https://github.com/org/repo/issues/9\n');
-
-    // The `docs` string is still accepted (cc-workflow /issue skill still emits
-    // it) but must resolve to the canonical singular label, not create type::docs.
+  test('github — type:docs is now REJECTED (transitional alias removed, #540)', async () => {
+    // The `docs` alias was retired once cc-workflow's /issue skill (cc-workflow#1191)
+    // began emitting `doc` directly. `docs` is no longer in the type enum, so it
+    // fails schema validation rather than normalizing — and never reaches the CLI.
     const result = await handler.execute({ type: 'docs', title: 'Plural input' });
-    expect(parseResult(result.content).ok).toBe(true);
-
-    const call = execCalls().find((c) => unquote(c).includes('gh issue create')) ?? '';
-    expect(call).toContain("'--label' 'type::doc'");
-    expect(call).not.toContain('type::docs');
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(false);
+    expect(typeof data.error).toBe('string');
+    // No issue-create was attempted — rejected before dispatch.
+    expect(execCalls().some((c) => unquote(c).includes('gh issue create'))).toBe(false);
   });
 
   // ---- github: PR ----
