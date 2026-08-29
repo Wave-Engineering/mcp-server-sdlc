@@ -180,9 +180,13 @@ const waveInitHandler: HandlerDef = {
       // (`!kahunaPreviouslyRecorded`). Re-running `wave-status init` (non-extend)
       // would REINITIALIZE the persisted plan, so detect the half-state and skip
       // Step 3, jumping straight to Step 4 to record the branch. Non-extend only:
-      // an --extend retry legitimately adds new waves and must run its init.
+      // an --extend retry legitimately adds new waves and must run its init — and
+      // an explicit `--force` must REINITIALIZE, so it likewise bypasses the
+      // resume-skip: an operator (e.g. wave_campaign_precheck's `replace` recovery,
+      // #466) passing force:true wants the stale on-disk plan overwritten, not
+      // silently preserved. Omitting !args.force here downgrades force to a no-op.
       let planAlreadyPersisted = false;
-      if (kahunaBranch !== undefined && !args.extend && !kahunaCreated && !kahunaPreviouslyRecorded) {
+      if (kahunaBranch !== undefined && !args.extend && !args.force && !kahunaCreated && !kahunaPreviouslyRecorded) {
         const dir = await statusDir(cwd);
         planAlreadyPersisted =
           (await fileExists(join(dir, 'phases-waves.json'))) &&

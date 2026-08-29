@@ -933,6 +933,41 @@ describe('wave_init handler', () => {
     expect(rawCalls.some(c => c.includes("wave-status set-kahuna-branch 'kahuna/42-resume-test'"))).toBe(true);
   });
 
+  test('atomicity (#406) — force overrides the Step-4 resume-skip: force:true + half-state → REINITIALIZES (init --force runs), no resume', async () => {
+    // Same half-state fixture as the resume test above, but the caller passes
+    // force:true. An explicit force means "overwrite the persisted plan", so the
+    // resume-skip must NOT swallow it — Step 3 (`wave-status init --force`) has to
+    // run. This is the shape wave_campaign_precheck's `replace` recovery (#466)
+    // drives; without the guard's !args.force, force was silently a no-op.
+    await setupStatusFixture(
+      { waves: { 'W-1': { status: 'pending' } }, kahuna_branch: null },
+      { phases: [{ waves: [{ id: 'W-1' }] }] }
+    );
+    setExecRoutes([
+      { match: 'git remote get-url', respond: 'git@github.com:org/repo.git' },
+      { match: 'git ls-remote --heads origin', respond: 'abc123\trefs/heads/kahuna/42-resume-test' },
+      { match: 'wave-status init', respond: '' },
+      { match: 'wave-status set-kahuna-branch', respond: '' },
+    ]);
+
+    const result = await handler.execute({
+      plan_json: JSON.stringify({ phases: [{ name: 'p', waves: [{ id: 'W-1', issues: [] }] }] }),
+      kahuna: { plan_id: 42, slug: 'resume-test' },
+      force: true,
+    });
+    const parsed = parseResult(result);
+
+    expect(parsed.ok).toBe(true);
+    // NOT a step-4 resume — an explicit force forced the reinit path.
+    expect(parsed.resumed).toBeUndefined();
+    const calls = mockExecSync.mock.calls.map(c => unquote(c[0] as string));
+    // The load-bearing guarantee: `wave-status init` DID run, and WITH --force.
+    expect(calls.some(c => c.includes('wave-status init') && c.includes('--force'))).toBe(true);
+    // The branch is still recorded (Step 4 runs; it was never previously recorded).
+    const rawCalls = mockExecSync.mock.calls.map(c => c[0] as string);
+    expect(rawCalls.some(c => c.includes("wave-status set-kahuna-branch 'kahuna/42-resume-test'"))).toBe(true);
+  });
+
   test('atomicity (#406) — no false positive: persisted plan but branch ABSENT on remote → fresh create + init runs', async () => {
     // Same persisted-plan fixture, but the branch is NOT on the remote. This is
     // NOT the Step-4 half-state (Step 2 never created the branch), so the handler
