@@ -10,11 +10,12 @@
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { getAdapter } from '../lib/adapters/index.js';
+import { repoOptionalSchema } from '../lib/schemas/repo.js';
 import { parsePlanBody, validatePlanBodyStructure } from '../lib/plan-body-parse.js';
 
 const inputSchema = z.object({
   plan_id: z.number().int().positive(),
-  repo: z.string().optional(),
+  repo: repoOptionalSchema,
 });
 
 function envelope(payload: unknown) {
