@@ -150,6 +150,38 @@ describe('work_item_update handler', () => {
     expect(call).toContain("'--title' 'Renamed'");
   });
 
+  test('schema accepts GitLab nested-group repo (4-level) and routes to glab', async () => {
+    // #404: the shared repoOptionalSchema accepts arbitrary `/` depth so
+    // GitLab nested groups validate as an explicit contract (not by accident
+    // of an inline regex). A 3+ segment slug routes straight to the gitlab
+    // adapter (route.ts inferPlatform), so no cwd detection is needed.
+    const nestedRepo = 'analogicdev/internal/tools/blueshift/blueshift-docmancer-ui';
+    onExec('glab issue update', 'https://gitlab.com/analogicdev/internal/tools/blueshift/blueshift-docmancer-ui/-/issues/7\n');
+
+    const result = await handler.execute({
+      issue_ref: '#7',
+      patch: { title: 'Renamed' },
+      repo: nestedRepo,
+    });
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(true);
+
+    const call = execCalls().find((c) => unquote(c).includes('glab issue update')) ?? '';
+    expect(call).toContain(`'-R' '${nestedRepo}'`);
+  });
+
+  test('schema rejects bare owner (no slash) with the shared REPO_SLUG_ERROR', async () => {
+    const result = await handler.execute({
+      issue_ref: '#1',
+      patch: { title: 'x' },
+      repo: 'just-an-owner',
+    });
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(false);
+    // AC: error messages match the shared REPO_SLUG_ERROR constant.
+    expect(String(data.error)).toContain('owner/repo or group/subgroup/.../repo format');
+  });
+
   test('gitlab — milestone patch returns platform_unsupported', async () => {
     onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
 
