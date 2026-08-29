@@ -21,7 +21,10 @@ import { validateBodyStructure } from '../lib/spec_parser';
 // (Summary/Changes/Linked Issues/Test Plan) and are deliberately excluded —
 // running the issue grammar against a PR body would emit spurious warnings.
 // See #487 and docs/issue-body-grammar.md.
-const BODY_GRAMMAR_TYPES = new Set(['plan', 'epic', 'story', 'feature', 'bug', 'chore', 'doc']);
+// Body-bearing ISSUE types (excludes pr/mr, which use the PR-body shape). `fix`
+// is a full peer of bug/chore/doc (same type::fix label path), so it gets the same
+// body_grammar advisory — omitting it silently skipped the check for fix issues (#566).
+const BODY_GRAMMAR_TYPES = new Set(['plan', 'epic', 'story', 'feature', 'bug', 'chore', 'doc', 'fix']);
 
 const inputSchema = z.object({
   // `doc` is the canonical singular type (→ type::doc), consistent with every

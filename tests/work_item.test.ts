@@ -272,6 +272,27 @@ describe('work_item — body-grammar warning (#487)', () => {
     );
   });
 
+  test('type fix → body_grammar runs (fix is a body-bearing peer of bug/chore, #566)', async () => {
+    // fix maps to type::fix, a full peer of bug/chore/doc; a body-bearing fix must
+    // get the same advisory, not silently skip it (the BODY_GRAMMAR_TYPES omission).
+    mockCreate(46);
+    const result = await handler.execute({
+      type: 'fix',
+      title: 'A fix with an incomplete body',
+      body: '## Changes\nc\n## Acceptance Criteria\n- [ ] ok\n', // missing ## Tests
+    });
+    const data = parseResult(result.content);
+    expect(data.ok).toBe(true);
+    expect(data.number).toBe(46);
+
+    const bg = data.body_grammar as BodyGrammar;
+    expect(bg.valid).toBe(false);
+    expect(bg.missing_sections).toEqual(['tests']);
+    expect(bg.accepted_headings?.tests).toEqual(
+      expect.arrayContaining(['## Tests', '## Test Procedures']),
+    );
+  });
+
   test('accepted aliases (## Implementation Steps / ## Test Procedures) → valid, no warning', async () => {
     mockCreate(43);
     const result = await handler.execute({
