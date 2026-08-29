@@ -287,8 +287,25 @@ export function hasPath(row: ManifestRow): boolean {
  * convention where rationales can appear in either location.
  */
 export function hasNAOptOut(row: ManifestRow): boolean {
-  // Check all cells in the row for the N/A opt-out pattern.
-  const rowText = [
+  return /N\/A\s+[—–-]\s+because/i.test(rowCells(row));
+}
+
+/**
+ * True if a manifest row mentions an "N/A" token anywhere but does NOT satisfy
+ * the strict `N/A — because <reason>` opt-out form (`hasNAOptOut`).
+ *
+ * This is the detector behind the tier1 "because" trip-wire message: a row that
+ * reads as an N/A opt-out attempt (bare `N/A`, or `N/A — <reason>` without the
+ * literal word "because") falls through to the tier1 "missing path" list, and
+ * the caller uses this to enrich the failure evidence with the exact reason.
+ */
+export function looksLikeFailedNAOptOut(row: ManifestRow): boolean {
+  return /\bN\/A\b/i.test(rowCells(row)) && !hasNAOptOut(row);
+}
+
+/** Join all cells of a manifest row into a single searchable string. */
+function rowCells(row: ManifestRow): string {
+  return [
     row.id,
     row.deliverable,
     row.category,
@@ -298,6 +315,4 @@ export function hasNAOptOut(row: ManifestRow): boolean {
     row.status,
     row.notes,
   ].join(' | ');
-
-  return /N\/A\s+[—–-]\s+because/i.test(rowText);
 }
