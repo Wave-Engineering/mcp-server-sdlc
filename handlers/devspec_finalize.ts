@@ -10,9 +10,21 @@ import {
   hasPath,
   hasNAOptOut,
 } from '../lib/devspec-parser.js';
+import { runArgv } from '../lib/shared/error-norm.js';
+import { PROTECTED_BRANCH_PATTERN } from '../lib/shared/protected-branch.js';
 
 const inputSchema = z.object({
   path: z.string().min(1, 'path must be a non-empty string'),
+  // #458: the Plan issue number the Dev Spec finalizes. The commit subject is
+  // `docs(devspec): finalize Dev Spec for Plan #<plan_id>`. The Dev Spec doc
+  // does NOT embed its own plan number, so the caller supplies it. When omitted
+  // the handler stays pure validation (commits nothing) — preserving the
+  // backward-compatible behavior of the pre-#458 tool.
+  plan_id: z.number().int().positive().optional(),
+  // Additional doc-write paths to stage alongside the Dev Spec doc (the devspec
+  // ledger / memory artifacts the caller wrote). Optional; the Dev Spec doc at
+  // `path` is always staged.
+  files: z.array(z.string().min(1)).optional(),
 });
 
 // -----------------------------------------------------------------------------
@@ -439,6 +451,93 @@ function checkDodReferences(section7Md: string | null): CheckResult {
 }
 
 // -----------------------------------------------------------------------------
+// Commit-on-pass (#458 / cc-workflow#604)
+// -----------------------------------------------------------------------------
+
+type RefusedReason = 'protected_branch' | 'no_changes' | null;
+
+interface CommitOutcome {
+  committed: boolean;
+  /** The new commit's SHA; empty when nothing was committed. */
+  commit_sha: string;
+  /** Repo-relative paths actually committed. */
+  files: string[];
+  refused_reason: RefusedReason;
+}
+
+const NOT_COMMITTED: CommitOutcome = {
+  committed: false,
+  commit_sha: '',
+  files: [],
+  refused_reason: null,
+};
+
+/** Current branch via `git branch --show-current`; '' on failure/detached HEAD. */
+function currentBranch(cwd: string): string {
+  const r = runArgv(['git', 'branch', '--show-current'], cwd);
+  return r.exitCode === 0 ? r.stdout.trim() : '';
+}
+
+function splitLines(s: string): string[] {
+  return s
+    .split('\n')
+    .map(l => l.trim())
+    .filter(l => l.length > 0);
+}
+
+/**
+ * Stage + commit the finalize doc writes on the CURRENT branch (#458).
+ *
+ * Contract:
+ *  - **No push** — the commit is the tool's only mutation; the caller controls push.
+ *  - **Refuse on a protected branch** (`main` | `release/*`, the #470 name
+ *    convention) → `refused_reason: 'protected_branch'`, no commit.
+ *  - **Idempotent** — if nothing among `paths` is staged after `git add`, make no
+ *    commit → `refused_reason: 'no_changes'`.
+ *  - Plain `git` via the shared `runArgv` subprocess helper — no `gh`/`glab`, no
+ *    platform branching (R-09/R-10 gates).
+ *
+ * The commit is pathspec-limited to `paths` so unrelated staged content elsewhere
+ * in the index is never swept into the finalize commit.
+ */
+function commitFinalizeDocs(cwd: string, planId: number, paths: string[]): CommitOutcome {
+  const branch = currentBranch(cwd);
+  if (branch.length === 0) {
+    // Detached HEAD or not a git repo — cannot verify protection; do not commit.
+    return NOT_COMMITTED;
+  }
+
+  // Refuse on a protected branch — name convention only, no host query (#470).
+  if (PROTECTED_BRANCH_PATTERN.test(branch)) {
+    return { committed: false, commit_sha: '', files: [], refused_reason: 'protected_branch' };
+  }
+
+  // Stage the Dev Spec doc + any ledger/memory artifacts.
+  const addRes = runArgv(['git', 'add', '--', ...paths], cwd);
+  if (addRes.exitCode !== 0) {
+    return NOT_COMMITTED;
+  }
+
+  // What is actually staged among OUR paths (repo-relative). Empty → idempotent.
+  const diffRes = runArgv(['git', 'diff', '--cached', '--name-only', '--', ...paths], cwd);
+  const staged = diffRes.exitCode === 0 ? splitLines(diffRes.stdout) : [];
+  if (staged.length === 0) {
+    return { committed: false, commit_sha: '', files: [], refused_reason: 'no_changes' };
+  }
+
+  // Commit — bare subject (no slug suffix, per #458), pathspec-limited.
+  const subject = `docs(devspec): finalize Dev Spec for Plan #${planId}`;
+  const commitRes = runArgv(['git', 'commit', '-m', subject, '--', ...paths], cwd);
+  if (commitRes.exitCode !== 0) {
+    return NOT_COMMITTED;
+  }
+
+  const shaRes = runArgv(['git', 'rev-parse', 'HEAD'], cwd);
+  const commit_sha = shaRes.exitCode === 0 ? shaRes.stdout.trim() : '';
+  return { committed: true, commit_sha, files: staged, refused_reason: null };
+}
+
+// -----------------------------------------------------------------------------
 // Handler
 // -----------------------------------------------------------------------------
 
@@ -453,7 +552,10 @@ async function readSpec(path: string): Promise<string> {
 const devspecFinalizeHandler: HandlerDef = {
   name: 'devspec_finalize',
   description:
-    'Run the 8 mechanical finalization checks from Dev Spec Section 7.2 and return pass/fail + evidence per check',
+    'Run the 8 mechanical finalization checks from Dev Spec Section 7.2 and return pass/fail + evidence per check. ' +
+    'When `plan_id` is supplied AND every check passes, stage + commit the finalize doc writes (the Dev Spec doc at ' +
+    '`path` plus any `files`) on the current branch with the bare subject `docs(devspec): finalize Dev Spec for Plan #<plan_id>` ' +
+    '— never pushing, refusing on a protected branch, idempotent when there is nothing to commit.',
   inputSchema,
   async execute(rawArgs: unknown) {
     let args: z.infer<typeof inputSchema>;
@@ -496,6 +598,17 @@ const devspecFinalizeHandler: HandlerDef = {
 
     const passed = checks.filter(c => c.pass).length;
     const total = checks.length;
+    const allPass = passed === total;
+
+    // #458: on all-checks-pass, commit the finalize doc writes on the current
+    // branch. Gated on `plan_id` — without it the tool stays pure validation
+    // (backward-compatible with pre-#458 callers), and commits nothing on a
+    // failing check.
+    let outcome: CommitOutcome = NOT_COMMITTED;
+    if (allPass && args.plan_id !== undefined) {
+      const stagePaths = [args.path, ...(args.files ?? [])];
+      outcome = commitFinalizeDocs(projectDir(), args.plan_id, stagePaths);
+    }
 
     return {
       content: [
@@ -507,7 +620,11 @@ const devspecFinalizeHandler: HandlerDef = {
             checks,
             passed,
             total,
-            ready_for_approval: passed === total,
+            ready_for_approval: allPass,
+            committed: outcome.committed,
+            commit_sha: outcome.commit_sha,
+            files: outcome.files,
+            refused_reason: outcome.refused_reason,
           }),
         },
       ],
