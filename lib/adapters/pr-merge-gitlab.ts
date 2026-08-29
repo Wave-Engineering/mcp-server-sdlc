@@ -507,6 +507,42 @@ export async function prMergeGitlab(
     // this door for the enrolled case either.
     const isEnrollment = !actuallyMerged && !mergeBlocked && allowEnrollment;
 
+    // #496: post-condition guard. The merge command exited 0, but the server's
+    // own MR state does NOT report `merged`, the MR is NOT classified as
+    // blocked, and enrollment was never requested. Returning here would report
+    // a successful `direct_squash` merge the server cannot confirm — the
+    // canonical instance being `glab mr merge` printing `✓ Merged` while the MR
+    // was actually ENROLLED (merge-when-pipeline-succeeds) rather than merged.
+    // (It also refuses any other not-merged, not-blocked residue — a still
+    // `checking` or `conflict` MR the deterministic command left unmerged —
+    // rather than the misleading `enrolled:true` shape #461/#424 used to return;
+    // see docs/adapters/README.md §10.)
+    //
+    // Unreachable today only because `--auto-merge=false` is passed
+    // unconditionally on this deterministic path; nothing DETECTS the bad state
+    // if that flag ever stops taking effect. The risk is live, not theoretical:
+    // `--auto-merge` is itself a rename of the older `--when-pipeline-succeeds`,
+    // and no fleet survey of glab versions has been done — a future glab that
+    // renames or drops it again would silently enroll. The server's `state` is
+    // the one witness the client cannot fake (glab prints `✓ Merged` for an
+    // enrollment too), so assert on it rather than trust the exit code.
+    if (!actuallyMerged && !mergeBlocked && !allowEnrollment) {
+      const statusDetail =
+        mr.detailed_merge_status !== undefined
+          ? ` (detailed_merge_status: \`${mr.detailed_merge_status}\`)`
+          : '';
+      return {
+        ok: false,
+        code: 'gitlab_merge_not_confirmed',
+        error:
+          `glab reported the merge of MR !${String(args.number)} succeeded, but the server ` +
+          `does not report it as \`merged\` (state: \`${mr.state}\`${statusDetail}) — refusing to ` +
+          `return a successful ${directLabel} envelope for a merge that cannot be confirmed. If a ` +
+          `glab upgrade renamed or dropped \`--auto-merge\`, the MR may have been enrolled ` +
+          `(merge-when-pipeline-succeeds) rather than merged.`,
+      };
+    }
+
     return {
       ok: true,
       data: {
