@@ -5,13 +5,17 @@
 // CONTRACT: the tool is PURE READ. It NEVER deletes a plan state file, never
 // touches a kahuna branch, never runs wave_init. It detects (plan state + git),
 // classifies (clean | dead | ambiguous), and returns the recovery option set;
-// the skill surfaces it and the human decides. All git probes are read-only
+// the skill surfaces it and the human decides. The git probes are read-only
 // (`git branch --list`, `git ls-remote`, `git merge-base --is-ancestor`) and
-// live in lib/shared/git-remote.ts — no gh/glab, no platform branching.
+// live in lib/shared/git-remote.ts. The protected/default branch is resolved
+// through the shared adapter's read-only live default-branch query (#465/#466,
+// `resolveDefaultBranch` — `gh repo view` / `glab`), the same path branch_guard
+// takes; platform branching stays inside the adapter, never this handler.
 
 import { join } from 'path';
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
+import { getAdapter } from '../lib/adapters/index.js';
 import {
   listLocalBranches,
   listRemoteBranches,
@@ -24,8 +28,8 @@ const inputSchema = z
     // Target repo dir; the operating model is session=target, so the tool reads
     // THIS repo's .claude/status + git, not necessarily the session project.
     root: z.string().optional(),
-    // Protected branch to test kahuna merge-status against. Defaults to the
-    // .claude-project.md "Default branch", else "main".
+    // Protected branch to test kahuna merge-status against. Defaults to the git
+    // host's LIVE default branch, resolved via the shared adapter (#465/#466).
     protected_branch: z.string().optional(),
   })
   .strict();
@@ -78,16 +82,20 @@ function numericField(obj: Record<string, unknown> | null, key: string): number 
   return typeof v === 'number' ? v : null;
 }
 
+// Resolve the protected branch to test kahuna merge-status against. An explicit
+// `override` always wins. Otherwise read the git host's LIVE default branch
+// through the shared adapter — the same path `branch_guard` takes (#465/#466).
+// We deliberately do NOT parse `.claude-project.md`'s cached "Default branch:"
+// value: a stale cache is the exact anti-pattern #465 eliminates. `root` scopes
+// the host query's cwd so the default resolves for the target repo.
 async function resolveProtectedBranch(root: string, override?: string): Promise<string> {
   if (override) return override;
-  try {
-    const text = await Bun.file(join(root, '.claude-project.md')).text();
-    const m = /Default branch:\*\*\s*`?([^\s`]+)`?/i.exec(text);
-    if (m) return m[1];
-  } catch {
-    /* no project config — fall through to the conventional default */
+  const res = await getAdapter().resolveDefaultBranch({ cwd: root });
+  if ('platform_unsupported' in res) {
+    throw new Error(`default-branch resolution unsupported: ${res.hint}`);
   }
-  return 'main';
+  if (!res.ok) throw new Error(res.error);
+  return res.data.default_branch;
 }
 
 interface KahunaBranchStatus {

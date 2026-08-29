@@ -234,10 +234,12 @@ export async function readPhasesWavesTotals(
 //   different plans is impossible (plan_id is the unique tracking-issue
 //   number for the master plan).
 // - Phase 3 fails → `wave-status set-kahuna-branch` is a local file write
-//   and rarely fails; if it does, the state has no kahuna_branch field but
-//   the remote branch exists. Retry would hit `wave-status init`'s "already
-//   initialized" guard. Out of scope for #378; tracked separately if it
-//   ever arises in practice.
+//   and rarely fails; if it does, the plan is fully persisted and the remote
+//   branch exists, but state.json has no kahuna_branch field. Closed by #406:
+//   the handler detects this half-state on retry (plan on disk + branch claimed
+//   via the reuse path + state unrecorded) and resumes at phase 3 to record the
+//   branch, skipping the plan re-persist a non-extend retry would otherwise run.
+//   wave_init is now atomic across all four steps.
 // ---------------------------------------------------------------------------
 
 export interface KahunaBootstrapResult {

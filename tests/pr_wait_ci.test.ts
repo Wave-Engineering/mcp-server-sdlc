@@ -374,7 +374,8 @@ describe('pr_wait_ci handler', () => {
     expect(data.final_state).toBe('passed');
 
     const viewCall = execCalls().find((c) => c.startsWith('gh pr view')) ?? '';
-    expect(viewCall).toContain('--repo Wave-Engineering/mcp-server-sdlc');
+    // #409: `repo` is now shell-escaped, so it appears single-quoted.
+    expect(viewCall).toContain(`--repo 'Wave-Engineering/mcp-server-sdlc'`);
     // Regression guard for #220: snapshotGithub must not invoke the broken
     // `gh pr checks --json` form, which fails on gh < ~2.50 (Ubuntu LTS).
     expect(execCalls().some((c) => c.startsWith('gh pr checks'))).toBe(false);

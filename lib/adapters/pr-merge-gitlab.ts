@@ -25,10 +25,12 @@
 import { execSync } from 'child_process';
 import { gitlabApiMr, type GitlabMr } from '../gitlab-api.js';
 import { normalizeGitlabMergeState } from './pr-status-gitlab.js';
-import type {
-  AdapterResult,
-  PrMergeArgs,
-  PrMergeResponse,
+import {
+  directMergeMethodLabel,
+  type AdapterResult,
+  type PrMergeArgs,
+  type PrMergeResponse,
+  type MergeMethod,
 } from './types.js';
 
 interface ExecError extends Error {
@@ -229,19 +231,30 @@ async function pollPostMergeState(
   return state;
 }
 
+// Map the caller-selected method to its `glab mr merge` strategy flag (#474).
+// A merge commit is glab's DEFAULT (no flag), so `merge` contributes nothing.
+function gitlabMergeFlag(method: MergeMethod): string | null {
+  if (method === 'rebase') return '--rebase';
+  if (method === 'merge') return null;
+  return '--squash';
+}
+
 function buildGitlabMergeCommand(
   number: number,
+  method: MergeMethod,
   sha: string,
   autoMerge: boolean,
   squashMessage?: string,
   repo?: string,
 ): string {
+  const methodFlag = gitlabMergeFlag(method);
   const parts = [
     'glab',
     'mr',
     'merge',
     String(number),
-    '--squash',
+    // `--squash` for squash, `--rebase` for rebase, nothing for a merge commit.
+    ...(methodFlag !== null ? [methodFlag] : []),
     '--remove-source-branch',
     '--yes',
     // #486: `glab mr merge --auto-merge` defaults to TRUE. Left on, an MR with
@@ -263,7 +276,9 @@ function buildGitlabMergeCommand(
     '--sha',
     shellEscape(sha),
   ];
-  if (squashMessage !== undefined && squashMessage.length > 0) {
+  // `--squash-message` is only valid alongside `--squash`; for a merge-commit
+  // or rebase it is dropped (squash_message is squash-specific) — #474.
+  if (method === 'squash' && squashMessage !== undefined && squashMessage.length > 0) {
     parts.push('--squash-message', shellEscape(squashMessage));
   }
   // #408: `repo` reaches a shell via execSync, so it MUST be escaped like every
@@ -286,6 +301,11 @@ export async function prMergeGitlab(
   // never sets this — see PrMergeArgs.allow_gitlab_enrollment for the
   // rationale.
   const allowEnrollment = args.allow_gitlab_enrollment === true;
+  // #474: caller-selected merge strategy. `undefined` → `'squash'`, so existing
+  // callers keep the pre-#474 `--squash` behavior and `direct_squash` reporting.
+  // GitLab has no merge queue, so the direct-path label is always authoritative.
+  const method = args.merge_method ?? 'squash';
+  const directLabel = directMergeMethodLabel(method);
 
   try {
     // #486: two-step merge. Resolve the source-branch HEAD sha, then merge with
@@ -329,6 +349,7 @@ export async function prMergeGitlab(
       // string-matching glab's stderr) falls back to enrollment.
       const cmd = buildGitlabMergeCommand(
         args.number,
+        method,
         headSha,
         false,
         args.squash_message,
@@ -359,7 +380,7 @@ export async function prMergeGitlab(
                     number: args.number,
                     enrolled: true,
                     merged: true,
-                    merge_method: 'direct_squash',
+                    merge_method: directLabel,
                     queue: { enabled: false, position: null, enforced: false },
                     pr_state: 'MERGED',
                     url: postMerge.mr.web_url,
@@ -405,6 +426,7 @@ export async function prMergeGitlab(
             if (pipelinePending) {
               const retryCmd = buildGitlabMergeCommand(
                 args.number,
+                method,
                 headSha,
                 true,
                 args.squash_message,
@@ -485,13 +507,49 @@ export async function prMergeGitlab(
     // this door for the enrolled case either.
     const isEnrollment = !actuallyMerged && !mergeBlocked && allowEnrollment;
 
+    // #496: post-condition guard. The merge command exited 0, but the server's
+    // own MR state does NOT report `merged`, the MR is NOT classified as
+    // blocked, and enrollment was never requested. Returning here would report
+    // a successful `direct_squash` merge the server cannot confirm — the
+    // canonical instance being `glab mr merge` printing `✓ Merged` while the MR
+    // was actually ENROLLED (merge-when-pipeline-succeeds) rather than merged.
+    // (It also refuses any other not-merged, not-blocked residue — a still
+    // `checking` or `conflict` MR the deterministic command left unmerged —
+    // rather than the misleading `enrolled:true` shape #461/#424 used to return;
+    // see docs/adapters/README.md §10.)
+    //
+    // Unreachable today only because `--auto-merge=false` is passed
+    // unconditionally on this deterministic path; nothing DETECTS the bad state
+    // if that flag ever stops taking effect. The risk is live, not theoretical:
+    // `--auto-merge` is itself a rename of the older `--when-pipeline-succeeds`,
+    // and no fleet survey of glab versions has been done — a future glab that
+    // renames or drops it again would silently enroll. The server's `state` is
+    // the one witness the client cannot fake (glab prints `✓ Merged` for an
+    // enrollment too), so assert on it rather than trust the exit code.
+    if (!actuallyMerged && !mergeBlocked && !allowEnrollment) {
+      const statusDetail =
+        mr.detailed_merge_status !== undefined
+          ? ` (detailed_merge_status: \`${mr.detailed_merge_status}\`)`
+          : '';
+      return {
+        ok: false,
+        code: 'gitlab_merge_not_confirmed',
+        error:
+          `glab reported the merge of MR !${String(args.number)} succeeded, but the server ` +
+          `does not report it as \`merged\` (state: \`${mr.state}\`${statusDetail}) — refusing to ` +
+          `return a successful ${directLabel} envelope for a merge that cannot be confirmed. If a ` +
+          `glab upgrade renamed or dropped \`--auto-merge\`, the MR may have been enrolled ` +
+          `(merge-when-pipeline-succeeds) rather than merged.`,
+      };
+    }
+
     return {
       ok: true,
       data: {
         number: args.number,
         enrolled: !mergeBlocked,
         merged: actuallyMerged,
-        merge_method: isEnrollment ? 'merge_queue' : 'direct_squash',
+        merge_method: isEnrollment ? 'merge_queue' : directLabel,
         queue: { enabled: false, position: null, enforced: false },
         pr_state: actuallyMerged ? 'MERGED' : 'OPEN',
         url: mr.web_url,

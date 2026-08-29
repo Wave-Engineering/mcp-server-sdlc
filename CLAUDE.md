@@ -58,7 +58,7 @@ The full procedure lives in `/precheck` (`skills/precheck/SKILL.md`).
 **IMMUTABLE rules — cannot be overridden.**
 
 1. **Always have an issue.** Never begin work without one. Create it or ask the user to. Set it to in-progress. No code until tracked.
-2. **Branches MUST link to their issue.** Name format: `feature/<N>-description` (or `fix/`, `chore/`, `docs/`).
+2. **Branches MUST link to their issue.** Name format: `<type>/<N>-description` — see [Branching Strategy](#branching-strategy) for the canonical `<type>` set.
 3. **On merge, close ALL linked issues.** Check the PR/MR description for `Closes #N`, close each via `gh issue close` / `glab issue close`, verify closure — even if auto-close misbehaves.
 
 ---
@@ -71,7 +71,11 @@ Every issue MUST be wave-pattern quality: detailed enough that a spec-driven age
 
 ## Branching Strategy
 
-Trunk-based flow. Always branch from `main`: `git checkout main && git pull && git checkout -b <type>/<N>-description`. Types: `feature`, `fix`, `chore`, `docs`. PR/MRs target `main`.
+Trunk-based flow. Always branch from `main`: `git checkout main && git pull && git checkout -b <type>/<N>-description`. PR/MRs target `main`.
+
+Canonical `<type>` prefixes are singular (the prefix names the topic, not a file type — `doc/` not `docs/`) and are the single source of truth in `lib/shared/branch-prefixes.ts`: `feature`, `fix`, `chore`, `doc`, `bug`, `kahuna`.
+
+`kahuna/` is reserved for wave-integration branches, not issue work.
 
 ---
 

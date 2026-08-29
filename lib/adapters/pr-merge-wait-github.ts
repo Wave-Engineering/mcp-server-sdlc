@@ -114,6 +114,8 @@ export async function executeMergeWait(
     squash_message: args.squash_message,
     use_merge_queue: args.use_merge_queue,
     skip_train: args.skip_train,
+    // #474: thread the caller-selected strategy through to the underlying merge.
+    merge_method: args.merge_method,
     repo: args.repo,
     // #488: pr_merge_wait's whole contract is poll-until-merged, so a
     // pipeline-gated GitLab MR should enroll (merge-when-pipeline-succeeds)

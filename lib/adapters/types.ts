@@ -82,6 +82,13 @@ export interface PrMergeArgs {
   skip_train?: boolean;
   repo?: string;
   /**
+   * Caller-selected merge strategy (#474). `undefined` is treated as `'squash'`
+   * by every adapter, so existing callers see no behavior change. Authoritative
+   * only on the immediate (non-queue / skip_train) path — on a merge-queue-
+   * ENFORCED repo the queue's own configured method governs an enrolled PR.
+   */
+  merge_method?: MergeMethod;
+  /**
    * GitLab-only internal adapter arg (#488) — NOT part of the `pr_merge`
    * MCP tool schema. `pr_merge` never sets this: `glab mr merge` runs with
    * `--auto-merge=false`, so a pipeline-gated MR refuses (loud failure)
@@ -98,7 +105,33 @@ export interface PrMergeArgs {
   allow_gitlab_enrollment?: boolean;
 }
 
-export type PrMergeMethod = 'direct_squash' | 'merge_queue';
+/**
+ * Caller-selected merge strategy passed INTO `pr_merge` / `pr_merge_wait`
+ * (#474). Mirrors the three `gh pr merge` / `glab mr merge` strategies. The
+ * schema default is `'squash'`, preserving the pre-#474 hardcoded behavior.
+ */
+export type MergeMethod = 'squash' | 'merge' | 'rebase';
+
+/**
+ * The strategy actually used, REPORTED back in `merge_method`. The `direct_*`
+ * variants name the method used on the immediate (non-queue) path; `merge_queue`
+ * means the PR was enrolled and the queue's own configured method governs the
+ * eventual merge — so the requested `MergeMethod` is NOT authoritative there
+ * (see the `pr_merge` tool description's queue caveat, #474).
+ */
+export type PrMergeMethod =
+  | 'direct_squash'
+  | 'direct_merge'
+  | 'direct_rebase'
+  | 'merge_queue';
+
+/** Map a caller-selected `MergeMethod` to its direct-path reported label. */
+export function directMergeMethodLabel(m: MergeMethod): PrMergeMethod {
+  if (m === 'merge') return 'direct_merge';
+  if (m === 'rebase') return 'direct_rebase';
+  return 'direct_squash';
+}
+
 export type PrStateLabel = 'OPEN' | 'MERGED';
 
 export interface PrMergeQueueState {
@@ -143,6 +176,8 @@ export interface PrMergeWaitArgs {
   skip_train?: boolean;
   repo?: string;
   timeout_sec?: number;
+  /** Caller-selected merge strategy (#474). See `PrMergeArgs.merge_method`. */
+  merge_method?: MergeMethod;
 }
 
 /**

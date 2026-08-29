@@ -278,16 +278,21 @@ function parseStory(title: string, body: string, warnings: string[]): Story | nu
   let dependencies: string[] = [];
 
   for (const line of lines) {
-    // Use parseWaveNumber which strips dependency annotations (fixes Bug 3).
+    // Wave — parseWaveNumber strips dependency annotations (fixes Bug 3).
+    // The wave token may share its line with an inline `· **Dependencies:**`
+    // clause, so do NOT `continue` here — fall through to parse deps too.
     const w = parseWaveNumber(line);
     if (w !== null && !/\[\[.*\]\]/.test(w)) {
       wave = w;
-      continue;
     }
-    // Use parseDependencies for the dedicated **Dependencies:** field.
+    // Dependencies — a dedicated **Dependencies:** line OR the inline clause
+    // after "**Wave:** PxWy ·" on the same line (fixes #463).
     const d = parseDependencies(line);
     if (d !== null) {
       dependencies = d;
+    }
+    // A line that yielded either wave or dependencies is fully consumed.
+    if (w !== null || d !== null) {
       continue;
     }
     const r = parseMetadata(line, 'Repository');

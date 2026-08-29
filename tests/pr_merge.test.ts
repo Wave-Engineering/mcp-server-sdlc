@@ -90,6 +90,39 @@ describe('pr_merge handler — aggregate response (#225)', () => {
     expect(data.ok).toBe(false);
   });
 
+  // #474: enum validation rejects unknown merge methods.
+  test('invalid input — unknown merge_method rejected', async () => {
+    const result = await prMergeHandler.execute({ number: 5, merge_method: 'octopus' });
+    const data = parseResult(result);
+    expect(data.ok).toBe(false);
+    expect((data.error as string).length).toBeGreaterThan(0);
+  });
+
+  // #474: merge_method='merge' produces a merge-commit call end-to-end through
+  // the handler → adapter path, and reports direct_merge.
+  test('github merge_method:merge — handler produces a --merge call', async () => {
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git\n');
+    stubNoQueue();
+    onExec('gh pr merge 47 --merge --delete-branch', '');
+    onExec(
+      'gh pr view 47 --json state,url,mergeCommit',
+      JSON.stringify({
+        state: 'MERGED',
+        url: 'https://github.com/org/repo/pull/47',
+        mergeCommit: { oid: 'mergecommit47' },
+      }),
+    );
+
+    const result = await prMergeHandler.execute({ number: 47, merge_method: 'merge' });
+    const data = parseResult(result);
+    expect(data.ok).toBe(true);
+    expect(data.merged).toBe(true);
+    expect(data.merge_method).toBe('direct_merge');
+    const mergeCall = execCalls().find((c) => c.includes('gh pr merge 47'));
+    expect(mergeCall).toContain('--merge');
+    expect(mergeCall).not.toContain('--squash');
+  });
+
   // ===========================================================================
   // GitHub direct-merge path: synchronous reality (enrolled+merged+MERGED)
   // ===========================================================================
@@ -975,10 +1008,15 @@ describe('#461 — GitLab blocked merge surfaces the blocker', () => {
     expect(w).toMatch(/discussions_not_resolved/);
   });
 
-  test('unmerged for a genuinely in-progress reason → no false warning', async () => {
-    // A merge that simply has not landed yet for an in-progress reason (still
-    // checking mergeability) must not be mislabeled as blocked — this is the
-    // 'unknown' bucket in normalizeGitlabMergeState, not 'blocked'.
+  test('unmerged for a genuinely in-progress reason (not blocked) → refused, not a false success (#496)', async () => {
+    // A merge that has not landed yet for an in-progress reason (still checking
+    // mergeability) is the 'unknown' bucket in normalizeGitlabMergeState, not
+    // 'blocked'. #461 originally reported this as enrolled:true — but nothing
+    // was enrolled (pr_merge forces --auto-merge=false), so that was the exact
+    // "success envelope for a non-merge" shape #496's post-condition guard now
+    // refuses: the deterministic merge command exited 0 yet the server does not
+    // report `merged`, so surface it as gitlab_merge_not_confirmed rather than a
+    // direct_squash success. (This tightens #461; see docs/adapters/README.md §10.)
     onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git\n');
     onExec('glab mr merge 85 --squash --remove-source-branch --yes', '');
     onExec(
@@ -999,11 +1037,11 @@ describe('#461 — GitLab blocked merge surfaces the blocker', () => {
     const result = await prMergeHandler.execute({ number: 85 });
     const data = parseResult(result);
 
-    expect(data.ok).toBe(true);
-    expect(data.merged).toBe(false);
-    // Genuinely in progress — the pre-#461 enrolled:true shape is still correct.
-    expect(data.enrolled).toBe(true);
-    expect(data.warnings).toEqual([]);
+    expect(data.ok).toBe(false);
+    expect(data.code).toBe('gitlab_merge_not_confirmed');
+    // The classification is still visible: 'checking' is NOT reported as a
+    // blocker — the refusal names it as the not-confirmed detail, not a block.
+    expect(data.error).toContain('checking');
   });
 
   test('a state read fails mid-poll → ok:false, not silently swallowed', async () => {
@@ -1083,10 +1121,15 @@ describe('#461 — GitLab blocked merge surfaces the blocker', () => {
     expect(apiCalls).toHaveLength(2);
   });
 
-  test('conflict (dirty, not blocked) → enrolled stays true, no warning', async () => {
-    // Pins the other side of the classification boundary: `conflict` maps to
-    // 'dirty' in normalizeGitlabMergeState, not 'blocked' — a future widening
-    // of the blocked bucket must not silently swallow this case too.
+  test('conflict (dirty, not blocked) → refused as not-confirmed, not a false success (#496)', async () => {
+    // `conflict` maps to 'dirty' in normalizeGitlabMergeState, not 'blocked'.
+    // #461 originally reported this not-merged MR as enrolled:true; #496's
+    // post-condition guard now refuses it — a deterministic merge command that
+    // exits 0 on an MR the server does not report as `merged` (and did not
+    // enroll) must surface as gitlab_merge_not_confirmed rather than a
+    // direct_squash success. The dirty-vs-blocked boundary is still meaningful
+    // internally (dirty is not swallowed into the blocked warning path); it now
+    // resolves to a refusal rather than a misleading enrolled:true.
     onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git\n');
     onExec('glab mr merge 89 --squash --remove-source-branch --yes', '');
     onExec(
@@ -1107,10 +1150,9 @@ describe('#461 — GitLab blocked merge surfaces the blocker', () => {
     const result = await prMergeHandler.execute({ number: 89 });
     const data = parseResult(result);
 
-    expect(data.ok).toBe(true);
-    expect(data.merged).toBe(false);
-    expect(data.enrolled).toBe(true);
-    expect(data.warnings).toEqual([]);
+    expect(data.ok).toBe(false);
+    expect(data.code).toBe('gitlab_merge_not_confirmed');
+    expect(data.error).toContain('conflict');
   });
 });
 
@@ -1289,7 +1331,7 @@ describe('#424 — GitLab merge-state poll resolves the read-after-write race', 
     expect(apiCallCount).toBe(3);
   }, 10000);
 
-  test('state never settles within the budget → falls through to the honest not-merged shape', async () => {
+  test('state never settles within the budget → refused as not-confirmed after the full poll (#496)', async () => {
     onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git\n');
     onExec('glab mr merge 93 --squash --remove-source-branch --yes', '');
     let apiCallCount = 0;
@@ -1314,16 +1356,17 @@ describe('#424 — GitLab merge-state poll resolves the read-after-write race', 
     const result = await prMergeHandler.execute({ number: 93 });
     const data = parseResult(result);
 
-    expect(data.ok).toBe(true);
-    expect(data.merged).toBe(false);
-    // 'checking' is 'unknown', not 'blocked' — still honestly enrolled:true,
-    // matching the pre-#424 shape for a call that exhausts the poll budget.
-    expect(data.enrolled).toBe(true);
-    expect(data.warnings).toEqual([]);
+    // #496: a call that exhausts the poll budget without the server ever
+    // reporting `merged` (and without a block classification or enrollment) is
+    // NOT the honest-enrolled shape #424 originally returned — it is the
+    // "merge command exited 0 but the merge cannot be confirmed" shape the
+    // post-condition guard refuses. The poll still runs its full budget first.
+    expect(data.ok).toBe(false);
+    expect(data.code).toBe('gitlab_merge_not_confirmed');
     // resolveHeadSha (1) + the full poll budget (4 attempts) = 5. Proves the
-    // poll ran its full attempt budget rather than giving up early or
-    // looping forever. No trailing diagnostic call — #424 unified the
-    // blocked-reason check into the same poll reads.
+    // poll ran its full attempt budget rather than giving up early or looping
+    // forever, and the guard fires only AFTER the race window is exhausted —
+    // #424's poll behaviour is preserved, only the terminal shape tightened.
     expect(apiCallCount).toBe(5);
   }, 10000);
 

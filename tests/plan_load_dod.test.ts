@@ -328,4 +328,94 @@ Other: \`other.md\`
     expect(calls.some(c => c.includes('gh issue view'))).toBe(false);
     expect(calls.some(c => c.includes(' -F '))).toBe(false);
   });
+
+  // #405: the `repo` arg is validated by the shared repoOptionalSchema BEFORE
+  // it reaches getAdapter()/adapter.fetchIssue() — the schema layer is the
+  // first line of defence against shell metacharacters / path traversal
+  // reaching the `glab api projects/<slug>/issues/N` subprocess string.
+  describe('repo arg validation (#405)', () => {
+    test('rejects shell metacharacters and never execs an adapter', async () => {
+      const result = await handler.execute({ plan_id: 1, repo: 'foo;bar' });
+      const parsed = parseResult(result);
+
+      expect(parsed.ok).toBe(false);
+      // AC: error messages match the shared REPO_SLUG_ERROR constant.
+      expect(String(parsed.error)).toContain(
+        'owner/repo or group/subgroup/.../repo format',
+      );
+      // The subprocess boundary is never reached — validation short-circuits.
+      const calls = execCalls();
+      expect(calls.some(c => c.includes('glab api'))).toBe(false);
+      expect(calls.some(c => c.includes('gh issue view'))).toBe(false);
+    });
+
+    test('neutralizes a path-traversal-shaped slug via URL-encoding', async () => {
+      // `.`/`-`/`_` are legal repo-name characters, so a dot-traversal slug
+      // like `../../../etc/passwd` is FORMAT-valid and passes the slug regex —
+      // the schema is a format validator, not a path sandbox. The traversal is
+      // instead neutralized downstream: gitlab-api url-encodes the whole slug
+      // so every `/` becomes `%2F` before it is concatenated into the
+      // `glab api projects/<slug>/issues/N` string. No raw `../` ever reaches
+      // the subprocess, so it cannot escape the projects/<id> path segment; the
+      // bogus project id simply fails to resolve.
+      onExec(
+        'glab api projects/..%2F..%2F..%2Fetc%2Fpasswd/issues/1',
+        '', // empty → adapter JSON-parse fails → ok:false, controlled path
+      );
+
+      const result = await handler.execute({
+        plan_id: 1,
+        repo: '../../../etc/passwd',
+      });
+      const parsed = parseResult(result);
+
+      expect(parsed.ok).toBe(false);
+      const calls = execCalls();
+      // Encoding happened: separators are `%2F`, and the raw traversal
+      // sequence `../` never appears in the exec'd command string.
+      expect(calls.some(c => c.includes('%2F'))).toBe(true);
+      expect(calls.some(c => c.includes('../'))).toBe(false);
+    });
+
+    test('rejects empty-string repo', async () => {
+      const result = await handler.execute({ plan_id: 1, repo: '' });
+      const parsed = parseResult(result);
+
+      expect(parsed.ok).toBe(false);
+      expect(String(parsed.error)).toContain(
+        'owner/repo or group/subgroup/.../repo format',
+      );
+    });
+
+    test('accepts valid GitLab nested-group repo and routes to glab', async () => {
+      // A 3+ segment slug routes straight to the gitlab adapter (route.ts
+      // inferPlatform), so no cwd detection is needed. parseSlugOpts splits at
+      // the first `/`: owner=`analogicdev`, repo=`internal/tools/blueshift`;
+      // projectPath url-encodes the full `owner/repo` path.
+      onExec(
+        'glab api projects/analogicdev%2Finternal%2Ftools%2Fblueshift/issues/7',
+        JSON.stringify({
+          iid: 7,
+          title: 'Plan: Nested',
+          state: 'opened',
+          web_url:
+            'https://gitlab.com/analogicdev/internal/tools/blueshift/-/issues/7',
+          description: CANONICAL_PLAN_BODY,
+          labels: [],
+        }),
+      );
+
+      const result = await handler.execute({
+        plan_id: 7,
+        repo: 'analogicdev/internal/tools/blueshift',
+      });
+      const parsed = parseResult(result);
+
+      expect(parsed.ok).toBe(true);
+      expect(parsed.plan_id).toBe(7);
+      const calls = execCalls();
+      expect(calls.some(c => c.includes('glab api'))).toBe(true);
+      expect(calls.some(c => c.includes('gh issue view'))).toBe(false);
+    });
+  });
 });

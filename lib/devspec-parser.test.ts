@@ -280,4 +280,44 @@ Some intro text.
       expect(parseDependencies('**Dependencies:** 2.1, 2.2')).toEqual(['2.1', '2.2']);
     });
   });
+
+  // #463 — the standard §8 story metadata line joins Wave and Dependencies
+  // with a `·` separator: "**Wave:** PxWy · **Dependencies:** <ids>".
+  describe("#463: `·`-separated Wave/Dependencies line", () => {
+    test('test_parse_wave_dot_separated', () => {
+      // Three stories share one PxWy token but carry differing dependency
+      // text. The wave token must be extracted identically for all three
+      // (so they group into ONE wave), never the full metadata-line string.
+      const lineA = '**Wave:** P1W1 · **Dependencies:** None';
+      const lineB = '**Wave:** P1W1 · **Dependencies:** 0.1';
+      const lineC = '**Wave:** P1W1 · **Dependencies:** 0.1, 0.2';
+
+      expect(parseWaveNumber(lineA)).toBe('P1W1');
+      expect(parseWaveNumber(lineB)).toBe('P1W1');
+      expect(parseWaveNumber(lineC)).toBe('P1W1');
+
+      // The wave grouping key is the token alone — all three collapse to one.
+      const waveKeys = new Set([lineA, lineB, lineC].map(parseWaveNumber));
+      expect(waveKeys.size).toBe(1);
+
+      // Each story's inline dependencies parse independently.
+      expect(parseDependencies(lineA)).toEqual([]);
+      expect(parseDependencies(lineB)).toEqual(['0.1']);
+      expect(parseDependencies(lineC)).toEqual(['0.1', '0.2']);
+    });
+
+    test('test_parse_deps_inline_label', () => {
+      // The **Dependencies:** clause is matched even though it does not start
+      // the line (it trails the `· `-separated **Wave:** clause).
+      expect(parseDependencies('**Wave:** P2W1 · **Dependencies:** 1.1, 0.1')).toEqual([
+        '1.1',
+        '0.1',
+      ]);
+      // "None" (any case) after the inline label → empty list.
+      expect(parseDependencies('**Wave:** P2W1 · **Dependencies:** None')).toEqual([]);
+      expect(parseDependencies('**Wave:** P0W3 · **Dependencies:** none')).toEqual([]);
+      // A plain dot-free dedicated line still works (backward compatible).
+      expect(parseDependencies('**Dependencies:** 3.1')).toEqual(['3.1']);
+    });
+  });
 });

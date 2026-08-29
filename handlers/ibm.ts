@@ -10,6 +10,7 @@ import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { getAdapter } from '../lib/adapters/index.js';
 import { PROTECTED_BRANCH_PATTERN } from '../lib/shared/protected-branch.js';
+import { BRANCH_PREFIXES } from '../lib/shared/branch-prefixes.js';
 import { repoOptionalSchema } from '../lib/schemas/repo.js';
 
 const inputSchema = z.object({
@@ -22,14 +23,13 @@ const inputSchema = z.object({
   repo: repoOptionalSchema,
 });
 
-// Single source of truth for the allowed branch prefixes — the regex and the
-// error message are both derived from this list so they can never drift apart.
-// Prefixes are SINGULAR (the prefix names the topic, not the file type):
-// `doc/` not `docs/`. A plural/unknown prefix is the most common mistake (#448),
-// and it must report as an unrecognized-prefix error, NOT "no linked issue" —
-// the regex fails before any issue lookup runs, so the issue/work-item framework
-// is never involved.
-const BRANCH_PREFIXES = ['feature', 'fix', 'chore', 'doc', 'bug', 'kahuna'] as const;
+// The regex and the error message are both derived from the shared
+// `BRANCH_PREFIXES` constant (lib/shared/branch-prefixes.ts) so they can never
+// drift apart from `wave-reconcile.ts` or CLAUDE.md. Prefixes are SINGULAR (the
+// prefix names the topic, not the file type): `doc/` not `docs/`. A plural/unknown
+// prefix is the most common mistake (#448), and it must report as an
+// unrecognized-prefix error, NOT "no linked issue" — the regex fails before any
+// issue lookup runs, so the issue/work-item framework is never involved.
 const BRANCH_PATTERN = new RegExp(`^(${BRANCH_PREFIXES.join('|')})\\/(\\d+)-`);
 const BRANCH_FORMAT_HINT = `(${BRANCH_PREFIXES.join('|')})/NNN-description (prefixes are singular — e.g. 'doc/' not 'docs/')`;
 

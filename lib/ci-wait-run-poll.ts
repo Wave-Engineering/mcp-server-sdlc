@@ -57,9 +57,14 @@
  * because it may be a stale PREVIOUS run rather than the one the caller meant to
  * wait for — the `waited_sec: 0` race. The precise fix is to pass `expected_sha`
  * (run identity, not a timing heuristic); the flag makes the ambiguous case
- * visible to callers that don't. Turning the flag into a refusal is opt-in
- * (`require_fresh`, tracked separately) so the default never hangs a genuinely-
- * current-but-already-finished run to a false-red timeout.
+ * visible to callers that don't. Turning that flag into a refusal is the opt-in
+ * `require_fresh` (#531): on the same bare ref-only path it HOLDS for a
+ * strictly-newer-or-in-progress run instead of grading the terminal-at-call-time
+ * one, and returns a classified `no_fresh_run` (never a silent grade) if none
+ * appears in the window. It is opt-in, never a default, so callers that mean
+ * "wait for whatever run is current" are never hung to a false-red timeout on a
+ * genuinely-current-but-already-finished run; it is a documented no-op with
+ * `expected_sha` or `require_merge_result` (their anchors already bind freshness).
  */
 
 import { describeEmptyResult } from './shared/query-outcome.js';
@@ -123,6 +128,27 @@ export interface WaitArgs {
    * merge-result run for a PREVIOUS commit is still sitting in the list.
    */
   pr_number?: number;
+  /**
+   * Opt-in enforcement of the #523 stale-candidate signal (#531). On the bare
+   * ref-only path (no `expected_sha`, no `require_merge_result`) a run that was
+   * ALREADY terminal when the wait began is a possible stale PREVIOUS run.
+   * #523 GRADES it and merely flags `graded_run_stale_candidate`; with
+   * `require_fresh: true` the wait instead HOLDS — it refuses to grade that run
+   * and waits for one that is strictly newer than the call-time baseline (or
+   * in progress), returning a classified not-found (never a silent grade) if
+   * none appears within the appearance window.
+   *
+   * Opt-in, never a default: terminality is not staleness. A run that is
+   * genuinely this caller's but already finished (the 10–60s post-merge
+   * housekeeping gap) would be refused and hung to a false-red timeout on the
+   * unattended auto-`/scpmmr` path — so strict behavior must be REQUESTED.
+   *
+   * Documented NO-OP with `expected_sha` (identity already binds the run) and
+   * with `require_merge_result` (its #476 anchor already proves freshness):
+   * in both, the freshness baseline is never captured, so this flag can never
+   * fire. Defaults to `false`.
+   */
+  require_fresh?: boolean;
 }
 
 export interface WaitDeps {
@@ -160,8 +186,15 @@ export type WaitResult =
       ok: false;
       error: string;
       final_status?: FinalStatus;
-      /** Machine-readable qualifier for a structured (non-CI) failure. */
-      reason?: 'not_merge_result';
+      /**
+       * Machine-readable qualifier for a structured (non-CI) failure.
+       * `not_merge_result` (#476): the run available was not a merge-result run.
+       * `no_fresh_run` (#531): `require_fresh` was set and only a
+       * terminal-at-call-time (possibly stale) run was available — no strictly-
+       * newer or in-progress run appeared within the window, so nothing was
+       * graded.
+       */
+      reason?: 'not_merge_result' | 'no_fresh_run';
       run_id?: number;
       workflow_name?: string;
       url?: string;
@@ -423,7 +456,13 @@ type Fetched =
    * current HEAD's merge-result pipeline has not been created yet. Grading the
    * stale one would pass the gate on code CI never saw.
    */
-  | { kind: 'awaiting_fresh_merge_result' };
+  | { kind: 'awaiting_fresh_merge_result' }
+  /**
+   * #531: the only run for this ref was ALREADY terminal at call time and the
+   * caller passed `require_fresh: true`. We refuse to grade it (it may be a
+   * stale PREVIOUS run) and hold for a strictly-newer or in-progress run.
+   */
+  | { kind: 'awaiting_fresh' };
 
 /** Same head? Field-wise, so a platform mismatch can never read as equal. */
 function anchorsEqual(a: MergeAnchor, b: MergeAnchor): boolean {
@@ -543,6 +582,16 @@ async function fetchSnapshot(
   const staleCandidate =
     baseline.newestTerminalRunId !== undefined &&
     picked.run_id === baseline.newestTerminalRunId;
+  // #531: `require_fresh` turns the #523 stale-candidate signal into a refusal.
+  // The picked run IS the run that was already terminal at call time, so it may
+  // be a stale PREVIOUS run — refuse to grade it and HOLD for a strictly-newer
+  // or in-progress run. Only reachable on the bare ref-only path: with
+  // `expected_sha` or `require_merge_result` the baseline is never captured, so
+  // `staleCandidate` is always false there and `require_fresh` is a documented
+  // no-op (never a grade change, never a hold).
+  if (staleCandidate && args.require_fresh) {
+    return { kind: 'awaiting_fresh' };
+  }
   return { kind: 'run', snapshot: snapshotFromRun(picked, args.platform), staleCandidate };
 }
 
@@ -649,6 +698,7 @@ export async function waitForRun(
     let snapshot: RunSnapshot | null = null;
     let wrongKind: Extract<Fetched, { kind: 'not_merge_result' }> | null = null;
     let sawStale = false;
+    let sawAwaitingFresh = false;
     let gradedStaleCandidate = false;
 
     while (elapsedSec() < noRunYetWindowSec) {
@@ -659,7 +709,16 @@ export async function waitForRun(
         wrongKind = null;
         break;
       }
-      if (fetched.kind === 'awaiting_fresh_merge_result') {
+      if (fetched.kind === 'awaiting_fresh') {
+        // #531: the only run so far is the terminal-at-call-time run and the
+        // caller wants a fresh one. Keep waiting for a strictly-newer or
+        // in-progress run to appear; REMEMBER we held, so an expired window
+        // terminates as a classified `no_fresh_run` rather than a generic
+        // "no run found" (which would misreport — a run DID exist, we refused
+        // to grade it).
+        sawAwaitingFresh = true;
+        logPoll(args.ref, elapsedSec(), 'awaiting_fresh');
+      } else if (fetched.kind === 'awaiting_fresh_merge_result') {
         // Merge-result runs exist but none belongs to the current head. Do NOT
         // grade the stale one. Remember it, so an expired window terminates as a
         // classified `not_merge_result` rather than a generic "no run found".
@@ -727,6 +786,28 @@ export async function waitForRun(
         error:
           `ci_wait_run required a MERGE-RESULT run for ref '${args.ref}', but ${why}. ` +
           `Refusing to report success on a run that did not validate the merge. ${hint}`,
+        waited_sec: waited,
+        ref: args.ref,
+        platform: args.platform,
+      };
+    }
+
+    // #531: `require_fresh` window expired having only ever seen the
+    // terminal-at-call-time run. A run DID exist — we refused to grade it as a
+    // possible stale PREVIOUS run — so this is a CLASSIFIED not-found
+    // (`no_fresh_run`), never a silent grade and never a generic "no run
+    // found". Only reachable on the bare ref-only path (baseline capture is
+    // gated on `!expected_sha && !require_merge_result`).
+    if (!snapshot && sawAwaitingFresh) {
+      const waited = elapsedSec();
+      return {
+        ok: false,
+        reason: 'no_fresh_run',
+        error:
+          `ci_wait_run(require_fresh) found only a run that was ALREADY terminal when the wait began for ` +
+          `ref '${args.ref}', and no strictly-newer or in-progress run appeared within ${waited}s. Refusing ` +
+          `to grade it — it may be a stale PREVIOUS run, not this call's result. Pass expected_sha to bind ` +
+          `run identity precisely, or drop require_fresh to accept whatever run is current.`,
         waited_sec: waited,
         ref: args.ref,
         platform: args.platform,
