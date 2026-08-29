@@ -105,8 +105,32 @@ function unplant(relDir: string) {
   ]);
 }
 
+/**
+ * A zero from installedVersions has two very different meanings, and they must not be
+ * conflated: the dependency chain genuinely vanished (a real regression — chain-absence
+ * wearing a pass's clothes), OR node_modules simply isn't installed (a fresh git worktree —
+ * flight/hotfix worktrees don't share the main tree's node_modules). Fail the latter with a
+ * self-diagnosing message so it can't masquerade as a CVE-floor regression. (#570)
+ */
+function assertNodeModulesInstalled(): void {
+  const proc = Bun.spawnSync([
+    "python3", "-c",
+    "import os,sys;d=sys.argv[1];print('yes' if os.path.isdir(d) and any(os.scandir(d)) else 'no')",
+    `${REPO}/node_modules`,
+  ]);
+  if (proc.stdout.toString().trim() !== "yes") {
+    throw new Error(
+      "node_modules not installed — run `bun install` (or `bun install --frozen-lockfile`). " +
+        "This check reads the INSTALLED tree; with no node_modules it reports 0 for every " +
+        "package, which is an ENVIRONMENT gap (a fresh git worktree), NOT a CVE-floor regression. " +
+        "scripts/ci/validate.sh now self-provisions — run it, or install directly.",
+    );
+  }
+}
+
 describe("dependency floors (#504)", () => {
   test("the probe can see a NESTED copy", () => {
+    assertNodeModulesInstalled();
     // Validate the instrument before trusting its zeroes. Planted at the depth a
     // real nested copy lives at; if this is not found, every assertion below is
     // vacuous rather than reassuring.
@@ -128,6 +152,7 @@ describe("dependency floors (#504)", () => {
     ["ip-address", "10.3.1", "CVE-2026-69192"],
   ] as const) {
     test(`${pkg} is at or above ${floor} in EVERY installed copy — ${cves}`, () => {
+      assertNodeModulesInstalled();
       const hits = installedVersions(pkg);
       // A zero here would mean the dependency chain vanished rather than that
       // the pin held — chain-absence wearing a pass's clothes.
@@ -138,6 +163,7 @@ describe("dependency floors (#504)", () => {
   }
 
   test("express-rate-limit is new enough to ACCEPT a fixed ip-address", () => {
+    assertNodeModulesInstalled();
     // <8.6.0 pinned ip-address at exactly 10.1.0. Overriding ip-address without
     // this bump forces a version the parent does not declare, which is how a
     // private nested copy appears and the fix becomes cosmetic.

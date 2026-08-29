@@ -6,6 +6,17 @@ cd "$(dirname "$0")/../.."
 
 echo "=== SDLC MCP CI Validation ==="
 
+# Self-provision deps. Every step below (codegen, tsc lint, bun test, smoke) requires a
+# populated node_modules — a hard precondition, not incidental. Git worktrees do NOT share
+# node_modules (gitignored, per-worktree), so a fresh flight/hotfix worktree starts with none
+# and lib/dependency-floors.test.ts (#504) then fails with a bare "Received: 0" that masquerades
+# as a CVE regression. Provision deterministically here rather than relying on a
+# (non-deterministic) caller to remember. --frozen-lockfile won't mutate bun.lock (fails loud if
+# out of sync) and is a sub-second no-op when node_modules is already populated (e.g. CI, which
+# installs first anyway).
+echo "--- install deps (self-provision) ---"
+bun install --frozen-lockfile
+
 echo "--- codegen ---"
 ./scripts/ci/codegen-handlers.sh
 
