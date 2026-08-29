@@ -89,6 +89,83 @@ describe('prMergeGitlab — subprocess boundary', () => {
     expect(execCalls().find((c) => c.includes('gh api graphql'))).toBeUndefined();
   });
 
+  // #474 — merge_method (squash | merge | rebase). A merge commit is glab's
+  // DEFAULT (no strategy flag); squash/rebase are explicit flags.
+  test('#474 merge_method:merge → no --squash/--rebase flag, reports direct_merge', async () => {
+    onExec('glab mr merge 460 --remove-source-branch --yes', '');
+    onExec(
+      'glab api projects/org%2Frepo/merge_requests/460',
+      JSON.stringify({
+        iid: 460,
+        state: 'merged',
+        source_branch: 'feature/mc',
+        target_branch: 'main',
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/460',
+        labels: [],
+        sha: 'head460aaaaa',
+        merge_commit_sha: 'mc460commit',
+      }),
+    );
+
+    const result = await prMergeGitlab({ number: 460, merge_method: 'merge', repo: 'org/repo' });
+    expectOk(result);
+    expect(result.data.merge_method).toBe('direct_merge');
+    expect(result.data.merged).toBe(true);
+    const mergeCall = findCall('glab mr merge 460');
+    expect(mergeCall).not.toContain('--squash');
+    expect(mergeCall).not.toContain('--rebase');
+  });
+
+  test('#474 merge_method:rebase → --rebase flag, reports direct_rebase', async () => {
+    onExec('glab mr merge 461 --rebase --remove-source-branch --yes', '');
+    onExec(
+      'glab api projects/org%2Frepo/merge_requests/461',
+      JSON.stringify({
+        iid: 461,
+        state: 'merged',
+        source_branch: 'feature/rb',
+        target_branch: 'main',
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/461',
+        labels: [],
+        sha: 'head461bbbbb',
+        merge_commit_sha: 'rb461commit',
+      }),
+    );
+
+    const result = await prMergeGitlab({ number: 461, merge_method: 'rebase', repo: 'org/repo' });
+    expectOk(result);
+    expect(result.data.merge_method).toBe('direct_rebase');
+    const mergeCall = findCall('glab mr merge 461');
+    expect(mergeCall).toContain('--rebase');
+    expect(mergeCall).not.toContain('--squash');
+  });
+
+  test('#474 merge_method:merge drops --squash-message (squash-specific)', async () => {
+    onExec('glab mr merge 462 --remove-source-branch --yes', '');
+    onExec(
+      'glab api projects/org%2Frepo/merge_requests/462',
+      JSON.stringify({
+        iid: 462,
+        state: 'merged',
+        source_branch: 'feature/mc2',
+        target_branch: 'main',
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/462',
+        labels: [],
+        sha: 'head462ccccc',
+        merge_commit_sha: 'mc462commit',
+      }),
+    );
+
+    const result = await prMergeGitlab({
+      number: 462,
+      merge_method: 'merge',
+      squash_message: 'should be dropped',
+      repo: 'org/repo',
+    });
+    expectOk(result);
+    expect(findCall('glab mr merge 462')).not.toContain('--squash-message');
+  });
+
   test('skip_train is silently dropped — merge proceeds with warning (#423)', async () => {
     onExec('glab mr merge 9 --squash --remove-source-branch --yes', '');
     onExec(

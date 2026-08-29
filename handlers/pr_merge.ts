@@ -19,6 +19,10 @@ const inputSchema = z.object({
   squash_message: z.string().optional(),
   use_merge_queue: z.boolean().optional(),
   skip_train: z.boolean().optional(),
+  // #474: caller-selected merge strategy. Default `squash` preserves the prior
+  // hardcoded behavior (no change for existing callers). `squash_message` is
+  // applied to the squash/merge commit and ignored for `rebase`.
+  merge_method: z.enum(['squash', 'merge', 'rebase']).default('squash'),
   // GitLab nested groups need arbitrary `/` depth — see lib/schemas/repo.ts (#290).
   repo: repoOptionalSchema,
 });
@@ -41,7 +45,12 @@ const prMergeHandler: HandlerDef = {
     'skip_train=true bypasses the queue when commutativity_verify has proven the merge safe, except ' +
     'on queue-enforced repos where the flag is silently dropped (warning emitted). On GitLab, ' +
     'skip_train is silently dropped (merge trains are auto-managed) with a warning emitted — ' +
-    'proceeds with the merge, does not return platform_unsupported.',
+    'proceeds with the merge, does not return platform_unsupported. ' +
+    'merge_method (squash|merge|rebase, default squash) selects the strategy; it is authoritative ' +
+    'ONLY on the immediate (non-queue / skip_train) path and reported back as merge_method:' +
+    '"direct_squash"|"direct_merge"|"direct_rebase". On a merge-queue-ENFORCED repo the QUEUE\'s ' +
+    'own configured merge method governs the enrolled PR — merge_method does NOT override it, and ' +
+    'the response reports merge_method:"merge_queue". squash_message is ignored when merge_method=rebase.',
   inputSchema,
   async execute(rawArgs: unknown) {
     let args;

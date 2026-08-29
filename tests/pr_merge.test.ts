@@ -90,6 +90,39 @@ describe('pr_merge handler — aggregate response (#225)', () => {
     expect(data.ok).toBe(false);
   });
 
+  // #474: enum validation rejects unknown merge methods.
+  test('invalid input — unknown merge_method rejected', async () => {
+    const result = await prMergeHandler.execute({ number: 5, merge_method: 'octopus' });
+    const data = parseResult(result);
+    expect(data.ok).toBe(false);
+    expect((data.error as string).length).toBeGreaterThan(0);
+  });
+
+  // #474: merge_method='merge' produces a merge-commit call end-to-end through
+  // the handler → adapter path, and reports direct_merge.
+  test('github merge_method:merge — handler produces a --merge call', async () => {
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git\n');
+    stubNoQueue();
+    onExec('gh pr merge 47 --merge --delete-branch', '');
+    onExec(
+      'gh pr view 47 --json state,url,mergeCommit',
+      JSON.stringify({
+        state: 'MERGED',
+        url: 'https://github.com/org/repo/pull/47',
+        mergeCommit: { oid: 'mergecommit47' },
+      }),
+    );
+
+    const result = await prMergeHandler.execute({ number: 47, merge_method: 'merge' });
+    const data = parseResult(result);
+    expect(data.ok).toBe(true);
+    expect(data.merged).toBe(true);
+    expect(data.merge_method).toBe('direct_merge');
+    const mergeCall = execCalls().find((c) => c.includes('gh pr merge 47'));
+    expect(mergeCall).toContain('--merge');
+    expect(mergeCall).not.toContain('--squash');
+  });
+
   // ===========================================================================
   // GitHub direct-merge path: synchronous reality (enrolled+merged+MERGED)
   // ===========================================================================
