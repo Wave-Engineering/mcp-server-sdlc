@@ -168,6 +168,80 @@ export function findBoldLabelDependencies(sections: Record<string, string>): str
 }
 
 /**
+ * Issue-spec body grammar: canonical section key → the accepted H2 heading
+ * aliases (already `normalizeHeading`-normalized) that satisfy it. Shared by
+ * `spec_validate_structure` (fetch-then-validate) and `work_item`
+ * (validate-at-creation, warn-not-reject — #487) so the two agree on grammar.
+ */
+export const REQUIRED_BODY_SECTIONS: Record<string, readonly string[]> = {
+  changes: ['changes', 'implementation_steps'],
+  tests: ['tests', 'test_procedures'],
+  acceptance_criteria: ['acceptance_criteria'],
+};
+export const OPTIONAL_BODY_SECTIONS: Record<string, readonly string[]> = {
+  dependencies: ['dependencies'],
+};
+
+/**
+ * Render normalized alias keys back into their `## Title Case` H2 form, e.g.
+ * `['implementation_steps']` -> `['## Implementation Steps']`. Lets a caller
+ * name which headings would have satisfied a missing section.
+ */
+export function acceptedHeadings(aliases: readonly string[]): string[] {
+  return aliases.map((a) => `## ${a.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}`);
+}
+
+export interface BodyGrammar {
+  /** `has_<key>` presence flags for every required + optional section. */
+  presence: Record<string, boolean>;
+  /** Canonical keys of required sections that are absent or empty. */
+  missing_sections: string[];
+  /** For each missing section, the `## Heading` forms that would satisfy it. */
+  accepted_headings: Record<string, string[]>;
+  /** True when no required section is missing. */
+  valid: boolean;
+}
+
+/**
+ * Validate an issue-spec markdown body against the required-section grammar.
+ * Side-effect-free — it inspects the body string only, doing no fetch — so both
+ * the fetch-then-validate path (`spec_validate_structure`) and the
+ * validate-at-creation path (`work_item`, #487) share one implementation.
+ */
+export function validateBodyStructure(body: string): BodyGrammar {
+  const { sections } = parseSections(body);
+  const hasSection = (aliases: readonly string[]) =>
+    aliases.some((a) => sections[a] && sections[a].trim().length > 0);
+
+  const presence: Record<string, boolean> = {};
+  const missing: string[] = [];
+  const accepted: Record<string, string[]> = {};
+
+  for (const [k, aliases] of Object.entries(REQUIRED_BODY_SECTIONS)) {
+    const has = hasSection(aliases);
+    presence[`has_${k}`] = has;
+    if (!has) {
+      missing.push(k);
+      accepted[k] = acceptedHeadings(aliases);
+    }
+  }
+  for (const [k, aliases] of Object.entries(OPTIONAL_BODY_SECTIONS)) {
+    presence[`has_${k}`] = hasSection(aliases);
+  }
+  // Bold-label fallback for has_dependencies only (parity with spec_dependencies).
+  if (!presence.has_dependencies && findBoldLabelDependencies(sections)) {
+    presence.has_dependencies = true;
+  }
+
+  return {
+    presence,
+    missing_sections: missing,
+    accepted_headings: accepted,
+    valid: missing.length === 0,
+  };
+}
+
+/**
  * A single parsed dependency ref extracted from a `## Dependencies` section
  * or `**Dependencies:**` bold-label body. `kind` currently only carries the
  * `blocks` relation — placeholder for future expansion.
