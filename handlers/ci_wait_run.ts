@@ -32,6 +32,13 @@ const inputSchema = z
     require_merge_result: z.boolean().optional(),
     /** PR number (GitHub) / MR iid (GitLab). Required with require_merge_result. */
     pr_number: z.number().int().positive().optional(),
+    /**
+     * Opt-in (#531): on the bare ref-only path, refuse to grade a run that was
+     * already terminal when the wait began — hold for a strictly-newer or
+     * in-progress run, returning `reason: 'no_fresh_run'` if none appears. A
+     * documented no-op with `expected_sha` or `require_merge_result`.
+     */
+    require_fresh: z.boolean().optional(),
   })
   .strict()
   .refine((a) => !a.require_merge_result || a.pr_number !== undefined, {
@@ -66,7 +73,7 @@ function resultToEnvelope(result: WaitResult) {
 const ciWaitRunHandler: HandlerDef = {
   name: 'ci_wait_run',
   description:
-    "Block on a CI workflow/pipeline run for a commit SHA or branch ref, polling server-side until it completes or times out. Returns the final status without burning agent tokens in a busy-wait loop. Set `require_merge_result: true` to accept ONLY a run that validated the merge result AND belongs to the PR/MR\u2019s current head (requires `pr_number`). GitHub: a `pull_request` run whose head_sha is the PR head. GitLab: a `refs/merge-requests/N/merge` pipeline that GitLab reports as the MR\u2019s `head_pipeline` \u2014 a detached (`/head`) or merge-train (`/train`) pipeline is NOT a merge result — a branch pipeline, or a skipped one, then yields `final_status: \"not_merge_result\"` instead of a misleading success. Use it for merge gates; leave it off when you legitimately want the branch pipeline (e.g. watching `main` after a merge).",
+    "Block on a CI workflow/pipeline run for a commit SHA or branch ref, polling server-side until it completes or times out. Returns the final status without burning agent tokens in a busy-wait loop. Set `require_merge_result: true` to accept ONLY a run that validated the merge result AND belongs to the PR/MR\u2019s current head (requires `pr_number`). GitHub: a `pull_request` run whose head_sha is the PR head. GitLab: a `refs/merge-requests/N/merge` pipeline that GitLab reports as the MR\u2019s `head_pipeline` \u2014 a detached (`/head`) or merge-train (`/train`) pipeline is NOT a merge result — a branch pipeline, or a skipped one, then yields `final_status: \"not_merge_result\"` instead of a misleading success. Use it for merge gates; leave it off when you legitimately want the branch pipeline (e.g. watching `main` after a merge). Set `require_fresh: true` on the bare ref-only path to refuse a run that was already terminal when the wait began (a possible stale previous run) and hold for a strictly-newer or in-progress one, returning `reason: “no_fresh_run”` if none appears — a no-op with `expected_sha` or `require_merge_result`.",
   inputSchema,
   async execute(rawArgs: unknown) {
     let args: z.infer<typeof inputSchema>;
