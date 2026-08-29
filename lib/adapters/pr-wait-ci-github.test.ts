@@ -5,6 +5,7 @@ import {
   resetExecMock,
   execCalls,
 } from '../test-support/mock-child-process.ts';
+import { shellEscape } from '../shared/shell-escape.ts';
 
 // Subprocess-boundary tests for the GitHub pr_wait_ci adapter (R-15).
 // Integration-level coverage (handler dispatch, polling-loop behavior across
@@ -73,7 +74,8 @@ describe('snapshotGithub — argv shape (#220 regression)', () => {
 
     snapshotGithub(42, 'Wave-Engineering/mcp-server-sdlc');
     const viewCall = execCalls().find((c) => c.startsWith('gh pr view')) ?? '';
-    expect(viewCall).toContain('--repo Wave-Engineering/mcp-server-sdlc');
+    // #409: `repo` is now shell-escaped, so it appears single-quoted.
+    expect(viewCall).toContain(`--repo 'Wave-Engineering/mcp-server-sdlc'`);
   });
 
   test('omits --repo when undefined', () => {
@@ -132,6 +134,65 @@ describe('snapshotGithub — argv shape (#220 regression)', () => {
     const snap = snapshotGithub(1);
     expect(snap.url).toBe('');
     expect(snap.total).toBe(0);
+  });
+});
+
+// --- #409: shell-injection containment in the --repo flag ------------------
+//
+// `repoFlag` concatenates `repo` into the command string that `exec()` hands to
+// `execSync`. A hostile value must stay inside a single shell-quoted argv token
+// — never leak into shell-interpretable position. `repoOptionalSchema` already
+// blocks metacharacters at the handler boundary; this is the defence-in-depth
+// layer that survives any internal caller or refactor that bypasses the schema.
+// Sibling to #403/#407 (pr-merge-github.ts) and #408 (pr-merge-gitlab.ts).
+describe('repoFlag — shell-injection containment (#409)', () => {
+  const HOSTILE = `sec/repo'; echo PWNED; #`;
+
+  /**
+   * The dangerous payload must appear ONLY inside the exact shell-escaped token.
+   * Blanking that token out of the command string must leave nothing the shell
+   * could act on — no `PWNED`, no stray `;`.
+   */
+  function assertContained(viewCall: string): void {
+    const escaped = shellEscape(HOSTILE);
+    // The raw value was shell-escaped before concatenation.
+    expect(viewCall).toContain(`--repo ${escaped}`);
+    // Nothing dangerous leaks outside that single quoted token.
+    const withoutToken = viewCall.replace(escaped, '<REPO>');
+    expect(withoutToken).not.toContain('PWNED');
+    expect(withoutToken).not.toContain(';');
+  }
+
+  test('snapshotGithub — hostile repo stays inside a single quoted token', () => {
+    onExec(
+      'gh pr view',
+      JSON.stringify({
+        url: 'https://github.com/org/repo/pull/5',
+        statusCheckRollup: [
+          { __typename: 'CheckRun', name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' },
+        ],
+      }),
+    );
+    snapshotGithub(5, HOSTILE);
+    const viewCall = execCalls().find((c) => c.startsWith('gh pr view')) ?? '';
+    assertContained(viewCall);
+  });
+
+  test('probeGithub — hostile repo stays inside a single quoted token', () => {
+    onExec(
+      'gh pr view',
+      JSON.stringify({
+        url: 'https://github.com/org/repo/pull/5',
+        statusCheckRollup: [],
+        state: 'OPEN',
+        isDraft: false,
+        mergeable: 'MERGEABLE',
+        mergeStateStatus: 'CLEAN',
+      }),
+    );
+    probeGithub(5, HOSTILE);
+    const viewCall = execCalls().find((c) => c.startsWith('gh pr view')) ?? '';
+    assertContained(viewCall);
   });
 });
 
