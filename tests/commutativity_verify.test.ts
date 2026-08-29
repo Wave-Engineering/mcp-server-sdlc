@@ -1,4 +1,4 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, spyOn, beforeEach, afterEach } from 'bun:test';
 import {
   installChildProcessMock,
   onExec,
@@ -6,6 +6,8 @@ import {
   execCalls,
   mockExecSync,
 } from '../lib/test-support/mock-child-process.ts';
+import { log } from '../logger.js';
+import type { Mock } from 'bun:test';
 
 // Responder returns a string (probe stdout) when called. The function form
 // receives the full cmd so tests can REJECT wrong-shape argv loudly per
@@ -22,8 +24,8 @@ function lastExecOpts(): { timeout?: number; cwd?: string } | undefined {
 
 installChildProcessMock();
 
-// Mock the logger so we can (a) count calls per invocation — issue #256 says
-// the wrapper was suspected of multi-emitting; this test locks in the
+// Intercept the logger so we can (a) count calls per invocation — issue #256
+// says the wrapper was suspected of multi-emitting; this test locks in the
 // "exactly one subprocess log per invocation" contract — and (b) PREVENT the
 // test suite from polluting ~/.claude/logs/mcp.jsonl when developers have
 // LOG_FILE set in their shell. The contradictory cluster pattern (info + warn
@@ -31,6 +33,15 @@ installChildProcessMock();
 // itself produced by this very test file writing to the user's mcp.jsonl
 // during repeated `bun test` runs — each test exercises a different handler
 // branch, so the union across tests looked like multi-emit per call.
+//
+// #456 — narrower seam than a `../logger.ts` module mock. The former installed
+// a PROCESS-GLOBAL module-registry override that persisted for the whole file
+// and leaked into siblings (last-writer-wins). We instead `spyOn` the singleton
+// `log` object's methods (the same instance the handler imports) and restore the
+// spies in `afterEach`, so the interception is scoped to this file's tests and
+// cannot leak. The spy's `mockImplementation` both records the call AND
+// suppresses the real `emit` (no stderr/file writes), preserving both goals
+// above. This is the Option-2 (inject/spy the seam) path the #456 spec prefers.
 interface LogCall {
   level: 'debug' | 'info' | 'warn' | 'error';
   event: string;
@@ -43,18 +54,24 @@ function logCallsForCmd(cmd: string): LogCall[] {
     c => c.event === 'subprocess' && (c.fields as { cmd?: string }).cmd === cmd,
   );
 }
-mock.module('../logger.ts', () => ({
-  log: {
-    debug: (event: string, fields: Record<string, unknown> = {}, msg?: string) =>
-      logCalls.push({ level: 'debug', event, fields, msg }),
-    info: (event: string, fields: Record<string, unknown> = {}, msg?: string) =>
-      logCalls.push({ level: 'info', event, fields, msg }),
-    warn: (event: string, fields: Record<string, unknown> = {}, msg?: string) =>
-      logCalls.push({ level: 'warn', event, fields, msg }),
-    error: (event: string, fields: Record<string, unknown> = {}, msg?: string) =>
-      logCalls.push({ level: 'error', event, fields, msg }),
-  },
-}));
+
+let logSpies: Array<Mock<(...args: never[]) => unknown>> = [];
+function installLogSpies(): void {
+  const record = (level: LogCall['level']) =>
+    (event: string, fields: Record<string, unknown> = {}, msg?: string): void => {
+      logCalls.push({ level, event, fields, msg });
+    };
+  logSpies = [
+    spyOn(log, 'debug').mockImplementation(record('debug')),
+    spyOn(log, 'info').mockImplementation(record('info')),
+    spyOn(log, 'warn').mockImplementation(record('warn')),
+    spyOn(log, 'error').mockImplementation(record('error')),
+  ];
+}
+function restoreLogSpies(): void {
+  for (const s of logSpies) s.mockRestore();
+  logSpies = [];
+}
 
 const { default: handler } = await import('../handlers/commutativity_verify.ts');
 
@@ -113,11 +130,13 @@ function probeJson(verdict: string, pairs: Array<{
 beforeEach(() => {
   resetExecMock();
   logCalls = [];
+  installLogSpies();
 });
 
 afterEach(() => {
   resetExecMock();
   logCalls = [];
+  restoreLogSpies();
 });
 
 describe('commutativity_verify handler', () => {

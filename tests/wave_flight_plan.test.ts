@@ -1,22 +1,23 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import {
   setExecMock,
   resetExecMock,
   execCalls,
   installChildProcessMock,
 } from '../lib/test-support/mock-child-process.ts';
-
-const mockWriteFileSync = mock((_path: unknown, _data: unknown) => undefined);
+// Shared `fs` mock (#456) — see mock-fs.ts header. Replaces this file's former
+// local `fs` module mock so it can no longer leak across files.
+import { installFsMock, resetFsMock, mockWriteFileSync } from '../lib/test-support/mock-fs.ts';
 
 installChildProcessMock();
-mock.module('fs', () => ({ writeFileSync: mockWriteFileSync }));
+installFsMock();
 
 const { default: handler } = await import('../handlers/wave_flight_plan.ts');
 
 function resetMocks() {
   resetExecMock();
   setExecMock(() => 'flight plan stored\n');
-  mockWriteFileSync.mockClear();
+  resetFsMock();
 }
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {

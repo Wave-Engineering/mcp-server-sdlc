@@ -4,23 +4,19 @@
 // `.strict()` so `epic_id` is an unrecognized key; `plan_id` is also missing
 // — either path yields ok:false.
 
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import {
   installChildProcessMock,
   setExecMock,
   resetExecMock,
   mockExecSync,
 } from '../lib/test-support/mock-child-process.ts';
-
-const mockWriteFileSync = mock((_path: unknown, _data: unknown) => undefined);
+// Shared `fs` mock (#456) — see mock-fs.ts header; the handler's transitive
+// `logger.ts` → `node:fs` pull requires the full logger trio in the surface.
+import { installFsMock, resetFsMock } from '../lib/test-support/mock-fs.ts';
 
 installChildProcessMock();
-mock.module('fs', () => ({
-  writeFileSync: mockWriteFileSync,
-  appendFileSync: () => undefined,
-  mkdirSync: () => undefined,
-  existsSync: () => true,
-}));
+installFsMock();
 
 const { default: handler } = await import('../handlers/wave_init.ts');
 
@@ -42,7 +38,7 @@ describe('wave_init — legacy { epic_id, slug } shape is rejected (Story 2.1 / 
   beforeEach(() => {
     resetExecMock();
     setExecMock(() => 'wave plan initialized\n');
-    mockWriteFileSync.mockClear();
+    resetFsMock();
   });
   afterEach(clearEnv);
 
