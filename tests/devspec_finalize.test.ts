@@ -200,6 +200,90 @@ describe('devspec_finalize handler', () => {
     expect(check.evidence).toContain('MV-01');
   });
 
+  // ---------------------------------------------------------------------------
+  // #440 — enriched §5.A failure evidence (message-only; pass/fail unchanged)
+  // ---------------------------------------------------------------------------
+
+  test('tier1_missing_column_evidence — no Tier column → evidence names the required Tier column', async () => {
+    // A manifest table with NO Tier column: every row's tier is empty, so the
+    // Tier 1 filter finds nothing and the "no Tier 1 rows" branch fires.
+    const spec = `# Project X — Development Specification
+
+## 5. Detailed Design
+
+### 5.A Deliverables Manifest
+
+| ID | Deliverable | Category | File Path | Produced In | Status | Notes |
+|----|-------------|----------|-----------|-------------|--------|-------|
+| DM-01 | README.md | Docs | \`README.md\` | Wave 1 | required | overview |
+
+## 6. Test Plan
+
+### 6.4 Manual Verification Procedures
+
+(none)
+
+## 7. Definition of Done
+
+- [ ] Everything per the Deliverables Manifest
+`;
+    const path = await writeTempSpec(spec);
+    const result = await handler.execute({ path });
+    const parsed = parseResult(result);
+    const check = getCheck(parsed, 'tier1_paths');
+    expect(check.pass).toBe(false);
+    // Enriched: names the required "Tier" column with value "1".
+    expect(check.evidence).toContain('"Tier" column');
+    expect(check.evidence).toContain('"1"');
+    expect(parsed.ready_for_approval).toBe(false);
+  });
+
+  test('na_optout_missing_because_evidence — N/A without "because" → evidence names the trip-wire', async () => {
+    // DM-08 opts out with "N/A — <reason>" but omits the literal word "because",
+    // so it falls through to the tier1 "missing" list.
+    const spec = happyWith(s =>
+      s.replace(
+        'N/A — because the project is a spike',
+        'N/A — the project is a spike',
+      ),
+    );
+    const path = await writeTempSpec(spec);
+    const result = await handler.execute({ path });
+    const parsed = parseResult(result);
+    const check = getCheck(parsed, 'tier1_paths');
+    expect(check.pass).toBe(false);
+    expect(check.evidence).toContain('DM-08');
+    // Enriched: names the "because" trip-wire.
+    expect(check.evidence.toLowerCase()).toContain('because');
+    expect(check.evidence).toContain('literal word "because"');
+    expect(parsed.ready_for_approval).toBe(false);
+  });
+
+  test('tier2_prose_fold_evidence — MV items with no Tier 2 row → evidence names the required manual+test row', async () => {
+    // Remove the Tier 2 Manual Test Procedures row (DM-10) while MV items remain
+    // in §6.4 — the "prose fold" shape the enrichment warns against.
+    const spec = happyWith(s =>
+      s.replace(
+        '| DM-10 | Manual test procedures document | Docs | 2 | `docs/manual-tests.md` | Wave 3 | required | triggered by MV items |\n',
+        '',
+      ),
+    );
+    const path = await writeTempSpec(spec);
+    const result = await handler.execute({ path });
+    const parsed = parseResult(result);
+
+    const tier2 = getCheck(parsed, 'tier2_triggers');
+    expect(tier2.pass).toBe(false);
+    expect(tier2.evidence).toContain('folding into Tier 1 prose');
+    expect(tier2.evidence).toContain('add an explicit Tier 2 row');
+
+    // The mirror in mv_coverage carries the same enriched guidance.
+    const mv = getCheck(parsed, 'mv_coverage');
+    expect(mv.pass).toBe(false);
+    expect(mv.evidence).toContain('folding into Tier 1 prose');
+    expect(mv.evidence).toContain('add an explicit Tier 2 row');
+  });
+
   test('verbs_without_nouns fails when a row is a bare verb phrase without a path', async () => {
     // Insert a verb-only row with no file path and no N/A.
     const spec = happyWith(s =>
