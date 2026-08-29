@@ -9,8 +9,9 @@
  * no `timed_out` flag.
  *
  * This is a real-filesystem test (no fs mocks). It uses Bun-native APIs
- * (Bun.write, Bun.spawnSync) instead of node:fs to stay immune to the
- * `mock.module('fs')` leakage from sibling test files.
+ * (Bun.write, Bun.spawnSync) instead of node:fs to stay immune to sibling
+ * files' shared `fs` module mock (lib/test-support/mock-fs.ts) regardless of
+ * load order (#456).
  */
 
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';

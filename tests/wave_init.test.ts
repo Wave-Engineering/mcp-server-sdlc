@@ -1,4 +1,4 @@
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import {
   installChildProcessMock,
   setExecMock,
@@ -6,6 +6,15 @@ import {
   execCalls,
   mockExecSync,
 } from '../lib/test-support/mock-child-process.ts';
+// Shared `fs` mock (#456): the handler transitively pulls in `logger.ts` →
+// `node:fs`, so the mock surface must include the whole logger trio, not just
+// `writeFileSync`. The shared helper owns that surface centrally so no file's
+// `fs` module mock can leak into another's tests.
+import {
+  installFsMock,
+  resetFsMock,
+  mockWriteFileSync,
+} from '../lib/test-support/mock-fs.ts';
 
 // ---- Mocks ----------------------------------------------------------------
 function lastExecCall(): string {
@@ -13,21 +22,8 @@ function lastExecCall(): string {
   return c[c.length - 1] ?? '';
 }
 
-const mockWriteFileSync = mock((_path: unknown, _data: unknown) => undefined);
-
 installChildProcessMock();
-// Story 2.22 (#316): the handler now imports `getAdapter()` which transitively
-// pulls in `logger.ts` → `node:fs`. Bun aliases `'fs'` mocks to `'node:fs'`,
-// so the mock surface must include every export `logger.ts` reaches for —
-// otherwise `node:fs` resolves to a stub-less stand-in and the import fails
-// with `Export named 'mkdirSync' not found`. Real fs calls are not expected
-// during tests; these stubs are silently-noop defaults.
-mock.module('fs', () => ({
-  writeFileSync: mockWriteFileSync,
-  appendFileSync: () => undefined,
-  mkdirSync: () => undefined,
-  existsSync: () => true,
-}));
+installFsMock();
 
 const { default: handler } = await import('../handlers/wave_init.ts');
 
@@ -36,7 +32,7 @@ const ORIGINAL_ENV = process.env.CLAUDE_PROJECT_DIR;
 function resetMocks() {
   resetExecMock();
   setExecMock(() => 'wave plan initialized\n');
-  mockWriteFileSync.mockClear();
+  resetFsMock();
 }
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {

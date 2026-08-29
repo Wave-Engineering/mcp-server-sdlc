@@ -7,9 +7,10 @@ import handler, {
   POLL_INTERVAL_SEC,
 } from '../handlers/wave_wait_for_signal.ts';
 
-// File operations use Bun.write/Bun.spawnSync('rm') instead of node:fs to
-// avoid leakage from `mock.module('fs', ...)` calls in sibling test files
-// (lesson_bun_native_apis.md).
+// File operations use Bun.write/Bun.spawnSync('rm') instead of node:fs so this
+// file stays immune to sibling files' shared `fs` module mock
+// (lib/test-support/mock-fs.ts) regardless of load order
+// (lesson_bun_native_apis.md, #456).
 async function makeTmpDir(prefix: string): Promise<string> {
   const path = `/tmp/${prefix}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
   // Bun.write creates parent directories on demand; make a marker then
