@@ -15,6 +15,7 @@ import { execSync } from 'child_process';
 import { resolveDefaultBranchGitlabSync } from './resolve-default-branch-gitlab.js';
 import { resolveGitlabSelfSync } from './resolve-gitlab-self.js';
 import { selfAssignIssueGitlab } from './self-assign-linked-issues.js';
+import { markWorkItemInProgressGitlab } from './gitlab-work-item-status.js';
 import { branchCreateCore } from './branch-create-core.js';
 import type { AdapterResult, BranchCreateArgs, BranchCreateResponse } from './types.js';
 
@@ -55,10 +56,10 @@ export async function branchCreateGitlab(
       else if (assign.warning) warnings.push(assign.warning);
     }
 
-    // TODO(#580): flip the linked work item's native Status To do → In Progress
-    // via the GraphQL `workItemUpdate` mutation, mechanism-aware (no-op-with-
-    // warning when the project lacks the Status widget; never a vestigial label).
-    // Set `status_transition` on the response when applied.
+    // Flip the linked work item's native Status To do → In progress (#580).
+    // Mechanism-aware + coupling-aware + non-fatal — see gitlab-work-item-status.ts.
+    const status = markWorkItemInProgressGitlab(core.data.issue_number, cwd, args.repo);
+    if (status.warning) warnings.push(status.warning);
 
     return {
       ok: true,
@@ -68,6 +69,7 @@ export async function branchCreateGitlab(
         base_sha: core.data.base_sha,
         issue_number: core.data.issue_number,
         ...(issue_assigned !== undefined ? { issue_assigned } : {}),
+        ...(status.status_transition ? { status_transition: status.status_transition } : {}),
         ...(warnings.length > 0 ? { warnings } : {}),
       },
     };
