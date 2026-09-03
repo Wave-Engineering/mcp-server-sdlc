@@ -29,7 +29,7 @@ function envelope(payload: unknown) {
 const branchCreateHandler: HandlerDef = {
   name: 'branch_create',
   description:
-    'Create a local issue branch (<type>/<N>-description) off the updated base and additively self-assign the linked issue. Refuses on a dirty tree; no auto-push. (The GitLab work-item Status transition To do → In Progress is not yet applied — deferred to #580.) A convenience, not a gate.',
+    'Create a local issue branch (<type>/<N>-description) off the updated base and additively self-assign the linked issue. Refuses on a dirty tree; no auto-push. On GitLab it also transitions the linked work item\'s native Status To do → In progress (when the project exposes the Status widget; skipped for a Done/closed item to avoid reopening it). A convenience, not a gate.',
   inputSchema,
   async execute(rawArgs: unknown) {
     let args;
