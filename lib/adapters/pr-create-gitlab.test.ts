@@ -62,6 +62,8 @@ describe('prCreateGitlab — subprocess boundary', () => {
   test('glab CLI invocation matches expected argv shape (happy path)', async () => {
     onExec('git branch --show-current', 'feature/gl\n');
     onExec('glab mr create', 'https://gitlab.com/o/r/-/merge_requests/9\n');
+    // Self-assign resolves the current user via `glab api /user` (#577).
+    onExec('glab api /user', JSON.stringify({ username: 'bj-bots' }));
     // Post-create lookup goes via `glab api projects/.../merge_requests?source_branch=...`
     // (#383 — `glab mr view -F json` does not exist on glab 1.36.0).
     onExec(
@@ -95,10 +97,35 @@ describe('prCreateGitlab — subprocess boundary', () => {
     expect(createCall).toContain('feature/gl');
     // --yes is the load-bearing non-interactive flag for glab.
     expect(createCall).toContain('--yes');
+    // Self-assign at creation (#577): resolved username, not gh's `@me`.
+    expect(createCall).toContain("'--assignee' 'bj-bots'");
     expect(createCall).not.toContain('--draft');
     // Regression guard for #383: post-create lookup MUST NOT use
     // `glab mr view -F json` (the broken pre-#383 form).
     expect(execCalls().some((c) => c.includes('mr view') && c.includes('-F'))).toBe(false);
+  });
+
+  test('self-assign omitted (not fatal) when glab api /user fails (#577)', async () => {
+    onExec('git branch --show-current', 'feature/solo\n');
+    onExec('glab mr create', 'created\n');
+    // No `glab api /user` stub → unmatched → resolveGitlabSelfSync returns null.
+    // The MR must still be created, just without --assignee.
+    onExec(
+      'merge_requests?source_branch',
+      JSON.stringify([{
+        iid: 30,
+        web_url: 'https://gitlab.com/o/r/-/merge_requests/30',
+        state: 'opened',
+        source_branch: 'feature/solo',
+        target_branch: 'main',
+      }]),
+    );
+
+    const result = await prCreateGitlab({ title: 't', body: 'b', base: 'main' });
+    expectOk(result);
+    const createCall = findCall('glab mr create');
+    expect(createCall).not.toContain('--assignee');
+    expect(result.data.number).toBe(30);
   });
 
   test('runs glab in args.cwd when supplied (#453)', async () => {

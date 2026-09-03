@@ -18,6 +18,7 @@
 import { execSync } from 'child_process';
 import { runArgv } from '../shared/error-norm.js';
 import { resolveDefaultBranchGitlabSync } from './resolve-default-branch-gitlab.js';
+import { resolveGitlabSelfSync } from './resolve-gitlab-self.js';
 import type {
   AdapterResult,
   PrCreateArgs,
@@ -101,6 +102,12 @@ export async function prCreateGitlab(
       '--source-branch', head,
       '--yes',
     ];
+    // Self-assign at creation (#577). glab's `--assignee` takes a username (not
+    // gh's `@me`), so resolve the current user first. Non-fatal: if resolution
+    // returns null (unauthed/offline), the MR is created unassigned rather than
+    // failing — a comfort must never block the create.
+    const self = resolveGitlabSelfSync(cwd);
+    if (self) createCmd.push('--assignee', self);
     if (args.draft) createCmd.push('--draft');
     if (args.repo !== undefined) createCmd.push('-R', args.repo);
 

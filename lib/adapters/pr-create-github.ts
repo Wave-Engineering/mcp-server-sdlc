@@ -94,6 +94,10 @@ export async function prCreateGithub(
       '--body', args.body,
       '--base', base,
       '--head', head,
+      // Self-assign at creation (#577). `@me` is server-resolved by gh and the
+      // author is always assignable to their own PR, so this cannot fail the
+      // create.
+      '--assignee', '@me',
     ];
     if (args.draft) createCmd.push('--draft');
     if (args.repo !== undefined) createCmd.push('--repo', args.repo);
