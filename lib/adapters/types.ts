@@ -997,6 +997,45 @@ export interface CreateBranchArgs {
 }
 
 /**
+ * `branchCreate` (#579) — the LOCAL-checkout, issue-branch convenience tool.
+ *
+ * Distinct from `createBranch` above (the remote-ref KAHUNA bootstrap). This one
+ * validates the name against the canonical `<type>/<N>-description` shape, refuses
+ * on a dirty tree, then `git checkout <base> && git pull --ff-only && git checkout
+ * -b <name>` locally (no auto-push — `pr_create` owns first push), and additively
+ * self-assigns the linked issue. On GitLab it also flips the work-item Status
+ * To do → In Progress (#580).
+ *
+ * The git steps are platform-agnostic (see `branch-create-core.ts`); the per-
+ * platform adapters add default-branch resolution, self-assign, and (GitLab)
+ * the status transition.
+ */
+export interface BranchCreateArgs {
+  /** Full branch name in `<type>/<N>-description` form. */
+  branch: string;
+  /** Base to branch from; defaults to the repo's live default branch. */
+  base?: string;
+  repo?: string;
+  /** Working directory for the git/CLI invocations; defaults to CLAUDE_PROJECT_DIR ?? process.cwd(). */
+  cwd?: string;
+}
+
+export interface BranchCreateResponse {
+  branch: string;
+  base: string;
+  /** HEAD sha of the new branch (== base tip after the ff-pull). */
+  base_sha: string;
+  /** Issue number parsed from the branch name. */
+  issue_number: number;
+  /** Present when the linked issue was self-assigned to the author. */
+  issue_assigned?: number;
+  /** GitLab only: the work-item Status transition applied (#580). */
+  status_transition?: { from: string; to: string };
+  /** Non-fatal warnings (failed self-assign, unresolved user, etc.). */
+  warnings?: string[];
+}
+
+/**
  * Hybrid sub-call (Story 2.21, #315). `findMergedPrForBranchPrefix` collapses
  * the handler-local `queryGithubMergedPrs` / `queryGitlabMergedMrs` helpers
  * lifted from the pre-migration `wave_reconcile_mrs` handler. Returns the
@@ -1159,6 +1198,7 @@ export interface PlatformAdapter {
     args: ResolveMergeAnchorArgs,
   ): Promise<AdapterResult<MergeAnchor>>;
   createBranch(args: CreateBranchArgs): Promise<AdapterResult<void>>;
+  branchCreate(args: BranchCreateArgs): Promise<AdapterResult<BranchCreateResponse>>;
   findExistingPr(
     args: FindExistingPrArgs,
   ): Promise<AdapterResult<NormalizedPr | null>>;
@@ -1215,6 +1255,7 @@ export const PLATFORM_ADAPTER_METHODS = [
   'resolveBranchSha',
   'resolveMergeAnchor',
   'createBranch',
+  'branchCreate',
   'findExistingPr',
   'fetchCiTrustSignal',
   'resolveDefaultBranch',

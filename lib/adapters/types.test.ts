@@ -117,6 +117,8 @@ describe('PlatformAdapter contract', () => {
     'workItem',
     'workItemUpdate',
     'createBranch',
+    // #579: branch_create local-checkout convenience — real impl, not a stub.
+    'branchCreate',
     'findExistingPr',
     'fetchCiTrustSignal',
     // #465: branch_guard live default-branch query — real impl, not a stub.
