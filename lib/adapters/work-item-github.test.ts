@@ -146,6 +146,17 @@ describe('workItemGithub — subprocess boundary', () => {
     expect(result.data.number).toBe(99);
   });
 
+  test("type:'pr' self-assigns linked Closes #N issues (#578)", async () => {
+    onExec('gh pr create', 'https://github.com/org/repo/pull/70\n');
+    onExec('gh issue edit 21', 'ok\n');
+
+    const result = await workItemGithub({ type: 'pr', title: 'P', body: 'Closes #21' });
+    expectOk(result);
+    expect(result.data.linked_issues_assigned).toEqual([21]);
+    const editCall = execCalls().find((c) => c.includes("'gh' 'issue' 'edit' '21'")) ?? '';
+    expect(editCall).toContain("'--add-assignee' '@me'");
+  });
+
   test("type:'pr' gets no automatic type label; caller labels still forwarded", async () => {
     onExec('gh pr create', 'https://github.com/org/repo/pull/5\n');
 

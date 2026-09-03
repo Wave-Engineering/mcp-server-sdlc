@@ -148,6 +148,18 @@ describe('workItemGitlab — subprocess boundary', () => {
     expect(result.data.number).toBe(8);
   });
 
+  test("type:'mr' self-assigns linked Closes #N issues (#578)", async () => {
+    onExec('glab mr create', 'https://gitlab.com/org/repo/-/merge_requests/71\n');
+    onExec('glab api /user', JSON.stringify({ username: 'bj-bots' }));
+    onExec('glab issue update 21', 'ok\n');
+
+    const result = await workItemGitlab({ type: 'mr', title: 'P', body: 'Closes #21' });
+    expectOk(result);
+    expect(result.data.linked_issues_assigned).toEqual([21]);
+    const upd = execCalls().find((c) => c.includes("'glab' 'issue' 'update' '21'")) ?? '';
+    expect(upd).toContain("'--assignee' '+bj-bots'");
+  });
+
   test("type:'mr' gets no automatic type label; caller labels still forwarded as CSV", async () => {
     onExec('glab mr create', 'https://gitlab.com/org/repo/-/merge_requests/5\n');
 

@@ -12,6 +12,7 @@
 import { execSync } from 'child_process';
 import { runArgv, type RunResult } from '../shared/error-norm.js';
 import { resolveDefaultBranchGithubSync } from './resolve-default-branch-github.js';
+import { selfAssignLinkedIssuesGithub, withLinkedAssign } from './self-assign-linked-issues.js';
 import type {
   AdapterResult,
   PrCreateArgs,
@@ -151,16 +152,22 @@ export async function prCreateGithub(
       headRefName: string;
       baseRefName: string;
     };
+    // Additively self-assign the author to the issues this PR closes (#578).
+    // Non-fatal — the PR already exists; a failed assign is a warning, not an error.
+    const linked = selfAssignLinkedIssuesGithub(args.body, cwd, args.repo);
     return {
       ok: true,
-      data: {
-        number: parsed.number,
-        url: parsed.url,
-        state: 'open',
-        head: parsed.headRefName,
-        base: parsed.baseRefName,
-        created: true,
-      },
+      data: withLinkedAssign(
+        {
+          number: parsed.number,
+          url: parsed.url,
+          state: 'open' as const,
+          head: parsed.headRefName,
+          base: parsed.baseRefName,
+          created: true,
+        },
+        linked,
+      ),
     };
   } catch (err) {
     return {

@@ -74,6 +74,13 @@ export interface PrCreateResponse {
   base: string;
   /** True when this call created the PR/MR; false when it pre-existed (idempotent path). */
   created: boolean;
+  /**
+   * Issue numbers the author was additively self-assigned to, parsed from the
+   * body's Closes/Fixes/Resolves refs (#578). Present only when ≥1 was assigned.
+   */
+  linked_issues_assigned?: number[];
+  /** Non-fatal warnings from the linked-issue self-assign (#578). Present only when non-empty. */
+  linked_issue_assign_warnings?: string[];
 }
 export interface PrMergeArgs {
   number: number;
@@ -777,6 +784,14 @@ export interface WorkItemArgs {
 export interface WorkItemResponse {
   url: string;
   number: number;
+  /**
+   * Issue numbers the author was additively self-assigned to, parsed from a
+   * pr/mr body's Closes/Fixes/Resolves refs (#578). Present only when ≥1 was
+   * assigned (issue-type creates never set this).
+   */
+  linked_issues_assigned?: number[];
+  /** Non-fatal warnings from the linked-issue self-assign (#578). Present only when non-empty. */
+  linked_issue_assign_warnings?: string[];
 }
 
 /**
