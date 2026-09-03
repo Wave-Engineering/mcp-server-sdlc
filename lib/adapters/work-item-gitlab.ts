@@ -37,6 +37,7 @@
 
 import { execSync } from 'child_process';
 import { runArgv } from '../shared/error-norm.js';
+import { resolveGitlabSelfSync } from './resolve-gitlab-self.js';
 import type {
   AdapterResult,
   WorkItemArgs,
@@ -152,6 +153,11 @@ export async function workItemGitlab(
     if (args.head_branch !== undefined) cmd.push('--source-branch', args.head_branch);
     if (args.base_branch !== undefined) cmd.push('--target-branch', args.base_branch);
     if (args.draft) cmd.push('--draft');
+    // Self-assign at creation (#577). glab's `--assignee` takes a username (not
+    // gh's `@me`), so resolve the current user first. Non-fatal — a null
+    // resolution creates the MR unassigned rather than failing.
+    const self = resolveGitlabSelfSync(cwd);
+    if (self) cmd.push('--assignee', self);
     const labels = args.labels ?? [];
     if (labels.length > 0) {
       cmd.push('--label', labels.join(','));

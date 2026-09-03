@@ -141,6 +141,8 @@ describe('workItemGithub — subprocess boundary', () => {
     expect(call).toContain("'--head' 'feature/1-foo'");
     expect(call).toContain("'--base' 'main'");
     expect(call).toContain('--draft');
+    // Self-assign at creation (#577).
+    expect(call).toContain("'--assignee' '@me'");
     expect(result.data.number).toBe(99);
   });
 

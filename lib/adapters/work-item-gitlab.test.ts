@@ -114,6 +114,8 @@ describe('workItemGitlab — subprocess boundary', () => {
 
   test("argv: glab mr create for type:'mr' with source/target/draft", async () => {
     onExec('glab mr create', 'https://gitlab.com/org/repo/-/merge_requests/99\n');
+    // Self-assign resolves the current user via `glab api /user` (#577).
+    onExec('glab api /user', JSON.stringify({ username: 'bj-bots' }));
 
     const result = await workItemGitlab({
       type: 'mr',
@@ -131,7 +133,19 @@ describe('workItemGitlab — subprocess boundary', () => {
     expect(call).toContain("'--source-branch' 'feature/2-bar'");
     expect(call).toContain("'--target-branch' 'main'");
     expect(call).toContain('--draft');
+    // Self-assign at creation (#577): resolved username, not gh's `@me`.
+    expect(call).toContain("'--assignee' 'bj-bots'");
     expect(result.data.number).toBe(99);
+  });
+
+  test("type:'mr' self-assign is omitted (not fatal) when glab api /user fails (#577)", async () => {
+    onExec('glab mr create', 'https://gitlab.com/org/repo/-/merge_requests/8\n');
+    // No `glab api /user` stub → unmatched → resolveGitlabSelfSync returns null.
+    const result = await workItemGitlab({ type: 'mr', title: 'Solo', head_branch: 'x', base_branch: 'main' });
+    expectOk(result);
+    const call = findCall('glab mr create');
+    expect(call).not.toContain('--assignee');
+    expect(result.data.number).toBe(8);
   });
 
   test("type:'mr' gets no automatic type label; caller labels still forwarded as CSV", async () => {

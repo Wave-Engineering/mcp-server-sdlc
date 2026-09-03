@@ -99,6 +99,8 @@ describe('prCreateGithub — subprocess boundary', () => {
     expect(createCall).toContain('main');
     expect(createCall).toContain('--head');
     expect(createCall).toContain('feature/x');
+    // Self-assign at creation (#577): gh resolves `@me` server-side.
+    expect(createCall).toContain("'--assignee' '@me'");
     // Draft flag absent when not requested.
     expect(createCall).not.toContain('--draft');
   });

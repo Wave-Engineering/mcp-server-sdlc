@@ -153,7 +153,9 @@ export async function workItemGithub(
     }
 
     // args.type === 'pr'
-    const cmd = ['gh', 'pr', 'create', '--title', args.title, '--body', body];
+    // Self-assign at creation (#577) — `@me` is server-resolved by gh; the author
+    // is always assignable to their own PR, so this cannot fail the create.
+    const cmd = ['gh', 'pr', 'create', '--title', args.title, '--body', body, '--assignee', '@me'];
     if (args.head_branch !== undefined) cmd.push('--head', args.head_branch);
     if (args.base_branch !== undefined) cmd.push('--base', args.base_branch);
     if (args.draft) cmd.push('--draft');
