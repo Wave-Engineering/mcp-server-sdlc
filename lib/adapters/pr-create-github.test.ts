@@ -105,6 +105,22 @@ describe('prCreateGithub — subprocess boundary', () => {
     expect(createCall).not.toContain('--draft');
   });
 
+  test('self-assigns linked Closes #N issues, surfacing linked_issues_assigned (#578)', async () => {
+    onExec('git branch --show-current', 'fix/1-x\n');
+    onExec('gh pr create', 'https://github.com/o/r/pull/50\n');
+    onExec('gh pr view', JSON.stringify({
+      number: 50, url: 'https://github.com/o/r/pull/50', state: 'OPEN',
+      headRefName: 'fix/1-x', baseRefName: 'main',
+    }));
+    onExec('gh issue edit 12', 'ok\n');
+
+    const result = await prCreateGithub({ title: 't', body: 'Fix.\n\nCloses #12', base: 'main' });
+    expectOk(result);
+    expect(result.data.linked_issues_assigned).toEqual([12]);
+    const editCall = execCalls().find((c) => c.includes("'gh' 'issue' 'edit' '12'")) ?? '';
+    expect(editCall).toContain("'--add-assignee' '@me'");
+  });
+
   test('parses gh pr view response into PrCreateResponse', async () => {
     onExec('git branch --show-current', 'feature/y\n');
     onExec('gh pr create', 'https://github.com/o/r/pull/7\n');

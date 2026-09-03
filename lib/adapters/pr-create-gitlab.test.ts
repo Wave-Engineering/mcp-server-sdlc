@@ -128,6 +128,23 @@ describe('prCreateGitlab — subprocess boundary', () => {
     expect(result.data.number).toBe(30);
   });
 
+  test('self-assigns linked Closes #N issues on MR create (#578)', async () => {
+    onExec('git branch --show-current', 'fix/9-y\n');
+    onExec('glab mr create', 'created\n');
+    onExec('glab api /user', JSON.stringify({ username: 'bj-bots' }));
+    onExec('glab issue update 12', 'ok\n');
+    onExec('merge_requests?source_branch', JSON.stringify([{
+      iid: 40, web_url: 'https://gitlab.com/o/r/-/merge_requests/40',
+      state: 'opened', source_branch: 'fix/9-y', target_branch: 'main',
+    }]));
+
+    const result = await prCreateGitlab({ title: 't', body: 'Closes #12', base: 'main' });
+    expectOk(result);
+    expect(result.data.linked_issues_assigned).toEqual([12]);
+    const upd = execCalls().find((c) => c.includes("'glab' 'issue' 'update' '12'")) ?? '';
+    expect(upd).toContain("'--assignee' '+bj-bots'");
+  });
+
   test('runs glab in args.cwd when supplied (#453)', async () => {
     onExec('git branch --show-current', 'feature/rooted\n');
     onExec('glab mr create', 'created\n');

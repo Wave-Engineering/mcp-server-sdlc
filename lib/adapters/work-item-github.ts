@@ -34,6 +34,7 @@
 
 import { execSync } from 'child_process';
 import { runArgv } from '../shared/error-norm.js';
+import { selfAssignLinkedIssuesGithub, withLinkedAssign } from './self-assign-linked-issues.js';
 import type {
   AdapterResult,
   WorkItemArgs,
@@ -172,7 +173,9 @@ export async function workItemGithub(
         error: `gh pr create failed: ${result.stderr.trim() || result.stdout.trim()}`,
       };
     }
-    return { ok: true, data: parseGhOutput(result.stdout) };
+    // Additively self-assign the author to the issues this PR closes (#578).
+    const linked = selfAssignLinkedIssuesGithub(body, cwd, args.repo);
+    return { ok: true, data: withLinkedAssign(parseGhOutput(result.stdout), linked) };
   } catch (err) {
     return {
       ok: false,

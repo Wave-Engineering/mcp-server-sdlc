@@ -19,6 +19,7 @@ import { execSync } from 'child_process';
 import { runArgv } from '../shared/error-norm.js';
 import { resolveDefaultBranchGitlabSync } from './resolve-default-branch-gitlab.js';
 import { resolveGitlabSelfSync } from './resolve-gitlab-self.js';
+import { selfAssignLinkedIssuesGitlab, withLinkedAssign } from './self-assign-linked-issues.js';
 import type {
   AdapterResult,
   PrCreateArgs,
@@ -145,9 +146,12 @@ export async function prCreateGitlab(
         error: `glab api lookup of MR for source_branch=${head} returned no opened MR after create; the create may have succeeded — verify in the GitLab UI`,
       };
     }
+    // Additively self-assign the author to the issues this MR closes (#578).
+    // Non-fatal — the MR already exists; a failed assign is a warning, not an error.
+    const linked = selfAssignLinkedIssuesGitlab(args.body, cwd, args.repo);
     return {
       ok: true,
-      data: { ...found, created: true },
+      data: withLinkedAssign({ ...found, created: true }, linked),
     };
   } catch (err) {
     return {

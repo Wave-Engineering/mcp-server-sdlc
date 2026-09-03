@@ -38,6 +38,7 @@
 import { execSync } from 'child_process';
 import { runArgv } from '../shared/error-norm.js';
 import { resolveGitlabSelfSync } from './resolve-gitlab-self.js';
+import { selfAssignLinkedIssuesGitlab, withLinkedAssign } from './self-assign-linked-issues.js';
 import type {
   AdapterResult,
   WorkItemArgs,
@@ -172,7 +173,9 @@ export async function workItemGitlab(
         error: `glab mr create failed: ${result.stderr.trim() || result.stdout.trim()}`,
       };
     }
-    return { ok: true, data: parseGlabOutput(result.stdout) };
+    // Additively self-assign the author to the issues this MR closes (#578).
+    const linked = selfAssignLinkedIssuesGitlab(body, cwd, args.repo);
+    return { ok: true, data: withLinkedAssign(parseGlabOutput(result.stdout), linked) };
   } catch (err) {
     return {
       ok: false,
