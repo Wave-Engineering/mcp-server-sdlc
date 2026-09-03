@@ -106,6 +106,7 @@ export interface PlatformAdapter {
     args: ResolveBranchShaArgs,
   ): Promise<AdapterResult<ResolveBranchShaResponse | null>>;
   createBranch(args: CreateBranchArgs): Promise<AdapterResult<void>>;
+  branchCreate(args: BranchCreateArgs): Promise<AdapterResult<BranchCreateResponse>>;
   findExistingPr(
     args: FindExistingPrArgs,
   ): Promise<AdapterResult<NormalizedPr | null>>;

@@ -52,7 +52,49 @@ export function parseCloseRefs(body: string | undefined): number[] {
   return out;
 }
 
-/** GitHub: `gh issue edit <N> --add-assignee @me` per ref (additive, idempotent). */
+export interface SingleAssignResult {
+  ok: boolean;
+  /** Present only on failure. */
+  warning?: string;
+}
+
+/**
+ * GitHub: additively self-assign the author to ONE issue —
+ * `gh issue edit <N> --add-assignee @me`. Additive + idempotent (platform-native).
+ * The reusable primitive shared by the linked-issue loop (#578) and branch_create (#579).
+ */
+export function selfAssignIssueGithub(
+  n: number,
+  cwd: string,
+  repo: string | undefined,
+): SingleAssignResult {
+  const cmd = ['gh', 'issue', 'edit', String(n), '--add-assignee', '@me'];
+  if (repo !== undefined) cmd.push('--repo', repo);
+  const result = runArgv(cmd, cwd);
+  if (result.exitCode === 0) return { ok: true };
+  return { ok: false, warning: `self-assign of issue #${n} failed: ${result.stderr.trim() || 'non-zero exit'}` };
+}
+
+/**
+ * GitLab: additively self-assign the author to ONE issue —
+ * `glab issue update <N> --assignee +<user>` (the `+` prefix is glab's additive
+ * form). The resolved current `self` username is passed in (resolve once, assign
+ * many). Shared by the linked-issue loop (#578) and branch_create (#579).
+ */
+export function selfAssignIssueGitlab(
+  n: number,
+  self: string,
+  cwd: string,
+  repo: string | undefined,
+): SingleAssignResult {
+  const cmd = ['glab', 'issue', 'update', String(n), '--assignee', `+${self}`];
+  if (repo !== undefined) cmd.push('-R', repo);
+  const result = runArgv(cmd, cwd);
+  if (result.exitCode === 0) return { ok: true };
+  return { ok: false, warning: `self-assign of issue #${n} failed: ${result.stderr.trim() || 'non-zero exit'}` };
+}
+
+/** GitHub: `gh issue edit <N> --add-assignee @me` per close-ref (additive, idempotent). */
 export function selfAssignLinkedIssuesGithub(
   body: string | undefined,
   cwd: string,
@@ -62,11 +104,9 @@ export function selfAssignLinkedIssuesGithub(
   const assigned: number[] = [];
   const warnings: string[] = [];
   for (const n of refs) {
-    const cmd = ['gh', 'issue', 'edit', String(n), '--add-assignee', '@me'];
-    if (repo !== undefined) cmd.push('--repo', repo);
-    const result = runArgv(cmd, cwd);
-    if (result.exitCode === 0) assigned.push(n);
-    else warnings.push(`self-assign of issue #${n} failed: ${result.stderr.trim() || 'non-zero exit'}`);
+    const r = selfAssignIssueGithub(n, cwd, repo);
+    if (r.ok) assigned.push(n);
+    else if (r.warning) warnings.push(r.warning);
   }
   return { assigned, warnings };
 }
@@ -95,11 +135,9 @@ export function selfAssignLinkedIssuesGitlab(
   const assigned: number[] = [];
   const warnings: string[] = [];
   for (const n of refs) {
-    const cmd = ['glab', 'issue', 'update', String(n), '--assignee', `+${self}`];
-    if (repo !== undefined) cmd.push('-R', repo);
-    const result = runArgv(cmd, cwd);
-    if (result.exitCode === 0) assigned.push(n);
-    else warnings.push(`self-assign of issue #${n} failed: ${result.stderr.trim() || 'non-zero exit'}`);
+    const r = selfAssignIssueGitlab(n, self, cwd, repo);
+    if (r.ok) assigned.push(n);
+    else if (r.warning) warnings.push(r.warning);
   }
   return { assigned, warnings };
 }
