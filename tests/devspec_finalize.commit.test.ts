@@ -133,7 +133,7 @@ describe('devspec_finalize — commit-on-pass (#458)', () => {
     // shell-escaped token so the substring cannot pass vacuously across quotes.
     const commitCall = execCalls().find(c => c.replace(/'/g, '').includes('git commit'));
     expect(commitCall).toBeDefined();
-    expect(commitCall).toContain(shellEscape('docs(devspec): finalize Dev Spec for Plan #77'));
+    expect(commitCall).toContain(shellEscape('doc(devspec): finalize Dev Spec for Plan #77'));
     // The spec path is staged and pathspec-limits the commit.
     expect(commitCall).toContain(shellEscape(path));
   });

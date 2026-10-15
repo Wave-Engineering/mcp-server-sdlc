@@ -9,7 +9,7 @@ import type { AdapterResult, PrFilesResponse } from './types.ts';
 
 // Subprocess-boundary tests for the GitLab pr_files adapter (R-15).
 // Integration-level coverage stays in tests/pr_files.test.ts. This file
-// covers argv-shape, MR-changes parsing, the boolean → status mapping
+// covers argv-shape, MR /diffs parsing and pagination, the boolean → status mapping
 // table (added/modified/removed/renamed), and parseDiffStats invariants.
 
 interface ThrowableError extends Error {
@@ -54,19 +54,17 @@ describe('prFilesGitlab — subprocess boundary', () => {
   test('glab CLI invocation matches expected argv shape (happy path)', async () => {
     onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
     onExec(
-      'glab api projects/org%2Frepo/merge_requests/3',
-      JSON.stringify({
-        changes: [
-          {
-            new_path: 'src/brand-new.ts',
-            old_path: 'src/brand-new.ts',
-            new_file: true,
-            renamed_file: false,
-            deleted_file: false,
-            diff: '--- /dev/null\n+++ b/src/brand-new.ts\n@@ -0,0 +1,2 @@\n+a\n+b\n',
-          },
-        ],
-      }),
+      'glab api projects/org%2Frepo/merge_requests/3/diffs',
+      JSON.stringify([
+        {
+          new_path: 'src/brand-new.ts',
+          old_path: 'src/brand-new.ts',
+          new_file: true,
+          renamed_file: false,
+          deleted_file: false,
+          diff: '--- /dev/null\n+++ b/src/brand-new.ts\n@@ -0,0 +1,2 @@\n+a\n+b\n',
+        },
+      ]),
     );
 
     const result = await prFilesGitlab({ number: 3 });
@@ -74,7 +72,9 @@ describe('prFilesGitlab — subprocess boundary', () => {
     expect(result.data.number).toBe(3);
 
     const call = findCall('glab api projects/');
-    expect(call).toContain('merge_requests/3');
+    // #590: the file list comes from /diffs; the single-MR endpoint has no changes[].
+    expect(call).toContain('merge_requests/3/diffs');
+    expect(call).toContain('-X GET -f per_page=100 -f page=1');
     // Slug must be URL-encoded.
     expect(call).toContain('org%2Frepo');
   });
@@ -82,43 +82,41 @@ describe('prFilesGitlab — subprocess boundary', () => {
   test('parses MR diffs response into PrFilesResponse with derived stats', async () => {
     onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
     onExec(
-      'glab api projects/org%2Frepo/merge_requests/11',
-      JSON.stringify({
-        changes: [
-          {
-            new_path: 'added.ts',
-            old_path: 'added.ts',
-            new_file: true,
-            renamed_file: false,
-            deleted_file: false,
-            diff: '--- /dev/null\n+++ b/added.ts\n@@ -0,0 +1,2 @@\n+a\n+b\n',
-          },
-          {
-            new_path: 'modified.ts',
-            old_path: 'modified.ts',
-            new_file: false,
-            renamed_file: false,
-            deleted_file: false,
-            diff: '--- a/modified.ts\n+++ b/modified.ts\n@@ -1,2 +1,2 @@\n-old\n+new\n context\n',
-          },
-          {
-            new_path: 'removed.ts',
-            old_path: 'removed.ts',
-            new_file: false,
-            renamed_file: false,
-            deleted_file: true,
-            diff: '--- a/removed.ts\n+++ /dev/null\n@@ -1,3 +0,0 @@\n-one\n-two\n-three\n',
-          },
-          {
-            new_path: 'new-name.ts',
-            old_path: 'old-name.ts',
-            new_file: false,
-            renamed_file: true,
-            deleted_file: false,
-            diff: '',
-          },
-        ],
-      }),
+      'glab api projects/org%2Frepo/merge_requests/11/diffs',
+      JSON.stringify([
+        {
+          new_path: 'added.ts',
+          old_path: 'added.ts',
+          new_file: true,
+          renamed_file: false,
+          deleted_file: false,
+          diff: '--- /dev/null\n+++ b/added.ts\n@@ -0,0 +1,2 @@\n+a\n+b\n',
+        },
+        {
+          new_path: 'modified.ts',
+          old_path: 'modified.ts',
+          new_file: false,
+          renamed_file: false,
+          deleted_file: false,
+          diff: '--- a/modified.ts\n+++ b/modified.ts\n@@ -1,2 +1,2 @@\n-old\n+new\n context\n',
+        },
+        {
+          new_path: 'removed.ts',
+          old_path: 'removed.ts',
+          new_file: false,
+          renamed_file: false,
+          deleted_file: true,
+          diff: '--- a/removed.ts\n+++ /dev/null\n@@ -1,3 +0,0 @@\n-one\n-two\n-three\n',
+        },
+        {
+          new_path: 'new-name.ts',
+          old_path: 'old-name.ts',
+          new_file: false,
+          renamed_file: true,
+          deleted_file: false,
+          diff: '',
+        },
+      ]),
     );
 
     const result = await prFilesGitlab({ number: 11 });
@@ -136,19 +134,17 @@ describe('prFilesGitlab — subprocess boundary', () => {
   test('renamed file with diff still counts hunk stats', async () => {
     onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
     onExec(
-      'glab api projects/org%2Frepo/merge_requests/15',
-      JSON.stringify({
-        changes: [
-          {
-            new_path: 'b.ts',
-            old_path: 'a.ts',
-            new_file: false,
-            renamed_file: true,
-            deleted_file: false,
-            diff: '--- a/a.ts\n+++ b/b.ts\n@@ -1,2 +1,3 @@\n existing\n-old\n+new\n+extra\n',
-          },
-        ],
-      }),
+      'glab api projects/org%2Frepo/merge_requests/15/diffs',
+      JSON.stringify([
+        {
+          new_path: 'b.ts',
+          old_path: 'a.ts',
+          new_file: false,
+          renamed_file: true,
+          deleted_file: false,
+          diff: '--- a/a.ts\n+++ b/b.ts\n@@ -1,2 +1,3 @@\n existing\n-old\n+new\n+extra\n',
+        },
+      ]),
     );
 
     const result = await prFilesGitlab({ number: 15 });
@@ -164,18 +160,16 @@ describe('prFilesGitlab — subprocess boundary', () => {
   test('falls back to old_path when new_path absent (deleted file)', async () => {
     onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
     onExec(
-      'glab api projects/org%2Frepo/merge_requests/4',
-      JSON.stringify({
-        changes: [
-          {
-            old_path: 'gone.ts',
-            new_file: false,
-            renamed_file: false,
-            deleted_file: true,
-            diff: '--- a/gone.ts\n+++ /dev/null\n@@ -1,1 +0,0 @@\n-x\n',
-          },
-        ],
-      }),
+      'glab api projects/org%2Frepo/merge_requests/4/diffs',
+      JSON.stringify([
+        {
+          old_path: 'gone.ts',
+          new_file: false,
+          renamed_file: false,
+          deleted_file: true,
+          diff: '--- a/gone.ts\n+++ /dev/null\n@@ -1,1 +0,0 @@\n-x\n',
+        },
+      ]),
     );
 
     const result = await prFilesGitlab({ number: 4 });
@@ -184,15 +178,51 @@ describe('prFilesGitlab — subprocess boundary', () => {
     expect(result.data.files[0].status).toBe('removed');
   });
 
-  test('missing changes field returns empty list and zero totals', async () => {
+  test('empty diffs array returns empty list and zero totals', async () => {
     onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    onExec('glab api projects/org%2Frepo/merge_requests/50', JSON.stringify({}));
+    onExec('glab api projects/org%2Frepo/merge_requests/50/diffs', JSON.stringify([]));
 
     const result = await prFilesGitlab({ number: 50 });
     expectOk(result);
     expect(result.data.files).toEqual([]);
     expect(result.data.total_additions).toBe(0);
     expect(result.data.total_deletions).toBe(0);
+  });
+
+  test('follows pagination until a short page (#590)', async () => {
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    const entry = (i: number) => ({ new_path: `f${String(i)}.ts`, diff: '@@ -0,0 +1 @@\n+x\n' });
+    onExec(
+      'merge_requests/9/diffs -X GET -f per_page=100 -f page=1',
+      JSON.stringify(Array.from({ length: 100 }, (_, i) => entry(i))),
+    );
+    onExec('merge_requests/9/diffs -X GET -f per_page=100 -f page=2', JSON.stringify([entry(100), entry(101)]));
+
+    const result = await prFilesGitlab({ number: 9 });
+    expectOk(result);
+    expect(result.data.files).toHaveLength(102);
+    expect(result.data.total_additions).toBe(102);
+    expect(execCalls().filter((c) => c.includes('merge_requests/9/diffs'))).toHaveLength(2);
+  });
+
+  test('refuses a truncated list: more pages than the cap → ok:false (#590)', async () => {
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    const fullPage = JSON.stringify(Array.from({ length: 100 }, (_, i) => ({ new_path: `f${String(i)}.ts` })));
+    onExec('merge_requests/12/diffs', fullPage);
+
+    const result = await prFilesGitlab({ number: 12 });
+    expectErr(result);
+    expect(result.error).toContain('truncated');
+  });
+
+  test('a non-array /diffs response is an error, not an empty list (#590)', async () => {
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    // The single-MR object shape — what the adapter wrongly read before #590.
+    onExec('glab api projects/org%2Frepo/merge_requests/13/diffs', JSON.stringify({ changes_count: '3' }));
+
+    const result = await prFilesGitlab({ number: 13 });
+    expectErr(result);
+    expect(result.error).toContain('non-array');
   });
 
   test('returns AdapterResult{ok:false, code} on glab failure (not thrown)', async () => {
@@ -212,10 +242,7 @@ describe('prFilesGitlab — subprocess boundary', () => {
 
   test('args.repo slug routed into glab api path (URL-encoded), overriding cwd remote', async () => {
     onExec('git remote get-url origin', 'https://gitlab.com/cwd-org/cwd-repo.git');
-    onExec(
-      'glab api projects/target-org%2Ftarget-repo/merge_requests/8',
-      JSON.stringify({ changes: [] }),
-    );
+    onExec('glab api projects/target-org%2Ftarget-repo/merge_requests/8/diffs', JSON.stringify([]));
 
     const result = await prFilesGitlab({ number: 8, repo: 'target-org/target-repo' });
     expectOk(result);

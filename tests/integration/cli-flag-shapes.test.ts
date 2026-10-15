@@ -11,6 +11,8 @@
 
 import { describe, test, expect } from 'bun:test';
 import { execSync } from 'child_process';
+import { readdirSync, readFileSync } from 'fs';
+import { join } from 'path';
 
 // --- Helper ----------------------------------------------------------------
 // `gh` and `glab` write `--help` output to different streams depending on
@@ -247,14 +249,6 @@ describe('GitLab CLI flag shapes', () => {
     matchOrSkip(help, /USAGE/);
   });
 
-  test('glab mr view does NOT accept -F flag (regression guard for #383)', () => {
-    // This is the broken flag from #383.
-    // Our adapter now uses `glab api projects/.../merge_requests` instead.
-    const help = captureHelp('glab mr view --help');
-    notMatchOrSkip(help, /-F[, ]/);
-    notMatchOrSkip(help, /--format/);
-  });
-
   test('glab mr create accepts required flags', () => {
     // Used by pr_create handler (via pr-create-gitlab adapter)
     const help = captureHelp('glab mr create --help');
@@ -377,5 +371,42 @@ describe('API-based operations (URL encoding)', () => {
       expect(combined).not.toMatch(/malformed/i);
       expect(combined).not.toMatch(/unknown flag/i);
     }
+  });
+});
+
+// Source-level guard: needs no glab, so it lives outside the hasGlab()-gated
+// blocks above and runs in CI, where glab is not installed.
+describe('GitLab adapter source', () => {
+  test('no adapter calls `glab mr view` with -F/--output/--format (regression guard for #383)', () => {
+    // #383: `glab mr view <head> -F json` did not exist in glab 1.36, so the MR
+    // lookup failed in production; the adapters moved to `glab api
+    // projects/.../merge_requests`. This guard used to assert glab's HELP
+    // lacked -F, which tested glab, not us, and went red for every box once
+    // glab 1.53 (apt, 2026-10-03) added `-F, --output` to `mr view`. Live-verified
+    // under 1.53 that the adapters' real calls still work (#590). The invariant
+    // that matters is ours: no code path depends on that flag, on any glab version.
+    //
+    // Matched against each file's whole comment-stripped text, not line by line:
+    // the adapters build argv as multi-line arrays (one token per line, or flags
+    // on the next line, as in pr-create-gitlab.ts where #383 lived) and add
+    // optional flags with .push(), so a per-line scan would miss the very
+    // regression it guards. Still invisible to a static scan: a subcommand held
+    // in a variable (['glab', subcmd, ...]); that form needs a mock-level test.
+    const offenders: string[] = [];
+    const root = join(import.meta.dir, '..', '..');
+    const ARGV = /'mr',\s*'view'[\s\S]{0,400}?'(-F|--output|--format)'/;
+    const SHELL = /glab mr view\b[^\n`'"]*(\s-F\b|--output|--format)/;
+    for (const dir of ['lib', 'handlers']) {
+      for (const rel of readdirSync(join(root, dir), { recursive: true }) as string[]) {
+        if (!rel.endsWith('.ts') || rel.includes('.test.')) continue;
+        const src = readFileSync(join(root, dir, rel), 'utf8')
+          .split('\n')
+          .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
+          .join('\n');
+        const hit = ARGV.exec(src) ?? SHELL.exec(src);
+        if (hit) offenders.push(`${dir}/${rel}: ${hit[0].replace(/\s+/g, ' ')}`);
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 });

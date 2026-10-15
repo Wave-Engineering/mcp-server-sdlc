@@ -6,9 +6,11 @@
  *
  * GitLab divergences from the GitHub flow:
  * - There is no `glab` CLI subcommand that returns per-file additions/deletions.
- *   We fetch the MR via `gitlabApiMr` (per Dev Spec §5.3 — `lib/gitlab-api.ts` stays
- *   as the shared GitLab REST client) and parse hunk stats from each
- *   change's unified `diff` field.
+ *   We fetch the MR's file diffs via `gitlabApiMrDiffs` (`/merge_requests/:iid/diffs`,
+ *   paginated; per Dev Spec §5.3 — `lib/gitlab-api.ts` stays as the shared GitLab
+ *   REST client) and parse hunk stats from each entry's unified `diff` field.
+ *   It used to read `changes[]` off the single-MR endpoint, which has no such
+ *   field, so every GitLab MR reported zero files (#590).
  * - File status (added/modified/removed/renamed) is derived from the boolean
  *   flags on each `change` (`new_file`/`renamed_file`/`deleted_file`) rather
  *   than a single `changeType` enum like GitHub provides.
@@ -20,7 +22,7 @@
  */
 
 import { execSync } from 'child_process';
-import { gitlabApiMr } from '../gitlab-api.js';
+import { gitlabApiMrDiffs } from '../gitlab-api.js';
 import type {
   AdapterResult,
   PrFilesArgs,
@@ -79,10 +81,7 @@ export async function prFilesGitlab(
   args: PrFilesArgs,
 ): Promise<AdapterResult<PrFilesResponse>> {
   try {
-    const mr = gitlabApiMr(args.number, parseSlugOpts(args.repo)) as unknown as {
-      changes?: GitlabChange[];
-    };
-    const changes = mr.changes ?? [];
+    const changes: GitlabChange[] = gitlabApiMrDiffs(args.number, parseSlugOpts(args.repo));
     const files: PrFilesEntry[] = changes.map((c) => {
       const path = c.new_path ?? c.old_path ?? '';
       const status = mapGitlabStatus(c);

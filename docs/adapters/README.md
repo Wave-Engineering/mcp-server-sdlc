@@ -676,15 +676,25 @@ The adapters shell out to `gh` (GitHub) and `glab` (GitLab). The flags below are
 **load-bearing**: an unrecognised flag makes the operation fail outright, so the
 minimum versions here are a real dependency, not a nicety. `tests/integration/
 cli-flag-shapes.test.ts` is the guard that verifies these flags still exist on
-the installed CLI (it execs the real binary's `--help`).
+the installed CLI (it execs the real binary's `--help`). The #383 guard is the
+exception: it scans our own source, not glab's help (#590). A guard that
+asserts a CLI *lacks* a flag breaks when the CLI adds one.
 
 ### 10.1 `glab` — minimum **1.36.0**
 
-`glab 1.36.0` is the only version verified end-to-end for this repo (the box
-these adapters were built and exercised on). **No fleet survey of the `glab`
-versions on other hosts or CI images has been done** (#496), so 1.36.0 is the
-recorded floor by verification, not by a proven-minimum bisection — treat a
-lower version as unsupported until surveyed.
+`glab 1.36.0` is the recorded floor, verified end to end on the box these
+adapters were built and exercised on. **No fleet survey of the `glab` versions
+on other hosts or CI images has been done** (#496), so 1.36.0 is the floor by
+verification, not by a proven-minimum bisection. Treat a lower version as
+unsupported until surveyed.
+
+`glab 1.53.0` is also verified (#590, 2026-10-15). It reached the dev boxes by
+apt on 2026-10-03. Every read path the adapters use ran live against a GitLab
+project: `api /user`, `api projects/<enc>`, `issue view -F json`, `label list
+-F json`, `mr diff`, and the GraphQL work-item read. Every write-path flag in
+the table below is present in its `--help`. The write paths themselves were not
+exercised live. 1.53 added `-F, --output` to `mr view`, which the adapters do
+not use.
 
 Flags the GitLab adapters depend on (`lib/adapters/pr-merge-gitlab.ts`,
 `pr-create-gitlab.ts`, `gitlab-api.ts`, …):
@@ -698,6 +708,7 @@ Flags the GitLab adapters depend on (`lib/adapters/pr-merge-gitlab.ts`,
 | `--remove-source-branch`, `--yes` | `glab mr merge` | Delete source branch; non-interactive. |
 | `-R` | `glab mr merge`, `glab mr create` | Target repo (GitLab uses `-R`, **not** `--repo` — see `lesson_origin_ops_pitfalls.md`). |
 | `--title`, `--description`, `--source-branch`, `--target-branch`, `--draft` | `glab mr create` | MR creation. |
+| `-F json` | `glab issue view` (`work-item-update-gitlab.ts`), `glab label list` (`label-list-gitlab.ts`, `label-create-gitlab.ts`) | Machine-readable output parsed by the adapter. Verified live on 1.53.0. Its presence on 1.36.0 conflicts with `gitlab-api.ts`'s header note and has not been re-verified there. |
 | `glab api <path>` (URL-encoded project paths) | `glab api` | The REST client (`gitlab-api.ts`); `--jq`, `-F/--format`, `--output json` are all **absent** on 1.36.0 — JSON is parsed in-process. |
 
 ### 10.2 `gh` — minimum **2.45.0**
@@ -712,7 +723,8 @@ floor. Note `gh pr checks --json` does **not** exist at this version (added
 
 The default CI image installs `gh` (present on `ubuntu-latest`) but **not**
 `glab`, so the GitLab half of `cli-flag-shapes.test.ts` is **skipped** in CI
-today — reported as an observable `skip`, never a silent pass. Until the
+today — reported as an observable `skip`, never a silent pass. (The #383
+source-scan guard is the exception: it needs no `glab` and runs in CI.) Until the
 workflow installs `glab`, the `--sha`/`--auto-merge` flag-shape guard runs only
 locally. Installing `glab` in CI (pinned at or above the 1.36.0 floor) is the
 follow-up that closes this; it was deferred from #496 because pinning a `glab`

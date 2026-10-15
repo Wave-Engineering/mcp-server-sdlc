@@ -276,6 +276,56 @@ export function gitlabApiMr(
   return JSON.parse(raw) as GitlabMr;
 }
 
+/** One file entry from `GET /projects/:id/merge_requests/:iid/diffs`. */
+export interface GitlabMrDiff {
+  old_path?: string;
+  new_path?: string;
+  new_file?: boolean;
+  renamed_file?: boolean;
+  deleted_file?: boolean;
+  diff?: string;
+}
+
+const MR_DIFFS_PER_PAGE = 100;
+const MR_DIFFS_MAX_PAGES = 50;
+
+/**
+ * Fetch every file diff of a merge request, following pagination.
+ *
+ * Endpoint: `GET /projects/:id/merge_requests/:merge_request_iid/diffs`
+ *
+ * The single-MR endpoint (`gitlabApiMr`) carries only `changes_count`, never a
+ * `changes[]` array — reading files from it silently yields none (#590,
+ * live-verified). `/changes` has that array but is deprecated (GitLab 15.7),
+ * so `/diffs` is the source for per-file paths, status flags and diff text.
+ * Exceeding the page cap throws rather than returning a truncated list: a
+ * partial file list is indistinguishable from a complete one to the caller.
+ */
+export function gitlabApiMrDiffs(
+  iid: number,
+  opts?: { owner?: string; repo?: string },
+): GitlabMrDiff[] {
+  const path = projectPath(opts);
+  const all: GitlabMrDiff[] = [];
+  for (let page = 1; page <= MR_DIFFS_MAX_PAGES; page++) {
+    // Query params as `-f` fields on an explicit GET (glab appends them to the
+    // URL): no `&` in the shell string, so no quoting. `--paginate` is not used —
+    // it concatenates pages as separate JSON arrays (`[...][...]`), not one document.
+    const raw = execGlab(
+      `glab api projects/${path}/merge_requests/${String(iid)}/diffs -X GET -f per_page=${String(MR_DIFFS_PER_PAGE)} -f page=${String(page)}`,
+    );
+    const batch = JSON.parse(raw) as GitlabMrDiff[];
+    if (!Array.isArray(batch)) {
+      throw new Error(`glab api .../merge_requests/${String(iid)}/diffs returned a non-array`);
+    }
+    all.push(...batch);
+    if (batch.length < MR_DIFFS_PER_PAGE) return all;
+  }
+  throw new Error(
+    `merge request !${String(iid)} has more than ${String(MR_DIFFS_PER_PAGE * MR_DIFFS_MAX_PAGES)} changed files; refusing to return a truncated list`,
+  );
+}
+
 /**
  * List merge requests with filters. Returns an array of `GitlabMr`.
  *
