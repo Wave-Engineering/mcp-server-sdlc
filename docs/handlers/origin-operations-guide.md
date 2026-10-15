@@ -350,7 +350,7 @@ GitHub lets you request only the fields you need; GitLab always dumps the whole 
 
 ### 3.1 `pr_create`
 
-| GitHub (`gh pr view --json ...`) | GitLab (`glab mr view --output json`) | Normalized field |
+| GitHub (`gh pr view --json ...`) | GitLab (`gitlabApiMr` → `glab api projects/<enc>/merge_requests/<iid>`) | Normalized field |
 | -------------------------------- | -------------------------------------- | ---------------- |
 | `number`                         | `iid`                                  | `number`         |
 | `url`                            | `web_url`                              | `url`            |
@@ -360,7 +360,7 @@ GitHub lets you request only the fields you need; GitLab always dumps the whole 
 
 **Gotchas:**
 - `gh pr create` doesn't return JSON. Create then immediately `gh pr view <num> --json number,url,state,headRefName,baseRefName` to get the normalized response.
-- `glab mr create --yes` prints the URL on stdout; parse the trailing URL and re-query with `glab mr view` for the full object. Pattern proven in `handlers/work_item.ts:parseOutput`.
+- `glab mr create --yes` prints the URL on stdout; parse the trailing URL and re-query with `glab api projects/<enc>/merge_requests?source_branch=<head>` for the full object (never `glab mr view -F json`; see #383). Pattern proven in `lib/adapters/pr-create-gitlab.ts`.
 - For multi-line bodies, write a temp file (`/tmp/pr-body-<ts>.md`) and pass via `--body-file` (gh) or `--description "$(cat path)"` (glab). Do NOT inline multi-line content on the command line — it breaks quoting in obvious and non-obvious ways.
 
 ### 3.2 `pr_status`
@@ -442,11 +442,11 @@ Same fields as `pr_status`; this tool wraps `pr_status` logic in a poll loop.
 | `gh pr diff <n>` (stdout, unified diff) | `glab mr diff <n>` (stdout, unified diff) | `diff` (string)  |
 | (compute from diff)                    | (compute from diff)                        | `line_count`     |
 | (compute: count `diff --git` occurrences) | (same)                                  | `file_count`     |
-| `gh pr view <n> --json url`            | `glab mr view <n> --output json → web_url`| `url`            |
+| `gh pr view <n> --json url`            | `gitlabApiMr(<n>) → web_url`              | `url`            |
 
 **Gotchas:**
 - `gh pr diff` uses Git's standard unified diff output — straightforward.
-- `glab mr diff` format has historically been inconsistent across `glab` versions. Verify the format before shipping; if in doubt, prefer `glab mr view <n> --output json` and reconstruct from the `changes[].diff` field.
+- `glab mr diff` format has historically been inconsistent across `glab` versions. Verify the format before shipping; if in doubt, use `gitlabApiMrDiffs(<n>)` (`glab api projects/<enc>/merge_requests/<iid>/diffs`, paginated) and reconstruct from each entry's `diff` field. The single-MR endpoint (`gitlabApiMr`) has **no** `changes[]`, only `changes_count`. Reading files from it silently returns none, which is the bug fixed in #590. Never use `glab mr view --output json`: the adapters must not depend on `mr view` output flags (#383; source-guarded in `tests/integration/cli-flag-shapes.test.ts`).
 - Truncation safety valve: if `line_count > 10000`, keep first 5000 + last 5000 with a marker line; set `truncated: true`.
 
 ### 3.6 `pr_comment`
@@ -463,12 +463,12 @@ Same fields as `pr_status`; this tool wraps `pr_status` logic in a poll loop.
 
 ### 3.7 `pr_files`
 
-| GitHub (`gh pr view --json files`) | GitLab (`glab mr view --output json → changes[]`)                      | Normalized field |
+| GitHub (`gh pr view --json files`) | GitLab (`gitlabApiMrDiffs(<n>)` → `/diffs` entries)                    | Normalized field |
 | ---------------------------------- | ----------------------------------------------------------------------- | ---------------- |
-| `files[].path`                     | `changes[].new_path` (or `old_path` if deleted)                         | `files[].path`   |
-| `files[].additions`                | compute by parsing `changes[].diff` — count `^+` lines minus `^+++` lines | `files[].additions` |
-| `files[].deletions`                | compute by parsing `changes[].diff` — count `^-` lines minus `^---` lines | `files[].deletions` |
-| `files[].changeType` (ADDED/MODIFIED/REMOVED/RENAMED) | `changes[].new_file` / `deleted_file` / `renamed_file` flags | `files[].status` (`added`/`modified`/`removed`/`renamed`) |
+| `files[].path`                     | `[].new_path` (or `old_path` if deleted)                                | `files[].path`   |
+| `files[].additions`                | compute by parsing `[].diff` — count `^+` lines minus `^+++` lines      | `files[].additions` |
+| `files[].deletions`                | compute by parsing `[].diff` — count `^-` lines minus `^---` lines      | `files[].deletions` |
+| `files[].changeType` (ADDED/MODIFIED/REMOVED/RENAMED) | `[].new_file` / `deleted_file` / `renamed_file` flags | `files[].status` (`added`/`modified`/`removed`/`renamed`) |
 
 **Status normalization for GitLab:**
 - `new_file: true` → `added`

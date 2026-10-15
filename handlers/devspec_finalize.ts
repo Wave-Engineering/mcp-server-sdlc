@@ -17,7 +17,7 @@ import { PROTECTED_BRANCH_PATTERN } from '../lib/shared/protected-branch.js';
 const inputSchema = z.object({
   path: z.string().min(1, 'path must be a non-empty string'),
   // #458: the Plan issue number the Dev Spec finalizes. The commit subject is
-  // `docs(devspec): finalize Dev Spec for Plan #<plan_id>`. The Dev Spec doc
+  // `doc(devspec): finalize Dev Spec for Plan #<plan_id>`. The Dev Spec doc
   // does NOT embed its own plan number, so the caller supplies it. When omitted
   // the handler stays pure validation (commits nothing) — preserving the
   // backward-compatible behavior of the pre-#458 tool.
@@ -549,7 +549,7 @@ function commitFinalizeDocs(cwd: string, planId: number, paths: string[]): Commi
   }
 
   // Commit — bare subject (no slug suffix, per #458), pathspec-limited.
-  const subject = `docs(devspec): finalize Dev Spec for Plan #${planId}`;
+  const subject = `doc(devspec): finalize Dev Spec for Plan #${planId}`;
   const commitRes = runArgv(['git', 'commit', '-m', subject, '--', ...paths], cwd);
   if (commitRes.exitCode !== 0) {
     return NOT_COMMITTED;
@@ -577,7 +577,7 @@ const devspecFinalizeHandler: HandlerDef = {
   description:
     'Run the 8 mechanical finalization checks from Dev Spec Section 7.2 and return pass/fail + evidence per check. ' +
     'When `plan_id` is supplied AND every check passes, stage + commit the finalize doc writes (the Dev Spec doc at ' +
-    '`path` plus any `files`) on the current branch with the bare subject `docs(devspec): finalize Dev Spec for Plan #<plan_id>` ' +
+    '`path` plus any `files`) on the current branch with the bare subject `doc(devspec): finalize Dev Spec for Plan #<plan_id>` ' +
     '— never pushing, refusing on a protected branch, idempotent when there is nothing to commit.',
   inputSchema,
   async execute(rawArgs: unknown) {

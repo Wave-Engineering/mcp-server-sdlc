@@ -28,9 +28,10 @@ describe('CLAUDE.md branch-prefix documentation', () => {
   });
 
   test('CLAUDE.md never documents a plural `docs/` branch prefix', () => {
-    // The commit-type `docs` (conventional commits) and the `docs/` directory
-    // are legitimate; a `docs/` used as a BRANCH prefix (followed by <N> or a
-    // description) is the trap. Guard the branch-prefix shape specifically.
+    // The `docs/` directory is legitimate (a folder of files, not a topic);
+    // a `docs/` used as a BRANCH prefix (followed by <N> or a description) is
+    // the trap. Commit types are singular too (`doc`, #590), but this test
+    // guards the branch-prefix shape specifically.
     expect(CLAUDE_MD).not.toMatch(/`docs\/(?:<N>|\d)/);
   });
 });

@@ -170,7 +170,7 @@ type(scope): brief description
 Closes #XXX
 ```
 
-Types: `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`
+Types: `feat`, `fix`, `doc`, `style`, `refactor`, `test`, `chore`
 
 ---
 
