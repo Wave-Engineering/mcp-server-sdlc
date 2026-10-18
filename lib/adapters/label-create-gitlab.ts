@@ -12,7 +12,8 @@
  *     [-R <owner/repo>]        // glab uses short `-R`, NOT `--repo`
  *
  * Argv composition (duplicate-lookup fallback):
- *   glab label list -F json --per-page 100 [-R <owner/repo>]
+ *   glab api projects/<:id | url-encoded owner/repo>/labels?per_page=100
+ *   (`glab api`, not `glab label list -F json`, which needs glab >= 1.37.0; #594)
  *
  * Color asymmetry (per `lesson_origin_ops_pitfalls.md`):
  *   - GitHub: bare hex `RRGGBB` — no leading `#`.
@@ -23,6 +24,7 @@
  */
 
 import { execSync } from 'child_process';
+import { detectGlabApiError } from '../gitlab-api.js';
 import { runArgv } from '../shared/error-norm.js';
 import type {
   AdapterResult,
@@ -48,10 +50,11 @@ function lookupGitlabLabel(
   repo: string | undefined,
   cwd: string,
 ): NormalizedLabel | null {
-  const cmd = ['glab', 'label', 'list', '-F', 'json', '--per-page', '100'];
-  if (repo !== undefined) cmd.push('-R', repo);
-  const result = runArgv(cmd, cwd);
+  const projectId = repo !== undefined ? encodeURIComponent(repo) : ':id';
+  const result = runArgv(['glab', 'api', `projects/${projectId}/labels?per_page=100`], cwd);
   if (result.exitCode !== 0) return null;
+  // `glab api` exits 0 on an HTTP error and prints the error body (#502).
+  if (detectGlabApiError(result.stdout) !== undefined) return null;
   try {
     const labels = JSON.parse(result.stdout) as Array<{ name: string; description?: string; color?: string }>;
     const match = labels.find((l) => l.name.toLowerCase() === name.toLowerCase());

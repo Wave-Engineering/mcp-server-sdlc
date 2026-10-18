@@ -101,7 +101,7 @@ describe('label_list handler', () => {
 
   test('gitlab — returns normalized labels and strips leading # from color', async () => {
     onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    onExec('glab label list', JSON.stringify([
+    onExec('/labels?per_page=', JSON.stringify([
       { name: 'bug', description: 'Bug', color: '#d73a4a' },
       { name: 'enhancement', color: '#a2eeef' }, // no description
     ]));
@@ -114,13 +114,12 @@ describe('label_list handler', () => {
     expect(labels[1].description).toBe(''); // missing → empty string
   });
 
-  test('gitlab — forwards --per-page and -R (not --limit/--repo)', async () => {
+  test('gitlab — reads the labels endpoint with per_page and the target project (#594)', async () => {
     onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    onExec('glab label list', '[]');
+    onExec('/labels?per_page=', '[]');
     await handler.execute({ limit: 25, repo: 'foo/bar' });
-    const call = execCalls().find((c) => unquote(c).includes('glab label list')) ?? '';
-    expect(call).toContain("'--per-page' '25'");
-    expect(call).toContain("'-R' 'foo/bar'");
-    expect(call).toContain("'-F' 'json'");
+    const call = execCalls().find((c) => unquote(c).includes('/labels?per_page=')) ?? '';
+    // `glab api`, not `glab label list -F json` (needs glab >= 1.37.0).
+    expect(unquote(call)).toBe('glab api projects/foo%2Fbar/labels?per_page=25');
   });
 });

@@ -146,7 +146,7 @@ describe('labelCreateGitlab — subprocess boundary', () => {
       throw err;
     });
     on(
-      'glab label list',
+      '/labels?per_page=',
       JSON.stringify([{ name: 'bug', description: 'pre-existing', color: '#aabbcc' }]),
     );
 
@@ -165,13 +165,14 @@ describe('labelCreateGitlab — subprocess boundary', () => {
       created: false,
     });
 
-    // Lookup argv: -F json --per-page 100
-    const lookupCall = findCall('glab label list');
-    expect(lookupCall).toContain("'-F' 'json'");
-    expect(lookupCall).toContain("'--per-page' '100'");
+    // Lookup argv: the REST labels endpoint, no `-F json` (needs glab >= 1.37.0; #594)
+    const lookupCall = findCall('/labels?per_page=');
+    expect(lookupCall.replace(/'([^']*)'/g, '$1')).toBe(
+      'glab api projects/:id/labels?per_page=100',
+    );
   });
 
-  test('duplicate-lookup forwards -R on the lookup call too', async () => {
+  test('duplicate-lookup addresses the cross-repo project on the lookup call too', async () => {
     on('glab label create', () => {
       const err = new Error('already exists') as ThrowableError;
       err.stderr = 'Label already exists\n';
@@ -179,14 +180,14 @@ describe('labelCreateGitlab — subprocess boundary', () => {
       throw err;
     });
     on(
-      'glab label list',
+      '/labels?per_page=',
       JSON.stringify([{ name: 'bug', description: '', color: '#aabbcc' }]),
     );
 
     await labelCreateGitlab({ name: 'bug', color: 'd73a4a', repo: 'foo/bar' });
 
-    const lookupCall = findCall('glab label list');
-    expect(lookupCall).toContain("'-R' 'foo/bar'");
+    const lookupCall = findCall('/labels?per_page=');
+    expect(lookupCall).toContain('projects/foo%2Fbar/labels?per_page=100');
   });
 
   test('duplicate lookup misses → ok:false with glab_label_lookup_failed code', async () => {
@@ -196,7 +197,22 @@ describe('labelCreateGitlab — subprocess boundary', () => {
       err.status = 1;
       throw err;
     });
-    on('glab label list', JSON.stringify([])); // lookup returns no matches
+    on('/labels?per_page=', JSON.stringify([])); // lookup returns no matches
+
+    const result = await labelCreateGitlab({ name: 'bug', color: 'd73a4a' });
+    expectErr(result);
+    expect(result.code).toBe('glab_label_lookup_failed');
+  });
+
+  test('duplicate lookup that gets an HTTP error body on exit 0 → glab_label_lookup_failed (#502)', async () => {
+    on('glab label create', () => {
+      const err = new Error('already exists') as ThrowableError;
+      err.stderr = 'Label already exists\n';
+      err.status = 1;
+      throw err;
+    });
+    // `glab api` prints the error body and exits 0 on the 1.36.0 floor.
+    on('/labels?per_page=', '{"message":"404 Project Not Found"}');
 
     const result = await labelCreateGitlab({ name: 'bug', color: 'd73a4a' });
     expectErr(result);

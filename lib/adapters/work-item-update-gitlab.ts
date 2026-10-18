@@ -24,7 +24,8 @@
  *
  * Body-section patching:
  *   When `patch.body_section` is set, this adapter first reads the current
- *   issue body (via `glab issue view -F json`), splices in the new section
+ *   issue body (via `glab api projects/<id>/issues/<iid>`; not `glab issue
+ *   view -F json`, which needs glab >= 1.37.0, #594), splices in the new section
  *   content via `spliceH2Section`, and sends the resulting full body to
  *   `glab issue update --description`.
  *
@@ -36,6 +37,7 @@
  */
 
 import { execSync } from 'child_process';
+import { detectGlabApiError } from '../gitlab-api.js';
 import { runArgv } from '../shared/error-norm.js';
 import { spliceH2Section } from '../work-item-section.js';
 import type {
@@ -69,14 +71,19 @@ function fetchCurrentIssue(
   repo: string | undefined,
   cwd: string,
 ): { ok: true; data: GlabIssueViewBody } | { ok: false; error: string } {
-  const cmd = ['glab', 'issue', 'view', String(num), '-F', 'json'];
-  if (repo !== undefined) cmd.push('-R', repo);
-  const result = runArgv(cmd, cwd);
+  const projectId = repo !== undefined ? encodeURIComponent(repo) : ':id';
+  const result = runArgv(['glab', 'api', `projects/${projectId}/issues/${String(num)}`], cwd);
   if (result.exitCode !== 0) {
     return {
       ok: false,
       error: `glab issue view failed: ${result.stderr.trim() || result.stdout.trim()}`,
     };
+  }
+  // `glab api` exits 0 on an HTTP error and prints the error body (#502), so
+  // the exit code alone would parse a 404 as an issue with no fields.
+  const apiError = detectGlabApiError(result.stdout);
+  if (apiError !== undefined) {
+    return { ok: false, error: `glab issue view failed: ${apiError}` };
   }
   try {
     const parsed = JSON.parse(result.stdout) as GlabIssueViewBody;

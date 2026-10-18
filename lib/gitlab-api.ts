@@ -7,8 +7,12 @@
  * and `parseRepoSlug` live in `lib/shared/` (Story 1.2, R-17).
  *
  * Why `glab api` and not `glab <sub> view --output json`:
- * `glab 1.36.0` has no `--output` flag on any view or list subcommand
- * (`issue view`, `mr view`, `mr list`, `ci list`, `repo view` all reject it).
+ * `glab 1.36.0`, the documented floor, has no `--output`/`-F` flag on any view
+ * or list subcommand (`issue view`, `label list`, `mr view`, `mr list`,
+ * `ci list`, `repo view` all reject it). Later releases add it piecemeal:
+ * `issue view` and `label list` in 1.37.0, `mr view` by 1.53.0. So no adapter
+ * asks any of them for JSON, and the source-scan guard in
+ * `tests/integration/cli-flag-shapes.test.ts` holds that (#383, #594).
  * `glab api` invokes the GitLab REST API v4 directly and returns native JSON.
  */
 

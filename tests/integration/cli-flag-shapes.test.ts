@@ -13,6 +13,7 @@ import { describe, test, expect } from 'bun:test';
 import { execSync } from 'child_process';
 import { readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
+import { findGlabOutputFlag, stripTsComments } from './glab-source-guard.js';
 
 // --- Helper ----------------------------------------------------------------
 // `gh` and `glab` write `--help` output to different streams depending on
@@ -377,7 +378,7 @@ describe('API-based operations (URL encoding)', () => {
 // Source-level guard: needs no glab, so it lives outside the hasGlab()-gated
 // blocks above and runs in CI, where glab is not installed.
 describe('GitLab adapter source', () => {
-  test('no adapter calls `glab mr view` with -F/--output/--format (regression guard for #383)', () => {
+  test('no adapter asks a non-api glab subcommand for -F/--output/--format (regression guard for #383, #594)', () => {
     // #383: `glab mr view <head> -F json` did not exist in glab 1.36, so the MR
     // lookup failed in production; the adapters moved to `glab api
     // projects/.../merge_requests`. This guard used to assert glab's HELP
@@ -386,27 +387,110 @@ describe('GitLab adapter source', () => {
     // under 1.53 that the adapters' real calls still work (#590). The invariant
     // that matters is ours: no code path depends on that flag, on any glab version.
     //
+    //
+    // #594 widened it from `mr view` to every subcommand except `api`. The same
+    // dependency was live in `issue view` and `label list`: both gained `-F` in
+    // glab 1.37.0 (read from glab's source at v1.36.0 and v1.37.0), one release
+    // above the documented 1.36.0 floor, so those adapters failed there.
+    //
     // Matched against each file's whole comment-stripped text, not line by line:
     // the adapters build argv as multi-line arrays (one token per line, or flags
     // on the next line, as in pr-create-gitlab.ts where #383 lived) and add
     // optional flags with .push(), so a per-line scan would miss the very
-    // regression it guards. Still invisible to a static scan: a subcommand held
-    // in a variable (['glab', subcmd, ...]); that form needs a mock-level test.
+    // regression it guards. Comments are removed by a real stripper (see
+    // glab-source-guard.ts), so a trailing `// glab mr view -F json` note is not
+    // a hit (#594). Still invisible to a static scan: a subcommand held in a
+    // variable (['glab', subcmd, ...]); that form needs a mock-level test.
     const offenders: string[] = [];
     const root = join(import.meta.dir, '..', '..');
-    const ARGV = /'mr',\s*'view'[\s\S]{0,400}?'(-F|--output|--format)'/;
-    const SHELL = /glab mr view\b[^\n`'"]*(\s-F\b|--output|--format)/;
     for (const dir of ['lib', 'handlers']) {
       for (const rel of readdirSync(join(root, dir), { recursive: true }) as string[]) {
         if (!rel.endsWith('.ts') || rel.includes('.test.')) continue;
-        const src = readFileSync(join(root, dir, rel), 'utf8')
-          .split('\n')
-          .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
-          .join('\n');
-        const hit = ARGV.exec(src) ?? SHELL.exec(src);
-        if (hit) offenders.push(`${dir}/${rel}: ${hit[0].replace(/\s+/g, ' ')}`);
+        const hit = findGlabOutputFlag(readFileSync(join(root, dir, rel), 'utf8'));
+        if (hit) offenders.push(`${dir}/${rel}: ${hit}`);
       }
     }
     expect(offenders).toEqual([]);
+  });
+
+  // The scanner's own fixtures: a guard tested only against a clean tree cannot
+  // tell a working scanner from one that matches nothing.
+  describe('findGlabOutputFlag', () => {
+    test('a trailing comment naming the forbidden form is not a hit (#594)', () => {
+      expect(findGlabOutputFlag("doThing(); // glab mr view -F json\n")).toBeNull();
+      expect(findGlabOutputFlag("const x = 1; /* glab label list -F json */\n")).toBeNull();
+      expect(
+        findGlabOutputFlag("run(['glab', 'api', path], cwd); // was ['glab', 'mr', 'view', h, '-F', 'json']\n"),
+      ).toBeNull();
+    });
+
+    test('real calls are still caught, in argv and shell form, across lines and .push()', () => {
+      expect(findGlabOutputFlag("const cmd = ['glab', 'mr', 'view', head, '-F', 'json'];")).not.toBeNull();
+      expect(findGlabOutputFlag("const cmd = ['glab', 'issue', 'view', String(n), '-F', 'json'];")).not.toBeNull();
+      expect(
+        findGlabOutputFlag("const cmd = [\n  'glab',\n  'label',\n  'list',\n];\ncmd.push('--output', 'json');\n"),
+      ).not.toBeNull();
+      expect(findGlabOutputFlag('execSync(`glab label list -F json --per-page 100`);')).not.toBeNull();
+      expect(findGlabOutputFlag("execGlab('glab mr view 12 --output json');")).not.toBeNull();
+    });
+
+    test('glab api is exempt, and so is a // inside a string', () => {
+      expect(findGlabOutputFlag("runArgv(['glab', 'api', 'graphql', '-F', `iid=${n}`], cwd);")).toBeNull();
+      expect(findGlabOutputFlag("const u = 'https://gitlab.com/x'; const cmd = ['glab', 'api', u];")).toBeNull();
+      // A // in a string must not swallow the real call after it on the same line.
+      expect(
+        findGlabOutputFlag("const u = 'https://x'; const cmd = ['glab', 'issue', 'view', '1', '-F', 'json'];"),
+      ).not.toBeNull();
+    });
+
+    test('a quote inside a regex literal does not hide a later call', () => {
+      expect(
+        findGlabOutputFlag("const re = /['\"]/; const cmd = ['glab', 'label', 'list', '-F', 'json'];"),
+      ).not.toBeNull();
+    });
+
+    // The shell-quote idiom nests a template inside `${…}` (pr-merge-gitlab.ts,
+    // shell-escape.ts). Reading `${…}` as opaque text ends the outer template at
+    // the inner backtick and inverts string and code for the rest of the file.
+    const SHELL_QUOTE = "return `'${value.replace(/'/g, `'\\\\''`)}'`;\n";
+
+    test('after a nested template, a comment naming the forbidden form is not a hit', () => {
+      expect(findGlabOutputFlag(SHELL_QUOTE + '// glab mr view -F json\n')).toBeNull();
+      expect(findGlabOutputFlag(SHELL_QUOTE + 'run(); // glab mr view -F json\n')).toBeNull();
+    });
+
+    test('after a nested template, a real call is still a hit', () => {
+      expect(
+        findGlabOutputFlag(SHELL_QUOTE + "const cmd = ['glab', 'issue', 'view', n, '-F', 'json'];\n"),
+      ).not.toBeNull();
+      expect(
+        findGlabOutputFlag(SHELL_QUOTE + 'execSync(`glab issue view https://x/1 -F json`);\n'),
+      ).not.toBeNull();
+    });
+
+    test('a regex after return is a regex, so its // does not swallow a later call', () => {
+      expect(
+        findGlabOutputFlag(
+          "return /https?:\\/\\//.test(x) && run(['glab', 'mr', 'view', h, '-F', 'json']);\n",
+        ),
+      ).not.toBeNull();
+    });
+  });
+
+  describe('stripTsComments', () => {
+    test('removes line and block comments, keeps literals and newlines', () => {
+      const src = "a(); // x\nconst s = 'b // c';\n/* d\ne */ f(`g // h`);\n";
+      expect(stripTsComments(src)).toBe("a(); \nconst s = 'b // c';\n\n f(`g // h`);\n");
+    });
+
+    test('keeps a regex literal that contains // or a quote', () => {
+      const src = "const r = /https?:\\/\\//; const q = /['\"]/g; // tail\n";
+      expect(stripTsComments(src)).toBe("const r = /https?:\\/\\//; const q = /['\"]/g; \n");
+    });
+
+    test('tracks nested templates and interpolations, braces included', () => {
+      const src = "f(`a ${g({ k: `b ${h} // c` })} // d`); // e\nx(); /* y */\n";
+      expect(stripTsComments(src)).toBe("f(`a ${g({ k: `b ${h} // c` })} // d`); \nx(); \n");
+    });
   });
 });
