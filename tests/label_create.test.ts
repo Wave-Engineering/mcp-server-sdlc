@@ -154,7 +154,7 @@ describe('label_create handler', () => {
       err.status = 1;
       throw err;
     });
-    onExec('glab label list', JSON.stringify([
+    onExec('/labels?per_page=', JSON.stringify([
       { name: 'bug', description: 'pre-existing', color: '#aabbcc' },
     ]));
     const result = await handler.execute({

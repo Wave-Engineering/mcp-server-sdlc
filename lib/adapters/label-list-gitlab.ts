@@ -6,10 +6,11 @@
  * platform.
  *
  * Argv composition:
- *   glab label list
- *     -F json
- *     --per-page <N>
- *     [-R <owner/repo>]        // glab uses short `-R`, NOT `--repo`
+ *   glab api projects/<:id | url-encoded owner/repo>/labels?per_page=<N>
+ *
+ * `glab api`, not `glab label list -F json`: `label list` has no `-F`/`--output`
+ * before glab 1.37.0, one release above the documented 1.36.0 floor (#594).
+ * The REST response is the same label objects `label list -F json` printed.
  *
  * Color asymmetry (per `lesson_origin_ops_pitfalls.md`):
  *   - GitHub: bare hex `RRGGBB` — gh returns without a leading `#`.
@@ -18,6 +19,7 @@
  */
 
 import { execSync } from 'child_process';
+import { detectGlabApiError } from '../gitlab-api.js';
 import { runArgv } from '../shared/error-norm.js';
 import type {
   AdapterResult,
@@ -33,7 +35,7 @@ function projectDir(): string {
 interface GitlabLabel {
   name: string;
   description?: string;
-  // `glab label list -F json` returns `color` as `#RRGGBB` (with leading `#`).
+  // The REST API returns `color` as `#RRGGBB` (with leading `#`).
   color?: string;
 }
 
@@ -43,8 +45,8 @@ export async function labelListGitlab(
   try {
     const cwd = projectDir();
 
-    const cmd = ['glab', 'label', 'list', '-F', 'json', '--per-page', String(args.limit)];
-    if (args.repo !== undefined) cmd.push('-R', args.repo);
+    const projectId = args.repo !== undefined ? encodeURIComponent(args.repo) : ':id';
+    const cmd = ['glab', 'api', `projects/${projectId}/labels?per_page=${String(args.limit)}`];
 
     const result = runArgv(cmd, cwd);
     if (result.exitCode !== 0) {
@@ -52,6 +54,15 @@ export async function labelListGitlab(
         ok: false,
         code: 'glab_label_list_failed',
         error: `glab label list failed: ${result.stderr.trim() || result.stdout.trim()}`,
+      };
+    }
+    // `glab api` exits 0 on an HTTP error and prints the error body (#502).
+    const apiError = detectGlabApiError(result.stdout);
+    if (apiError !== undefined) {
+      return {
+        ok: false,
+        code: 'glab_label_list_failed',
+        error: `glab label list failed: ${apiError}`,
       };
     }
 

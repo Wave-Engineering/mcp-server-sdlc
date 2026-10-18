@@ -55,48 +55,50 @@ beforeEach(() => {
 });
 
 describe('labelListGitlab — subprocess boundary', () => {
-  // --- argv: glab label list ---
+  // --- argv: glab api projects/<id>/labels (#594) ---
+  // `glab label list -F json` needs glab >= 1.37.0, one release above the
+  // documented 1.36.0 floor, so the adapter reads the REST endpoint instead.
 
-  test('argv: glab label list default flags', async () => {
-    on('glab label list', '[]');
+  test('argv: glab api on the current project, no output flags', async () => {
+    on('/labels?per_page=', '[]');
 
     const result = await labelListGitlab({ limit: 100 });
     expectOk(result);
 
-    const call = findCall('glab label list');
-    expect(call).toContain("'-F' 'json'");
-    expect(call).toContain("'--per-page' '100'");
-    expect(call).not.toContain('-R ');
-    // gh-style flags must NOT leak onto the glab path.
+    const call = unquote(findCall('/labels?per_page='));
+    expect(call).toBe('glab api projects/:id/labels?per_page=100');
+    // Neither glab's view/list output flags nor gh-style flags.
+    expect(call).not.toContain('-F');
+    expect(call).not.toContain('--per-page');
     expect(call).not.toContain('--limit');
-    expect(call).not.toContain("'--repo'");
+    expect(call).not.toContain('--repo');
   });
 
-  test('argv: forwards --per-page with caller-supplied value', async () => {
-    on('glab label list', '[]');
+  test('argv: forwards the caller-supplied limit as per_page', async () => {
+    on('/labels?per_page=', '[]');
 
     await labelListGitlab({ limit: 25 });
 
-    const call = findCall('glab label list');
-    expect(call).toContain("'--per-page' '25'");
+    expect(unquote(findCall('/labels?per_page='))).toBe(
+      'glab api projects/:id/labels?per_page=25',
+    );
   });
 
-  test('argv: -R flag (not --repo) forwarded for cross-repo list', async () => {
-    on('glab label list', '[]');
+  test('argv: a cross-repo list addresses the URL-encoded project path', async () => {
+    on('/labels?per_page=', '[]');
 
-    await labelListGitlab({ limit: 100, repo: 'foo/bar' });
+    await labelListGitlab({ limit: 100, repo: 'group/sub/bar' });
 
-    const call = findCall('glab label list');
-    // glab uses short `-R`, NOT `--repo`.
-    expect(call).toContain("'-R' 'foo/bar'");
-    expect(call).not.toContain("'--repo'");
+    expect(unquote(findCall('/labels?per_page='))).toBe(
+      'glab api projects/group%2Fsub%2Fbar/labels?per_page=100',
+    );
   });
 
   // --- happy path: normalization ---
 
   test('strips leading # from color — consumers see bare hex', async () => {
     on(
-      'glab label list',
+      '/labels?per_page=',
       JSON.stringify([
         { name: 'bug', description: 'Bug', color: '#d73a4a' },
         { name: 'enhancement', description: '', color: '#a2eeef' },
@@ -113,7 +115,7 @@ describe('labelListGitlab — subprocess boundary', () => {
 
   test('fills missing description with empty string', async () => {
     on(
-      'glab label list',
+      '/labels?per_page=',
       JSON.stringify([{ name: 'bug', color: '#d73a4a' }]),
     );
 
@@ -125,7 +127,7 @@ describe('labelListGitlab — subprocess boundary', () => {
 
   test('tolerates missing color field', async () => {
     on(
-      'glab label list',
+      '/labels?per_page=',
       JSON.stringify([{ name: 'bug', description: 'x' }]),
     );
 
@@ -136,7 +138,7 @@ describe('labelListGitlab — subprocess boundary', () => {
   });
 
   test('empty list → count 0, labels []', async () => {
-    on('glab label list', '[]');
+    on('/labels?per_page=', '[]');
 
     const result = await labelListGitlab({ limit: 100 });
     expectOk(result);
@@ -148,7 +150,7 @@ describe('labelListGitlab — subprocess boundary', () => {
   // --- error surface ---
 
   test('returns AdapterResult.error on glab failure (not thrown)', async () => {
-    on('glab label list', () => {
+    on('/labels?per_page=', () => {
       const err = new Error('glab: 401 unauthorized') as ThrowableError;
       err.stderr = 'glab: 401 unauthorized';
       err.status = 1;
@@ -161,8 +163,18 @@ describe('labelListGitlab — subprocess boundary', () => {
     expect(result.error).toContain('glab label list failed');
   });
 
+  test('an HTTP error body on exit 0 is a failure, not a label list (#502)', async () => {
+    // `glab api` prints the error body and exits 0 on the 1.36.0 floor.
+    on('/labels?per_page=', '{"message":"404 Project Not Found"}');
+
+    const result = await labelListGitlab({ limit: 100, repo: 'foo/missing' });
+    expectErr(result);
+    expect(result.code).toBe('glab_label_list_failed');
+    expect(result.error).toContain('404 Project Not Found');
+  });
+
   test('returns parse error when glab emits non-JSON', async () => {
-    on('glab label list', 'not valid json');
+    on('/labels?per_page=', 'not valid json');
 
     const result = await labelListGitlab({ limit: 100 });
     expectErr(result);

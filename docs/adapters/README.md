@@ -696,6 +696,18 @@ the table below is present in its `--help`. The write paths themselves were not
 exercised live. 1.53 added `-F, --output` to `mr view`, which the adapters do
 not use.
 
+**No adapter asks a glab view or list subcommand for JSON (#594).** `issue view`
+and `label list` gained `-F, --output` in **1.37.0**, read from glab's own
+source at `v1.36.0` (absent) and `v1.37.0` (present). So the adapters that used
+them (`work-item-update-gitlab.ts`, `label-list-gitlab.ts`,
+`label-create-gitlab.ts`) failed on the 1.36.0 floor. They now read
+`glab api projects/<id>/issues/<iid>` and `glab api projects/<id>/labels?per_page=<n>`.
+Both ran live on 1.53.0 (2026-10-18) and return the fields the adapters parse:
+`description`, `labels` (a list of strings), `assignees[].username`, `web_url`,
+and `#RRGGBB` label colors. The source-scan guard in `cli-flag-shapes.test.ts`
+now fails on `-F`/`--output`/`--format` passed to **any** glab subcommand but
+`api`.
+
 Flags the GitLab adapters depend on (`lib/adapters/pr-merge-gitlab.ts`,
 `pr-create-gitlab.ts`, `gitlab-api.ts`, …):
 
@@ -708,8 +720,7 @@ Flags the GitLab adapters depend on (`lib/adapters/pr-merge-gitlab.ts`,
 | `--remove-source-branch`, `--yes` | `glab mr merge` | Delete source branch; non-interactive. |
 | `-R` | `glab mr merge`, `glab mr create` | Target repo (GitLab uses `-R`, **not** `--repo` — see `lesson_origin_ops_pitfalls.md`). |
 | `--title`, `--description`, `--source-branch`, `--target-branch`, `--draft` | `glab mr create` | MR creation. |
-| `-F json` | `glab issue view` (`work-item-update-gitlab.ts`), `glab label list` (`label-list-gitlab.ts`, `label-create-gitlab.ts`) | Machine-readable output parsed by the adapter. Verified live on 1.53.0. Its presence on 1.36.0 conflicts with `gitlab-api.ts`'s header note and has not been re-verified there. |
-| `glab api <path>` (URL-encoded project paths) | `glab api` | The REST client (`gitlab-api.ts`); `--jq`, `-F/--format`, `--output json` are all **absent** on 1.36.0 — JSON is parsed in-process. |
+| `glab api <path>` (URL-encoded project paths) | `glab api` | The only JSON read path: the REST client (`gitlab-api.ts`) and every adapter read, including issues (`work-item-update-gitlab.ts`) and labels (`label-list-gitlab.ts`, `label-create-gitlab.ts`). `--jq`, `-F/--format` and `--output json` are all **absent** on 1.36.0, so JSON is parsed in-process. No view or list subcommand is asked for `-F json` (#594). |
 
 ### 10.2 `gh` — minimum **2.45.0**
 

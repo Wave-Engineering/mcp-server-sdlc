@@ -99,7 +99,7 @@ describe('workItemUpdateGitlab — subprocess boundary', () => {
 
   test('labels patch emits CSV --label / --unlabel diff', async () => {
     onExec(
-      'glab issue view',
+      'glab api projects/',
       JSON.stringify({
         iid: 7,
         web_url: 'https://gitlab.com/org/repo/-/issues/7',
@@ -120,9 +120,32 @@ describe('workItemUpdateGitlab — subprocess boundary', () => {
     expect(call).toContain("'--unlabel' 'old-drop'");
   });
 
+  test('reads the current issue via glab api, not `glab issue view -F json` (#594)', async () => {
+    // `issue view -F json` needs glab >= 1.37.0, one release above the 1.36.0 floor.
+    const issue = JSON.stringify({ iid: 7, description: '', labels: ['a'], assignees: [] });
+    onExec('glab api projects/', issue);
+    onExec('glab issue update', 'https://gitlab.com/org/repo/-/issues/7\n');
+
+    await workItemUpdateGitlab({ issue_ref: '#7', patch: { labels: ['b'] } });
+    expect(unquote(findCall('glab api projects/'))).toBe('glab api projects/:id/issues/7');
+    expect(findCall('glab issue view')).toBe('');
+
+    resetExecMock();
+    onExec('glab api projects/', issue);
+    onExec('glab issue update', 'https://gitlab.com/group/sub/repo/-/issues/7\n');
+    await workItemUpdateGitlab({
+      issue_ref: '#7',
+      repo: 'group/sub/repo',
+      patch: { labels: ['b'] },
+    });
+    expect(unquote(findCall('glab api projects/'))).toBe(
+      'glab api projects/group%2Fsub%2Frepo/issues/7',
+    );
+  });
+
   test('assignees patch emits --assignee / --unassign diff', async () => {
     onExec(
-      'glab issue view',
+      'glab api projects/',
       JSON.stringify({
         iid: 11,
         web_url: 'https://gitlab.com/org/repo/-/issues/11',
@@ -171,7 +194,7 @@ describe('workItemUpdateGitlab — subprocess boundary', () => {
     ].join('\n');
 
     onExec(
-      'glab issue view',
+      'glab api projects/',
       JSON.stringify({
         iid: 5,
         web_url: 'https://gitlab.com/org/repo/-/issues/5',
@@ -197,7 +220,7 @@ describe('workItemUpdateGitlab — subprocess boundary', () => {
 
   test('body_section missing returns typed error', async () => {
     onExec(
-      'glab issue view',
+      'glab api projects/',
       JSON.stringify({
         iid: 5,
         web_url: 'https://gitlab.com/org/repo/-/issues/5',
@@ -213,6 +236,32 @@ describe('workItemUpdateGitlab — subprocess boundary', () => {
     });
     expectErr(result);
     expect(result.code).toBe('section_splice_failed');
+  });
+
+  test('an HTTP error body on exit 0 is glab_issue_view_failed, not a missing section (#502)', async () => {
+    // `glab api` prints the error body and exits 0 on the 1.36.0 floor.
+    onExec('glab api projects/', '{"message":"404 Not found"}');
+
+    const result = await workItemUpdateGitlab({
+      issue_ref: '#5',
+      patch: { body_section: { heading: 'Summary', content: 'y' } },
+    });
+    expectErr(result);
+    expect(result.code).toBe('glab_issue_view_failed');
+    expect(result.error).toContain('404 Not found');
+    expect(execCalls().some((c) => unquote(c).includes('glab issue update'))).toBe(false);
+  });
+
+  test('labels patch does not degrade to add-only when the current-issue read errors (#502)', async () => {
+    onExec('glab api projects/', '{"message":"500 Internal Server Error"}');
+
+    const result = await workItemUpdateGitlab({
+      issue_ref: '#5',
+      patch: { labels: ['a'] },
+    });
+    expectErr(result);
+    expect(result.code).toBe('glab_issue_view_failed');
+    expect(execCalls().some((c) => unquote(c).includes('glab issue update'))).toBe(false);
   });
 
   // ---- dry_run ----

@@ -23,7 +23,7 @@ test('glab mr merge accepts --sha', () => {
 });
 ```
 
-**Do not assert that a CLI *lacks* a flag.** That tests the CLI, not us, and it breaks when the CLI adds the flag. glab 1.53 added `-F, --output` to `mr view` and turned the old #383 guard red on every box (#590). To guard against *our* code depending on a flag, scan our source instead. The #383 guard (`GitLab adapter source` in `cli-flag-shapes.test.ts`) does this over each file's whole comment-stripped text, so multi-line argv arrays and `.push()`ed flags are caught.
+**Do not assert that a CLI *lacks* a flag.** That tests the CLI, not us, and it breaks when the CLI adds the flag. glab 1.53 added `-F, --output` to `mr view` and turned the old #383 guard red on every box (#590). To guard against *our* code depending on a flag, scan our source instead. The #383 guard (`GitLab adapter source` in `cli-flag-shapes.test.ts`) does this over each file's whole comment-stripped text, so multi-line argv arrays and `.push()`ed flags are caught. Since #594 it covers every glab subcommand but `api`, and its comment stripper (`glab-source-guard.ts`) understands string, template and regex literals, so a trailing `// …` note is not a hit while a `//` inside a string is not mistaken for a comment. The scanner has its own fixture tests: a guard tested only against a clean tree cannot tell a working scanner from one that matches nothing.
 
 For API-based operations (like `glab api projects/...`), test the URL-encoding shape our handlers use.
 
