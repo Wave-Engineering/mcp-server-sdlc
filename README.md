@@ -141,6 +141,24 @@ To install or upgrade the probe manually:
 pip install --user 'git+https://github.com/Wave-Engineering/commutativity-probe.git@v0.1.0'
 ```
 
+## The precheck gate (`pr_create`, `pr_ready`, `pr_merge`, `pr_merge_wait`)
+
+Agents commit and push working branches freely; the gate into a release branch is the PR/MR, so this server enforces it (#592). `/precheck` in [claudecode-workflow](https://github.com/Wave-Engineering/claudecode-workflow) posts a `precheck` commit status on the head it reviewed. The contract is that repo's `docs/precheck-status.md`.
+
+| Rule | Where |
+|---|---|
+| `squash_message` is required: the exact squash commit. Subject `type(scope): description` (at most 72 characters; type `feat`, `fix`, `doc`, `style`, `refactor`, `test` or `chore`), a blank line, a body with `Closes #N`, and a `Co-Authored-By:` trailer. It is stored in the body as `## Squash commit`. | `pr_create` |
+| `precheck` = success on the head SHA as the platform has it. A draft skips this check, because a draft can't merge. | `pr_create` (non-draft), `pr_ready` |
+| The merge is a squash; the body carries a valid `## Squash commit` block, which **is** the squash commit; `precheck` = success on the head; the merge is pinned to that head (`head_moved` if it moved). | `pr_merge`, `pr_merge_wait` |
+
+**Exempt:** integration pairs, meaning a head on `kahuna/*` or `campaign/*`, or a base on `kahuna/*`. The wave trust gate governs those merges. On an existing PR/MR the head must also be in the same repo: a fork's `kahuna/x` is only a name, so it is gated. `wave_finalize` opens only integration pairs, and refuses any other head.
+
+**Every read fails closed.** An API error, a GitLab error body on exit 0, or an unexpected shape all count as no pass (`precheck_unreadable`).
+
+The flow is: `pr_create({…, squash_message, draft: true})`, CI runs, `/precheck` posts the status, `pr_ready`, then `pr_merge`.
+
+**Release order:** the kit (the status producer, and its skills that pass `squash_message`) is released and installed before this server's tag. If the server ships first, every non-draft create is refused until the kit catches up. The same kit release stops `/mmr` from writing its own squash message: a `squash_message` that differs from the block is refused, so `/mmr` omits it. A PR/MR opened before this ships has no block and is refused (`squash_block_missing`) until one is added to its body.
+
 ## Merge tools: `pr_merge` vs `pr_merge_wait`
 
 Two tools, deliberately split by what the caller cares about:

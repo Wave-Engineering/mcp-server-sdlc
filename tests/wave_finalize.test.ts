@@ -473,6 +473,16 @@ describe('wave_finalize handler', () => {
     expect((r1.body_sha as string).length).toBe(64);
   });
 
+  // #592: this opens a ready PR/MR with no precheck pass, safe only on an
+  // integration pair. Any other head is refused before anything is read.
+  test('refuses a head that is not an integration branch, and opens nothing', async () => {
+    const result = await handler.execute({ plan_id: 42, kahuna_branch: 'feature/9-z', target_branch: 'main', root: tmpRoot });
+    const data = parseResult(result);
+    expect(data.ok).toBe(false);
+    expect(data.code).toBe('not_integration_branch');
+    expect(execCalls()).toHaveLength(0);
+  });
+
   // --- default body_artifacts_dir derivation ---
   test('default body_artifacts_dir derives from kahuna_branch slug', async () => {
     // #528: use a guaranteed-unique slug so the DERIVED default artifact dir

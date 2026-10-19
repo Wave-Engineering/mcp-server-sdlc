@@ -85,6 +85,21 @@ export interface PrCreateResponse {
 export interface PrMergeArgs {
   number: number;
   squash_message?: string;
+  /**
+   * Internal adapter arg (#592), NOT part of any MCP tool schema. Set only by
+   * the precheck gate, from the PR/MR body's `## Squash commit` block: the
+   * squash commit's subject line, with `squash_message` then carrying its body.
+   * GitHub passes it as `--subject`; GitLab joins `subject\n\nbody` into
+   * `--squash-message`. Unset, both adapters behave exactly as before.
+   */
+  squash_subject?: string;
+  /**
+   * Internal adapter arg (#592), NOT part of any MCP tool schema. The head SHA
+   * the precheck gate checked the pass on. The merge must land exactly that
+   * commit: GitHub passes `--match-head-commit`; GitLab refuses if the head it
+   * resolves (including on a stale-sha retry) is any other commit.
+   */
+  expected_head_sha?: string;
   use_merge_queue?: boolean;
   skip_train?: boolean;
   repo?: string;
@@ -185,6 +200,10 @@ export interface PrMergeWaitArgs {
   timeout_sec?: number;
   /** Caller-selected merge strategy (#474). See `PrMergeArgs.merge_method`. */
   merge_method?: MergeMethod;
+  /** Internal (#592), set by the precheck gate. See `PrMergeArgs.squash_subject`. */
+  squash_subject?: string;
+  /** Internal (#592), set by the precheck gate. See `PrMergeArgs.expected_head_sha`. */
+  expected_head_sha?: string;
 }
 
 /**
@@ -1129,6 +1148,69 @@ export interface ResolveDefaultBranchResponse {
 }
 
 // ---------------------------------------------------------------------------
+// The `precheck` gate's reads and the ready transition (#592).
+//
+// The contract is claudecode-workflow's docs/precheck-status.md. Every read
+// below FAILS CLOSED: an API error, a GitLab error body, or a shape that is not
+// the expected one returns `ok: false`, never a soft `none`/`null`. The policy
+// in lib/precheck-gate.ts treats `ok: false` as "no pass".
+// ---------------------------------------------------------------------------
+
+export interface PrecheckStatusArgs {
+  sha: string;
+  repo?: string;
+}
+
+/** The latest `precheck` status on a SHA, normalized across platforms. */
+export type PrecheckState = 'success' | 'pending' | 'failure' | 'none';
+
+export interface PrecheckStatusResponse {
+  state: PrecheckState;
+}
+
+export interface RemoteBranchShaArgs {
+  branch: string;
+  repo?: string;
+}
+
+export interface RemoteBranchShaResponse {
+  /** Where the branch points ON THE PLATFORM — what a create from it opens with. */
+  sha: string;
+}
+
+export interface PrPrecheckInfoArgs {
+  number: number;
+  repo?: string;
+}
+
+/** One snapshot of what the gate needs about a PR/MR, read in one call. */
+export interface PrPrecheckInfo {
+  head_sha: string;
+  head_ref: string;
+  base_ref: string;
+  title: string;
+  body: string;
+  draft: boolean;
+  state: 'open' | 'merged' | 'closed';
+  /** The head lives in the base's own repo/project. Unknown reads as false (a fork). */
+  same_repo: boolean;
+}
+
+export interface PrReadyArgs {
+  number: number;
+  repo?: string;
+}
+
+export interface PrReadyResponse {
+  number: number;
+  /** Read back after the write: always false on success. */
+  draft: false;
+  head_sha: string;
+  /** False when the PR/MR was already ready (nothing was written). */
+  changed: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // The interface
 // ---------------------------------------------------------------------------
 
@@ -1210,6 +1292,12 @@ export interface PlatformAdapter {
   resolveDefaultBranch(
     args: ResolveDefaultBranchArgs,
   ): Promise<AdapterResult<ResolveDefaultBranchResponse>>;
+
+  // The `precheck` gate (#592). All fail closed; see the types above.
+  precheckStatus(args: PrecheckStatusArgs): Promise<AdapterResult<PrecheckStatusResponse>>;
+  remoteBranchSha(args: RemoteBranchShaArgs): Promise<AdapterResult<RemoteBranchShaResponse>>;
+  prPrecheckInfo(args: PrPrecheckInfoArgs): Promise<AdapterResult<PrPrecheckInfo>>;
+  prReady(args: PrReadyArgs): Promise<AdapterResult<PrReadyResponse>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1259,6 +1347,10 @@ export const PLATFORM_ADAPTER_METHODS = [
   'findExistingPr',
   'fetchCiTrustSignal',
   'resolveDefaultBranch',
+  'precheckStatus',
+  'remoteBranchSha',
+  'prPrecheckInfo',
+  'prReady',
 ] as const;
 
 export type PlatformAdapterMethod = (typeof PLATFORM_ADAPTER_METHODS)[number];

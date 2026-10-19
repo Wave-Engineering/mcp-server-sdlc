@@ -207,6 +207,16 @@ describe('GitHub CLI flag shapes', () => {
     matchOrSkip(help, /--rebase/);
   });
 
+  test('gh pr merge accepts --subject and --match-head-commit (#592)', () => {
+    // The precheck gate squashes from the PR body's `## Squash commit` block
+    // (`--subject` + `--body-file`) and pins the merge to the head the pass was
+    // checked on (`--match-head-commit`). Mocked argv can't prove the real CLI
+    // takes them.
+    const help = captureHelp('gh pr merge --help');
+    matchOrSkip(help, /--subject/);
+    matchOrSkip(help, /--match-head-commit/);
+  });
+
   test('gh run list accepts --commit, --json flags', () => {
     // Used by ci_wait_run handler (via ci-runs-for-branch-github adapter)
     const help = captureHelp('gh run list --help');

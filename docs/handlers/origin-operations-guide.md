@@ -362,6 +362,16 @@ GitHub lets you request only the fields you need; GitLab always dumps the whole 
 - `gh pr create` doesn't return JSON. Create then immediately `gh pr view <num> --json number,url,state,headRefName,baseRefName` to get the normalized response.
 - `glab mr create --yes` prints the URL on stdout; parse the trailing URL and re-query with `glab api projects/<enc>/merge_requests?source_branch=<head>` for the full object (never `glab mr view -F json`; see #383). Pattern proven in `lib/adapters/pr-create-gitlab.ts`.
 - For multi-line bodies, write a temp file (`/tmp/pr-body-<ts>.md`) and pass via `--body-file` (gh) or `--description "$(cat path)"` (glab). Do NOT inline multi-line content on the command line — it breaks quoting in obvious and non-obvious ways.
+- **The precheck gate (#592) runs in the handler, before the adapter.** `squash_message` is validated, then appended to the body as `## Squash commit`. A non-draft create reads the head branch's SHA on the platform (`remoteBranchSha`), then its `precheck` status (`precheckStatus`). Integration pairs skip both. The policy is in `lib/precheck-gate.ts`, not the adapters. See the README's "The precheck gate".
+
+| Gate read | GitHub | GitLab |
+| --------- | ------ | ------ |
+| `remoteBranchSha` | `gh api repos/<slug>/git/ref/heads/<b>` (singular `ref`: an exact match) | `glab api projects/<id>/repository/branches/<enc b>` → `commit.id` |
+| `precheckStatus` | `gh api repos/<slug>/commits/<sha>/status` → the `precheck` context (combined: latest per context) | `glab api projects/<id>/repository/commits/<sha>/statuses?name=precheck` → highest `id` |
+| `prPrecheckInfo` | `gh pr view <n> --json id,headRefOid,headRefName,baseRefName,title,body,isDraft,state` | `glab api projects/<id>/merge_requests/<iid>` → `diff_refs.head_sha`/`sha`, `draft` (or `work_in_progress`) |
+| `prReady` | GraphQL `markPullRequestReadyForReview`, then a read-back | `glab api -X PUT …/merge_requests/<iid> -f title=<draft prefix stripped>`, then a read-back |
+
+All four fail closed. A GitLab error body on exit 0 (`detectGlabApiError`) is a failure, and so is a non-list where a list is expected; `detectGlabApiError` never flags an array.
 
 ### 3.2 `pr_status`
 
@@ -434,6 +444,13 @@ Same fields as `pr_status`; this tool wraps `pr_status` logic in a poll loop.
 - If direct squash returns stderr containing `merge strategy for main is set by the merge queue` (or similar repo-protection text), retry with `--auto`. Report `merge_method: 'merge_queue'` in the response so the caller knows.
 - GitLab's squash commit message flag is `--squash-message`, NOT `--body`. Don't typo this.
 - To fetch the final `merge_commit_sha` on GitHub, follow up with `gh pr view <n> --json state,mergeCommit` after merge returns. Direct-squash merges populate it immediately; merge-queue merges may return `null` until the queue lands.
+- **The precheck gate (#592)**, shared by `pr_merge` and `pr_merge_wait` (`mergeGate` in `lib/precheck-gate.ts`), applies outside integration pairs (head in the same repo; a fork's `kahuna/x` is gated) and when the PR/MR is open. GitLab `locked` counts as open, and an unknown state is `precheck_unreadable`:
+  - Squash only: `merge_method_not_squash` otherwise.
+  - The body's `## Squash commit` block is required (`squash_block_missing`), and a differing `squash_message` is refused (`squash_message_mismatch`).
+  - `precheck` = success on the head (`precheck_missing` / `precheck_unreadable`).
+  - The adapter then gets the internal args `squash_subject` + `squash_message` (the block's subject and body) and `expected_head_sha`.
+    - **GitHub:** adds `--subject <s> --match-head-commit <sha>`. The GraphQL `enqueuePullRequest` fallback sends `expectedHeadOid`. On a merge-queue repo the queue's own method writes the commit, so the block is the squash commit only on the direct path (the fleet is queue-less).
+    - **GitLab:** sends `--squash-message "<subject>\n\n<body>"`, and refuses with `head_moved` if the head it resolves (including on the 409 retry) is not `expected_head_sha`.
 
 ### 3.5 `pr_diff`
 

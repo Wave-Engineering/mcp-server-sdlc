@@ -112,6 +112,9 @@ export async function executeMergeWait(
   const mergeResult = await adapter.prMerge({
     number: args.number,
     squash_message: args.squash_message,
+    // #592: the precheck gate's squash subject and pinned head, set by the handler.
+    squash_subject: args.squash_subject,
+    expected_head_sha: args.expected_head_sha,
     use_merge_queue: args.use_merge_queue,
     skip_train: args.skip_train,
     // #474: thread the caller-selected strategy through to the underlying merge.

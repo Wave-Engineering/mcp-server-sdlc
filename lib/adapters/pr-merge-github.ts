@@ -93,6 +93,7 @@ function exec(cmd: string): string {
 function enqueuePullRequestViaGraphQL(
   number: number,
   repo: string | undefined,
+  expectedHeadSha?: string,
 ): number | null {
   // Use runArgv (argv-array form, each element shell-escaped) instead of
   // string-template interpolation to eliminate shell-injection surface on
@@ -121,9 +122,15 @@ function enqueuePullRequestViaGraphQL(
   }
   const prId = nodeIdResult.stdout.trim();
 
-  // Step 2: invoke the enqueuePullRequest mutation
-  const mutation = `mutation($prId:ID!){enqueuePullRequest(input:{pullRequestId:$prId}){mergeQueueEntry{position}}}`;
+  // Step 2: invoke the enqueuePullRequest mutation. #592: when the precheck
+  // gate pinned a head, GitHub refuses the enqueue if the PR has moved off it
+  // (the same promise `--match-head-commit` makes on the gh paths).
+  const mutation =
+    expectedHeadSha === undefined
+      ? `mutation($prId:ID!){enqueuePullRequest(input:{pullRequestId:$prId}){mergeQueueEntry{position}}}`
+      : `mutation($prId:ID!,$oid:GitObjectID!){enqueuePullRequest(input:{pullRequestId:$prId,expectedHeadOid:$oid}){mergeQueueEntry{position}}}`;
   const graphqlArgv = ['gh', 'api', 'graphql', '-f', `query=${mutation}`, '-f', `prId=${prId}`];
+  if (expectedHeadSha !== undefined) graphqlArgv.push('-f', `oid=${expectedHeadSha}`);
   if (repo !== undefined) {
     graphqlArgv.push('--repo', repo);
   }
@@ -160,15 +167,34 @@ function githubMergeFlag(method: MergeMethod): string {
   return '--squash';
 }
 
+interface MergeExtras {
+  subject?: string;
+  matchHead?: string;
+}
+
+function mergeExtras(args: PrMergeArgs): MergeExtras {
+  return { subject: args.squash_subject, matchHead: args.expected_head_sha };
+}
+
 function buildGithubMergeCommand(
   number: number,
   method: MergeMethod,
   auto: boolean,
   squashMessage?: string,
   repo?: string,
+  extras: MergeExtras = {},
 ): string {
   const parts = ['gh', 'pr', 'merge', String(number), githubMergeFlag(method), '--delete-branch'];
   if (auto) parts.push('--auto');
+  // #592: the precheck gate's pinned squash subject and head. Without
+  // `--subject` gh titles the squash commit itself (the PR title plus `(#N)`),
+  // so the reviewed `## Squash commit` block would not be what lands.
+  if (method === 'squash' && extras.subject !== undefined) {
+    parts.push('--subject', shellEscape(extras.subject));
+  }
+  if (extras.matchHead !== undefined) {
+    parts.push('--match-head-commit', shellEscape(extras.matchHead));
+  }
   // The message body applies to the commit `gh` synthesizes — the squash commit
   // (`--squash`) or the merge commit (`--merge`). A rebase preserves each
   // commit's own message and has no synthesized commit, so `gh pr merge
@@ -301,7 +327,7 @@ async function mergeGithubViaQueue(
   // the eventual merge — so the reported `merge_method` stays `merge_queue`,
   // not `direct_<method>` (#474 queue caveat).
   const method = args.merge_method ?? 'squash';
-  const cmd = buildGithubMergeCommand(args.number, method, true, args.squash_message, args.repo);
+  const cmd = buildGithubMergeCommand(args.number, method, true, args.squash_message, args.repo, mergeExtras(args));
   try {
     exec(cmd);
   } catch (err) {
@@ -343,6 +369,7 @@ async function mergeGithubDirect(
     false,
     args.squash_message,
     args.repo,
+    mergeExtras(args),
   );
   try {
     exec(directCmd);
@@ -438,7 +465,7 @@ async function mergeGithubDirect(
   const fallbackQueue: PrMergeQueueState = { enabled: true, position: null, enforced: true };
   // Queue-enqueue fallback: pass the requested strategy flag, but the enrolled
   // PR is governed by the queue's own method — reported as `merge_queue` (#474).
-  const autoCmd = buildGithubMergeCommand(args.number, method, true, args.squash_message, args.repo);
+  const autoCmd = buildGithubMergeCommand(args.number, method, true, args.squash_message, args.repo, mergeExtras(args));
   try {
     exec(autoCmd);
     // --auto succeeded — enrolled via the queue. No GraphQL fallback needed.
@@ -475,7 +502,7 @@ async function mergeGithubDirect(
     // auto-merge-off). Fall back to GraphQL enqueuePullRequest mutation.
     let queuePosition: number | null = null;
     try {
-      queuePosition = enqueuePullRequestViaGraphQL(args.number, args.repo);
+      queuePosition = enqueuePullRequestViaGraphQL(args.number, args.repo, args.expected_head_sha);
     } catch (graphqlErr) {
       return {
         ok: false,

@@ -14,6 +14,7 @@ import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { getAdapter } from '../lib/adapters/index.js';
 import { repoOptionalSchema } from '../lib/schemas/repo.js';
+import { mergeGate } from '../lib/precheck-gate.js';
 
 const inputSchema = z.object({
   number: z.number().int().positive('number must be a positive integer'),
@@ -46,7 +47,10 @@ const prMergeWaitHandler: HandlerDef = {
     'pr_state="MERGED" guaranteed on success. Detects "already merged" and short-circuits without ' +
     're-attempting the merge. Use this when downstream work needs the commit on main; use pr_merge ' +
     'when enrollment is enough. merge_method is authoritative only on the immediate (non-queue) ' +
-    'path; on a merge-queue-ENFORCED repo the queue\'s own configured method governs the merge.',
+    'path; on a merge-queue-ENFORCED repo the queue\'s own configured method governs the merge. ' +
+    'The same precheck gate as pr_merge applies (#592): outside integration pairs, squash only, a valid ' +
+    '`## Squash commit` block in the body (which IS the squash commit), and `precheck` = success on the head, ' +
+    'with the merge pinned to that head. An already-merged PR/MR is not gated.',
   inputSchema,
   async execute(rawArgs: unknown) {
     let args;
@@ -56,7 +60,19 @@ const prMergeWaitHandler: HandlerDef = {
       return envelope({ ok: false, error: err instanceof Error ? err.message : String(err) });
     }
 
-    const result = await getAdapter({ repo: args.repo }).prMergeWait(args);
+    const adapter = getAdapter({ repo: args.repo });
+    const gate = await mergeGate(adapter, args, 'pr_merge_wait');
+    if (gate.kind === 'refused') return envelope({ ok: false, ...gate.refusal });
+    const waitArgs =
+      gate.kind === 'gated'
+        ? {
+            ...args,
+            squash_subject: gate.commit.subject,
+            squash_message: gate.commit.body,
+            expected_head_sha: gate.head_sha,
+          }
+        : args;
+    const result = await adapter.prMergeWait(waitArgs);
     if ('platform_unsupported' in result) {
       return envelope({ ok: true, platform_unsupported: true, hint: result.hint });
     }

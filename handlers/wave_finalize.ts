@@ -20,6 +20,7 @@ import type { HandlerDef } from '../types.js';
 import { getAdapter } from '../lib/adapters/index.js';
 import { branchExistsOnRemote } from '../lib/shared/git-remote.js';
 import { emitStateEvent } from '../lib/flightdeck_emit.js';
+import { isIntegrationPair } from '../lib/precheck-gate.js';
 import {
   assembleBody, assembleBodyFromState, defaultArtifactsDir, epicSlugFromBranch, hashBody,
   projectDir, resolveArtifactsDir,
@@ -57,6 +58,15 @@ const waveFinalizeHandler: HandlerDef = {
     let args: z.infer<typeof inputSchema>;
     try { args = inputSchema.parse(rawArgs); }
     catch (err) { return envelope({ ok: false, error: err instanceof Error ? err.message : String(err) }); }
+    // #592: this opens a ready PR/MR with no precheck pass, which is safe only
+    // because integration pairs are exempt. Any other head is not this tool's.
+    if (!isIntegrationPair(args.kahuna_branch, args.target_branch)) {
+      return envelope({
+        ok: false,
+        code: 'not_integration_branch',
+        error: `wave_finalize: ${args.kahuna_branch} is not an integration branch (kahuna/* or campaign/*); open it with pr_create`,
+      });
+    }
     try {
       const cwd = projectDir(args.root);
       const resolved = resolveArtifactsDir(args.body_artifacts_dir, defaultArtifactsDir(args.kahuna_branch), cwd);

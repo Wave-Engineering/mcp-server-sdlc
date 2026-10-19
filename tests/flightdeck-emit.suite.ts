@@ -882,6 +882,21 @@ describe('handler_emit (wired handlers → emit)', () => {
         if (c.includes('api graphql')) {
           return JSON.stringify({ data: { repository: { mergeQueue: null } } });
         }
+        // The precheck gate's snapshot (#592): an integration pair, which the
+        // gate passes through; these tests are about the emit, not the gate.
+        if (c.includes('--json id,headRefOid')) {
+          return JSON.stringify({
+            id: 'PR_x',
+            headRefOid: 'a'.repeat(40),
+            headRefName: 'kahuna/0-emit',
+            baseRefName: 'main',
+            title: 't',
+            body: '',
+            isDraft: false,
+            state: 'OPEN',
+            isCrossRepository: false,
+          });
+        }
         if (c.includes('pr view')) {
           return JSON.stringify({
             state: 'MERGED',

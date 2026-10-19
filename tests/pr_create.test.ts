@@ -5,6 +5,7 @@ import {
   resetExecMock,
   execCalls,
 } from '../lib/test-support/mock-child-process.ts';
+import { stubPrecheckPass, VALID_SQUASH_MESSAGE } from '../lib/test-support/precheck-stubs.ts';
 
 // pr_create now uses child_process.execSync (story #238 — normalize subprocess
 // invocation). Tests intercept the boundary via the shared child_process mock
@@ -28,7 +29,16 @@ function unquote(cmd: string): string {
 
 installChildProcessMock();
 
-const { default: handler } = await import('../handlers/pr_create.ts');
+const { default: prCreateHandler } = await import('../handlers/pr_create.ts');
+
+// These tests cover the adapter's create mechanics. The precheck gate (#592) is
+// tested in tests/precheck_gate.test.ts; here every call carries a valid
+// squash_message and the head carries a pass (`stubPrecheckPass` in beforeEach).
+const handler = {
+  ...prCreateHandler,
+  execute: (args: Record<string, unknown>) =>
+    prCreateHandler.execute({ squash_message: VALID_SQUASH_MESSAGE, ...args }),
+};
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }) {
   return JSON.parse(result.content[0].text) as Record<string, unknown>;
@@ -53,6 +63,7 @@ function failExec(match: string, stderr: string, status: number = 1): void {
 
 beforeEach(() => {
   resetExecMock();
+  stubPrecheckPass();
 });
 
 afterEach(() => {
