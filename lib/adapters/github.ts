@@ -30,6 +30,10 @@ import { findExistingPrGithub } from './find-existing-pr-github.js';
 import { findMergedPrForBranchPrefixGithub } from './find-merged-pr-for-branch-prefix-github.js';
 import { resolveBranchShaGithub } from './resolve-branch-sha-github.js';
 import { resolveDefaultBranchGithub } from './resolve-default-branch-github.js';
+import { precheckStatusGithub } from './precheck-status-github.js';
+import { remoteBranchShaGithub } from './remote-branch-sha-github.js';
+import { prPrecheckInfoGithub } from './pr-precheck-info-github.js';
+import { prReadyGithub } from './pr-ready-github.js';
 import { labelCreateGithub } from './label-create-github.js';
 import { labelListGithub } from './label-list-github.js';
 import { prCommentGithub } from './pr-comment-github.js';
@@ -88,4 +92,8 @@ export const githubAdapter: PlatformAdapter = {
   findExistingPr: findExistingPrGithub,
   fetchCiTrustSignal: fetchCiTrustSignalGithub,
   resolveDefaultBranch: resolveDefaultBranchGithub,
+  precheckStatus: precheckStatusGithub,
+  remoteBranchSha: remoteBranchShaGithub,
+  prPrecheckInfo: prPrecheckInfoGithub,
+  prReady: prReadyGithub,
 };

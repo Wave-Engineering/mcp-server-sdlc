@@ -123,6 +123,11 @@ describe('PlatformAdapter contract', () => {
     'fetchCiTrustSignal',
     // #465: branch_guard live default-branch query — real impl, not a stub.
     'resolveDefaultBranch',
+    // #592: the precheck gate's fail-closed reads and the ready transition.
+    'precheckStatus',
+    'remoteBranchSha',
+    'prPrecheckInfo',
+    'prReady',
   ]);
 
   test('still-stubbed methods return platform_unsupported', async () => {

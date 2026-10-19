@@ -13,6 +13,7 @@ import type { HandlerDef } from '../types.js';
 import { getAdapter } from '../lib/adapters/index.js';
 import { repoOptionalSchema } from '../lib/schemas/repo.js';
 import { emitStateEvent, scopeRoot } from '../lib/flightdeck_emit.js';
+import { mergeGate } from '../lib/precheck-gate.js';
 
 const inputSchema = z.object({
   number: z.number().int().positive('number must be a positive integer'),
@@ -50,7 +51,12 @@ const prMergeHandler: HandlerDef = {
     'ONLY on the immediate (non-queue / skip_train) path and reported back as merge_method:' +
     '"direct_squash"|"direct_merge"|"direct_rebase". On a merge-queue-ENFORCED repo the QUEUE\'s ' +
     'own configured merge method governs the enrolled PR — merge_method does NOT override it, and ' +
-    'the response reports merge_method:"merge_queue". squash_message is ignored when merge_method=rebase.',
+    'the response reports merge_method:"merge_queue". squash_message is ignored when merge_method=rebase. ' +
+    'THE PRECHECK GATE (#592): outside integration pairs (head kahuna/* or campaign/*, or base kahuna/*) the ' +
+    'merge must be a squash, the PR/MR body must carry a valid `## Squash commit` block (pr_create writes it), ' +
+    'and the head SHA must carry `precheck` = success. The block IS the squash commit, subject and body; a ' +
+    'squash_message that differs from it is refused (omit squash_message, or edit the block). The merge is ' +
+    'pinned to the head the pass was checked on, so a push after review refuses with head_moved.',
   inputSchema,
   async execute(rawArgs: unknown) {
     let args;
@@ -60,7 +66,19 @@ const prMergeHandler: HandlerDef = {
       return envelope({ ok: false, error: err instanceof Error ? err.message : String(err) });
     }
 
-    const result = await getAdapter({ repo: args.repo }).prMerge(args);
+    const adapter = getAdapter({ repo: args.repo });
+    const gate = await mergeGate(adapter, args, 'pr_merge');
+    if (gate.kind === 'refused') return envelope({ ok: false, ...gate.refusal });
+    const mergeArgs =
+      gate.kind === 'gated'
+        ? {
+            ...args,
+            squash_subject: gate.commit.subject,
+            squash_message: gate.commit.body,
+            expected_head_sha: gate.head_sha,
+          }
+        : args;
+    const result = await adapter.prMerge(mergeArgs);
     // Per dev spec §4.4 step 4: surface `platform_unsupported` as a typed
     // signal alongside `ok: true` — callers branch on the discriminator
     // instead of being lied to with a fake "merged: true".

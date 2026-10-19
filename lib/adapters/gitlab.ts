@@ -31,6 +31,10 @@ import { findExistingPrGitlab } from './find-existing-pr-gitlab.js';
 import { findMergedPrForBranchPrefixGitlab } from './find-merged-pr-for-branch-prefix-gitlab.js';
 import { resolveBranchShaGitlab } from './resolve-branch-sha-gitlab.js';
 import { resolveDefaultBranchGitlab } from './resolve-default-branch-gitlab.js';
+import { precheckStatusGitlab } from './precheck-status-gitlab.js';
+import { remoteBranchShaGitlab } from './remote-branch-sha-gitlab.js';
+import { prPrecheckInfoGitlab } from './pr-precheck-info-gitlab.js';
+import { prReadyGitlab } from './pr-ready-gitlab.js';
 import { labelCreateGitlab } from './label-create-gitlab.js';
 import { labelListGitlab } from './label-list-gitlab.js';
 import { prCommentGitlab } from './pr-comment-gitlab.js';
@@ -89,4 +93,8 @@ export const gitlabAdapter: PlatformAdapter = {
   findExistingPr: findExistingPrGitlab,
   fetchCiTrustSignal: fetchCiTrustSignalGitlab,
   resolveDefaultBranch: resolveDefaultBranchGitlab,
+  precheckStatus: precheckStatusGitlab,
+  remoteBranchSha: remoteBranchShaGitlab,
+  prPrecheckInfo: prPrecheckInfoGitlab,
+  prReady: prReadyGitlab,
 };

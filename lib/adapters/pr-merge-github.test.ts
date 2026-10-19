@@ -498,6 +498,32 @@ describe('prMergeGithub — subprocess boundary', () => {
     expect(graphqlCall).toBeDefined();
   });
 
+  test('pr-merge-github — the GraphQL fallback is pinned to the precheck-checked head (#592)', async () => {
+    const head = 'c'.repeat(40);
+    onExec('enqueuePullRequest', JSON.stringify({ data: { enqueuePullRequest: { mergeQueueEntry: { position: 1 } } } }));
+    stubNoQueue();
+    // The gate's extras follow `--auto`, so one matcher serves both calls:
+    // the direct merge hits the queue, then --auto is not allowed.
+    onExec('gh pr merge 592 --squash --delete-branch', (cmd) => {
+      if (!cmd.includes('--auto')) throw mergeQueueError();
+      const err = new Error('Auto merge is not allowed for this repository') as ThrowableError;
+      err.stderr = 'Auto merge is not allowed for this repository\n';
+      throw err;
+    });
+    onExec('gh api repos/org/repo/pulls/592', JSON.stringify({ node_id: 'PR_pin' }));
+    onExec(
+      'gh pr view 592 --json state,url,mergeCommit',
+      JSON.stringify({ state: 'OPEN', url: 'https://github.com/org/repo/pull/592', mergeCommit: null }),
+    );
+
+    const result = await prMergeGithub({ number: 592, squash_subject: 'feat: x', squash_message: 'b', expected_head_sha: head });
+    expectOk(result);
+    expect(result.data.graphql_fallback).toBe(true);
+    const graphqlCall = unquote(execCalls().find((c) => unquote(c).includes('enqueuePullRequest')) ?? '');
+    expect(graphqlCall).toContain('expectedHeadOid:$oid');
+    expect(graphqlCall).toContain(`oid=${head}`);
+  });
+
   test('pr-merge-github — GraphQL fallback shell-escapes repo and prId (security)', async () => {
     // Regression: enqueuePullRequestViaGraphQL must use argv-array form
     // (runArgv) so that special characters in `repo` or `prId` cannot break

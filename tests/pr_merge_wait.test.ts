@@ -5,6 +5,7 @@ import {
   resetExecMock,
   execCalls,
 } from '../lib/test-support/mock-child-process.ts';
+import { stubPrecheckPassThrough } from '../lib/test-support/precheck-stubs.ts';
 
 // Thin handler-level smoke tests for pr_merge_wait. Story 1.11 (#248) moved
 // the orchestration tests to lib/adapters/pr-merge-wait-{github,gitlab}.test.ts
@@ -27,6 +28,9 @@ function parseResult(result: { content: Array<{ type: string; text: string }> })
 
 beforeEach(() => {
   resetExecMock();
+  // The precheck gate (#592) is tested in tests/precheck_gate.test.ts; here it
+  // sees an integration pair and passes through.
+  stubPrecheckPassThrough();
   onExec('git remote get-url origin', 'https://github.com/org/repo.git\n');
 });
 

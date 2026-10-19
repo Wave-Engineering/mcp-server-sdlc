@@ -5,6 +5,7 @@ import {
   resetExecMock,
   execCalls,
 } from '../lib/test-support/mock-child-process.ts';
+import { stubPrecheckPassThrough } from '../lib/test-support/precheck-stubs.ts';
 
 // Intercept execSync via the shared child_process mock helper, keyed by command
 // substring. Each registered value may be a plain string (returned as stdout)
@@ -63,6 +64,9 @@ function stubEnforcedQueue() {
 beforeEach(() => {
   resetExecMock();
   clearMergeQueueCache();
+  // These tests cover adapter mechanics; the precheck gate (#592) has its own
+  // tests (tests/precheck_gate.test.ts) and passes an integration pair through.
+  stubPrecheckPassThrough();
 });
 
 afterEach(() => {
@@ -688,7 +692,10 @@ describe('pr_merge handler — aggregate response (#225)', () => {
         target_branch: 'main',
         web_url: 'https://gitlab.com/target-org/target-repo/-/merge_requests/17',
         labels: [],
-        sha: 'head17eeeeee',
+        // With `repo` the gate's snapshot (#592) reads this same URL, so the
+        // fixture must be a well-formed MR: a full sha and a draft state.
+        sha: 'e'.repeat(40),
+        draft: false,
         merge_commit_sha: 'deadbeef',
       }),
     );
@@ -972,7 +979,9 @@ describe('#461 — GitLab blocked merge surfaces the blocker', () => {
     // #424: a genuinely blocked MR must stop polling immediately rather than
     // burning the full poll budget on a state that will never resolve to
     // merged — resolveHeadSha (1) + one poll read that classifies blocked (1).
-    const apiCalls = execCalls().filter((c) => c.includes('merge_requests/84'));
+    // The adapter's reads only: the precheck gate's snapshot (#592) reads
+    // `projects/:id/…`, not the adapter's `projects/org%2Frepo/…`.
+    const apiCalls = execCalls().filter((c) => c.includes('org%2Frepo/merge_requests/84'));
     expect(apiCalls).toHaveLength(2);
   });
 
@@ -1117,7 +1126,8 @@ describe('#461 — GitLab blocked merge surfaces the blocker', () => {
     expect(data.warnings).toEqual([]);
     // The title's claim, made assertable: exactly resolveHeadSha + one poll
     // read — the poll stops immediately on seeing `merged`.
-    const apiCalls = execCalls().filter((c) => c.includes('merge_requests/86'));
+    // The adapter's reads only; the gate's snapshot (#592) reads `projects/:id/…`.
+    const apiCalls = execCalls().filter((c) => c.includes('org%2Frepo/merge_requests/86'));
     expect(apiCalls).toHaveLength(2);
   });
 

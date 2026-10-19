@@ -306,6 +306,12 @@ export async function prMergeGitlab(
   // GitLab has no merge queue, so the direct-path label is always authoritative.
   const method = args.merge_method ?? 'squash';
   const directLabel = directMergeMethodLabel(method);
+  // #592: the precheck gate passes the `## Squash commit` block split into
+  // subject and body; `--squash-message` is the whole commit message.
+  const squashMessage =
+    args.squash_subject !== undefined
+      ? `${args.squash_subject}\n\n${args.squash_message ?? ''}`.trimEnd()
+      : args.squash_message;
 
   try {
     // #486: two-step merge. Resolve the source-branch HEAD sha, then merge with
@@ -336,6 +342,18 @@ export async function prMergeGitlab(
             'merging; refusing to merge without it.',
         };
       }
+      // #592: the precheck pass was checked on one commit; merge only that one.
+      // A push since then (including one the 409 retry below re-resolves to) is
+      // unreviewed, so it refuses rather than merging the newer head.
+      if (args.expected_head_sha !== undefined && headSha !== args.expected_head_sha) {
+        return {
+          ok: false,
+          code: 'head_moved',
+          error:
+            `MR !${String(args.number)}'s head moved to ${headSha.slice(0, 7)} after its precheck pass ` +
+            `was checked on ${args.expected_head_sha.slice(0, 7)}. Run /precheck rearm, then merge again.`,
+        };
+      }
 
       // #488: ALWAYS attempt the deterministic merge first, regardless of
       // allowEnrollment. Code review on this fix caught that enrolling
@@ -352,7 +370,7 @@ export async function prMergeGitlab(
         method,
         headSha,
         false,
-        args.squash_message,
+        squashMessage,
         args.repo,
       );
       try {
@@ -429,7 +447,7 @@ export async function prMergeGitlab(
                 method,
                 headSha,
                 true,
-                args.squash_message,
+                squashMessage,
                 args.repo,
               );
               try {
