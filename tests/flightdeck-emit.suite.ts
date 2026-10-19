@@ -894,6 +894,7 @@ describe('handler_emit (wired handlers → emit)', () => {
             body: '',
             isDraft: false,
             state: 'OPEN',
+            isCrossRepository: false,
           });
         }
         if (c.includes('pr view')) {
