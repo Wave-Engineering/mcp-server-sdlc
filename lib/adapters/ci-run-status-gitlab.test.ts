@@ -255,6 +255,13 @@ describe('ciRunStatusGitlab — subprocess boundary', () => {
     expect(call).not.toContain('projects/org%2Frepo/pipelines');
   });
 
+  test('a nested-group repo keeps every segment (#585)', async () => {
+    onExec('glab api projects/group%2Fsub%2Fsub%2Fproject/pipelines?ref=', '[]');
+    const result = await ciRunStatusGitlab({ ref: 'main', repo: 'group/sub/sub/project' });
+    expectOk(result);
+    expect(findCall('glab api')).toContain('projects/group%2Fsub%2Fsub%2Fproject/pipelines?');
+  });
+
   // --- null return when no matching run ---
 
   test('null return when the pipeline list is empty', async () => {

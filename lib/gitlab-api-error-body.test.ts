@@ -100,7 +100,7 @@ describe('execGlab CONSULTS the detector (#502)', () => {
 
   test('an error body on stdout with exit 0 THROWS instead of returning', () => {
     const r = inFreshProcess(
-      `execGlab("printf '%s' '{\\"message\\":\\"404 Project Not Found\\"}'"); console.log('NO_THROW');`,
+      `execGlab(['printf', '%s', '{"message":"404 Project Not Found"}']); console.log('NO_THROW');`,
     );
     expect(r.out).toContain('THREW:');
     expect(r.out).toContain('glab API error');
@@ -109,14 +109,14 @@ describe('execGlab CONSULTS the detector (#502)', () => {
 
   test('the thrown message carries the API error text', () => {
     const r = inFreshProcess(
-      `execGlab("printf '%s' '{\\"message\\":\\"403 Forbidden\\"}'");`,
+      `execGlab(['printf', '%s', '{"message":"403 Forbidden"}']);`,
     );
     expect(r.out).toContain('403 Forbidden');
   });
 
   test('a real payload is returned unchanged', () => {
     const r = inFreshProcess(
-      `const o = execGlab("printf '%s' '{\\"iid\\":42}'"); console.log('IID:' + JSON.parse(o).iid);`,
+      `const o = execGlab(['printf', '%s', '{"iid":42}']); console.log('IID:' + JSON.parse(o).iid);`,
     );
     expect(r.out).toContain('IID:42');
     expect(r.out).not.toContain('THREW:');
@@ -124,18 +124,18 @@ describe('execGlab CONSULTS the detector (#502)', () => {
 
   test('an empty collection still succeeds — it is a legitimate answer', () => {
     const r = inFreshProcess(
-      `console.log('LEN:' + JSON.parse(execGlab("printf '%s' '[]'")).length);`,
+      `console.log('LEN:' + JSON.parse(execGlab(['printf', '%s', '[]'])).length);`,
     );
     expect(r.out).toContain('LEN:0');
   });
 
   test('genuinely empty output still throws (the #382 guard is intact)', () => {
-    const r = inFreshProcess(`execGlab("printf '%s' ''");`);
+    const r = inFreshProcess(`execGlab(['printf', '%s', '']);`);
     expect(r.out).toContain('empty output');
   });
 
   test('a non-zero exit still throws (the original guard is intact)', () => {
-    const r = inFreshProcess(`execGlab("sh -c 'exit 3'");`);
+    const r = inFreshProcess(`execGlab(['sh', '-c', 'exit 3']);`);
     expect(r.out).toContain('glab failed');
   });
 });

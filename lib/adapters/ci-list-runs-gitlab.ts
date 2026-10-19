@@ -13,21 +13,13 @@
  */
 
 import { execSync } from 'child_process';
-import { gitlabApiCiList, type GitlabPipeline } from '../gitlab-api.js';
+import { gitlabApiCiList, gitlabRepoOpts, type GitlabPipeline } from '../gitlab-api.js';
 import type {
   AdapterResult,
   CiListRunsArgs,
   CiListRunsResponse,
   NormalizedCiRun,
 } from './types.js';
-
-function splitRepoSlug(
-  repo: string | undefined,
-): { owner: string; repo: string } | undefined {
-  if (!repo) return undefined;
-  const [owner, name] = repo.split('/', 2);
-  return { owner, repo: name };
-}
 
 function normalizeGl(pipeline: GitlabPipeline): NormalizedCiRun {
   return {
@@ -54,10 +46,14 @@ function normalizeGl(pipeline: GitlabPipeline): NormalizedCiRun {
 export async function ciListRunsGitlab(
   args: CiListRunsArgs,
 ): Promise<AdapterResult<CiListRunsResponse>> {
+  // The argv that ran, for `ci_wait_run`'s "Command run:" line (#493). Without
+  // it that line printed blank on GitLab, which hid #585.
+  let queried: string[] | undefined;
   try {
     const pipelines = gitlabApiCiList(
       { ref: args.ref, limit: args.limit, sha: args.expected_sha },
-      splitRepoSlug(args.repo),
+      gitlabRepoOpts(args.repo),
+      (argv) => { queried = argv; },
     );
 
     // Defense-in-depth: even if glab returns pipelines that don't match
@@ -76,12 +72,13 @@ export async function ciListRunsGitlab(
       ? shaFiltered.filter((p) => p.source === args.workflow_name)
       : shaFiltered;
 
-    return { ok: true, data: workflowFiltered.map(normalizeGl) };
+    return { ok: true, data: workflowFiltered.map(normalizeGl), queried_argv: queried };
   } catch (err) {
     return {
       ok: false,
       code: 'glab_api_pipelines_failed',
       error: err instanceof Error ? err.message : String(err),
+      queried_argv: queried,
     };
   }
 }

@@ -142,6 +142,12 @@ describe('ciRunsForBranchGitlab — subprocess boundary', () => {
     expect(call).not.toContain('projects/org%2Frepo/pipelines');
   });
 
+  test('argv: a nested-group repo keeps every segment (#585)', async () => {
+    on('glab api projects/group%2Fsub%2Fsub%2Fproject/pipelines?ref=', '[]');
+    await ciRunsForBranchGitlab({ branch: 'main', limit: 10, status: 'all', repo: 'group/sub/sub/project' });
+    expect(findCall('glab api')).toContain('projects/group%2Fsub%2Fsub%2Fproject/pipelines?');
+  });
+
   // --- normalizes response ---
 
   test('ci-runs-for-branch-gitlab — normalizes response', async () => {
