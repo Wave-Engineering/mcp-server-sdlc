@@ -44,18 +44,52 @@ case "${OS}-${ARCH}" in
         ;;
 esac
 
+# Report a failed curl fetch and exit (#600). curl's exit status says which way it
+# failed: the host could not be reached at all, or it answered with an HTTP error
+# (-f makes curl exit 22 on 4xx/5xx).
+# Usage: fetch_failed <curl-exit> <http-code> <url> <what the fetch was doing> [hint]
+# The hint follows an HTTP error other than 404, the one failure a pin can get past.
+fetch_failed() {
+    local rc="$1" code="$2" url="$3" doing="$4" hint="${5:+ $5}"
+    case "$rc" in
+        6|7|28|35)
+            echo "Network error while ${doing}: could not reach ${url} (curl exit ${rc}). Check the network or proxy, then re-run." >&2
+            ;;
+        22)
+            if [[ "$code" == "404" ]]; then
+                echo "HTTP 404 while ${doing}: ${url} does not exist." >&2
+            else
+                echo "HTTP ${code} while ${doing}: GitHub refused or failed the request for ${url}.${hint}" >&2
+            fi
+            ;;
+        *)
+            echo "curl failed (exit ${rc}) while ${doing}: ${url}." >&2
+            ;;
+    esac
+    exit 1
+}
+
 # Resolve latest release tag from the releases/latest redirect, which lands on
 # .../releases/tag/<tag>. Not the unauthenticated api.github.com endpoint: its
-# 60/hour per-IP limit 403s on shared CI runners (#598). `|| true` lets a failed
-# lookup reach the guards (and the override hint) instead of exiting under `set -e`.
-TAG="${SDLC_VERSION:-$(curl -fsSIL -o /dev/null -w '%{url_effective}' "https://github.com/${REPO}/releases/latest" | sed 's#.*/tag/##' || true)}"
+# 60/hour per-IP limit 403s on shared CI runners (#598). A pin skips the lookup.
+LATEST_URL="https://github.com/${REPO}/releases/latest"
+RESOLVED=""
+if [[ -n "${SDLC_VERSION:-}" ]]; then
+    TAG="${SDLC_VERSION}"
+else
+    RC=0
+    RESOLVED="$(curl -fsSIL -o /dev/null -w '%{http_code} %{url_effective}' "${LATEST_URL}")" || RC=$?
+    [[ "$RC" -eq 0 ]] || fetch_failed "$RC" "${RESOLVED%% *}" "${LATEST_URL}" "resolving the latest release" \
+        "Set SDLC_VERSION to a release tag (e.g. v1.2.3) to skip this lookup."
+    # Empty unless the redirect landed on a tag page.
+    TAG="$(printf '%s\n' "${RESOLVED#* }" | sed -n 's#.*/tag/##p')"
+fi
 
 if [[ -z "$TAG" ]]; then
-    echo "Could not determine release tag. Set SDLC_VERSION to override." >&2
+    echo "Could not determine release tag: ${LATEST_URL} led to ${RESOLVED#* }, not a release. Set SDLC_VERSION to override." >&2
     exit 1
 fi
 
-# A redirect that lands anywhere but a tag page leaves a URL here, not a tag.
 # A pin is checked too, so SDLC_VERSION=5.0.0 fails here, not at download.
 if [[ ! "$TAG" =~ ^v[0-9] ]]; then
     echo "Release tag '${TAG}' does not look like a tag. Set SDLC_VERSION to a release tag (e.g. v1.2.3) to override." >&2
@@ -73,7 +107,20 @@ mkdir -p "${INSTALL_DIR}"
 # rename(2) unlinks the old inode but keeps it alive for running processes.
 TMP="${INSTALL_DIR}/${BINARY_NAME}.tmp.$$"
 trap 'rm -f "${TMP}"' EXIT
-curl -fsSL --progress-bar "${DOWNLOAD_URL}" -o "${TMP}"
+RC=0
+FETCHED="$(curl -fsSL --progress-bar -w '%{http_code} %{url_effective}' "${DOWNLOAD_URL}" -o "${TMP}")" || RC=$?
+if [[ "$RC" -ne 0 ]]; then
+    # github.com redirects the asset to a CDN host that a proxy can block on its own,
+    # so name the URL curl actually failed on. Its query string is a signed token.
+    WHERE="${FETCHED#* }"
+    WHERE="${WHERE%%\?*}"
+    if [[ -n "$WHERE" && "$WHERE" != "${DOWNLOAD_URL}" ]]; then
+        WHERE="${WHERE} (redirected from ${DOWNLOAD_URL})"
+    else
+        WHERE="${DOWNLOAD_URL}"
+    fi
+    fetch_failed "$RC" "${FETCHED%% *}" "${WHERE}" "downloading ${BINARY_NAME} ${TAG}"
+fi
 chmod +x "${TMP}"
 mv -f "${TMP}" "${INSTALL_DIR}/${BINARY_NAME}"
 trap - EXIT
