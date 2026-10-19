@@ -1,11 +1,16 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
-import { readFileSync } from 'fs';
 import {
   installChildProcessMock,
   onExec,
   resetExecMock,
   execCalls,
 } from '../lib/test-support/mock-child-process.ts';
+// Bun's mock.module is process-global (#456): when a sibling file's shared fs
+// mock is live, the adapters' writeFileSync records instead of writing, so a
+// body file may never reach disk. `written()` reads whichever happened. This
+// file does not install the mock itself: it would hide readFileSync from
+// modules this file imports.
+import { fsWriteCalls, resetFsMock } from '../lib/test-support/mock-fs.ts';
 import { VALID_SQUASH_MESSAGE } from '../lib/test-support/precheck-stubs.ts';
 
 // The precheck gate (#592): lib/precheck-gate.ts's policy, and the four
@@ -41,6 +46,12 @@ function unquote(cmd: string): string {
 
 function call(needle: string): string {
   return execCalls().find((c) => c.includes(needle) || unquote(c).includes(needle)) ?? '';
+}
+
+/** What an adapter wrote to `path`: the shared fs mock's record if it was live, else the disk (Bun's own API). */
+async function written(path: string): Promise<string> {
+  const recorded = fsWriteCalls().find((w) => w.path === path);
+  return recorded !== undefined ? String(recorded.data) : await Bun.file(path).text();
 }
 
 function fail(match: string, stderr = 'HTTP 500', status = 1): void {
@@ -122,6 +133,7 @@ function glStatus(status: string | null): void {
 
 beforeEach(() => {
   resetExecMock();
+  resetFsMock();
   clearMergeQueueCache();
 });
 
@@ -318,7 +330,7 @@ describe('pr_create — the precheck gate', () => {
     await prCreate.execute({ ...base, squash_message: VALID_SQUASH_MESSAGE });
     const create = call('gh pr create');
     const file = /--body-file '([^']+)'/.exec(create)?.[1];
-    const sent = file !== undefined ? readFileSync(file, 'utf8') : unquote(create);
+    const sent = file !== undefined ? await written(file) : unquote(create);
     expect(sent).toContain('## Squash commit');
     expect(sent).toContain('feat(pr): a deliberate squash commit');
   });
@@ -389,7 +401,7 @@ describe('pr_merge — the precheck gate', () => {
     expect(merge).toContain(`--match-head-commit '${SHA}'`);
     const file = /--body-file '([^']+)'/.exec(merge)?.[1];
     expect(file).toBeDefined();
-    expect(readFileSync(file as string, 'utf8')).toBe(COMMIT.commit.body);
+    expect(await written(file as string)).toBe(COMMIT.commit.body);
   });
 
   test('refuses a PR whose body has no block', async () => {
