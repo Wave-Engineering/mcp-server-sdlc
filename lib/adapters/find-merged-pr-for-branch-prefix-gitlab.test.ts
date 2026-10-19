@@ -56,7 +56,7 @@ describe('find-merged-pr-for-branch-prefix-gitlab — argv + prefix match', () =
     onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
     onExec('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
     findMergedPrForBranchPrefixGitlabSync('feature/42-', 100);
-    const call = findCall('glab api projects/');
+    const call = findCall("glab api 'projects/");
     expect(call).toContain('state=merged');
     expect(call).toContain('per_page=100');
   });
@@ -66,7 +66,7 @@ describe('find-merged-pr-for-branch-prefix-gitlab — argv + prefix match', () =
     onExec('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
     expect(DEFAULT_LIMIT).toBe(100);
     await findMergedPrForBranchPrefixGitlab({ prefix: 'feature/42-' });
-    const call = findCall('glab api projects/');
+    const call = findCall("glab api 'projects/");
     expect(call).toContain('per_page=100');
     expect(call).not.toContain('per_page=50');
   });
@@ -75,7 +75,7 @@ describe('find-merged-pr-for-branch-prefix-gitlab — argv + prefix match', () =
     onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
     onExec('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
     await findMergedPrForBranchPrefixGitlab({ prefix: 'feature/42-', limit: 250 });
-    const call = findCall('glab api projects/');
+    const call = findCall("glab api 'projects/");
     expect(call).toContain('per_page=250');
   });
 
@@ -85,7 +85,7 @@ describe('find-merged-pr-for-branch-prefix-gitlab — argv + prefix match', () =
       JSON.stringify([]),
     );
     findMergedPrForBranchPrefixGitlabSync('feature/42-', 100, 'target-org/target-repo');
-    const call = findCall('glab api projects/');
+    const call = findCall("glab api 'projects/");
     expect(call).toContain('target-org%2Ftarget-repo');
   });
 

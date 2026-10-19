@@ -142,6 +142,29 @@ describe('ciListRunsGitlab — subprocess boundary', () => {
     expect(call).not.toContain('projects/org%2Frepo');
   });
 
+  test('argv: a nested-group repo keeps every segment (#585)', async () => {
+    onExec('glab api projects/group%2Fsub%2Fsub%2Fproject/pipelines', JSON.stringify([glPipeline()]));
+    const result = await ciListRunsGitlab({ ref: 'main', repo: 'group/sub/sub/project', limit: 20 });
+    expectOk(result);
+    expect(findCall('glab api')).toContain('projects/group%2Fsub%2Fsub%2Fproject/pipelines?');
+  });
+
+  test('queried_argv reports the argv that ran, on success and on failure (#493, #585)', async () => {
+    const argv = ['glab', 'api', 'projects/org%2Frepo/pipelines?ref=main&per_page=20'];
+    onExec('glab api projects/org%2Frepo/pipelines', '[]');
+    const ok = await ciListRunsGitlab({ ref: 'main', limit: 20 });
+    expectOk(ok);
+    expect(ok.queried_argv).toEqual(argv);
+
+    resetExecMock();
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/pipelines', '');
+    const failed = await ciListRunsGitlab({ ref: 'main', limit: 20 });
+    if (!('ok' in failed) || failed.ok) throw new Error(`expected a failed lookup, got ${JSON.stringify(failed)}`);
+    expect(failed.error).toContain('glab returned empty output');
+    expect(failed.queried_argv).toEqual(argv);
+  });
+
   test('expected_sha threads through as sha= query param and filters defensively', async () => {
     const target = 'a'.repeat(40);
     const other = 'b'.repeat(40);

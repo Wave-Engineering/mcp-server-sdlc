@@ -74,7 +74,7 @@ describe('find-existing-pr-gitlab — argv + state translation', () => {
       ]),
     );
     findExistingPrGitlabSync('kahuna/42-foo', 'main', 'open');
-    const call = findCall('glab api projects/');
+    const call = findCall("glab api 'projects/");
     expect(call).toContain('source_branch=kahuna%2F42-foo');
     expect(call).toContain('target_branch=main');
     expect(call).toContain('state=opened');
@@ -85,7 +85,7 @@ describe('find-existing-pr-gitlab — argv + state translation', () => {
     onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
     onExec('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
     findExistingPrGitlabSync('kahuna/42-foo', 'main', 'merged');
-    const call = findCall('glab api projects/');
+    const call = findCall("glab api 'projects/");
     expect(call).toContain('state=merged');
   });
 
@@ -93,7 +93,7 @@ describe('find-existing-pr-gitlab — argv + state translation', () => {
     onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
     onExec('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
     findExistingPrGitlabSync('kahuna/42-foo', 'main', 'closed');
-    const call = findCall('glab api projects/');
+    const call = findCall("glab api 'projects/");
     expect(call).toContain('state=closed');
   });
 
@@ -103,7 +103,7 @@ describe('find-existing-pr-gitlab — argv + state translation', () => {
       JSON.stringify([]),
     );
     findExistingPrGitlabSync('kahuna/42-foo', 'main', 'open', 'target-org/target-repo');
-    const call = findCall('glab api projects/');
+    const call = findCall("glab api 'projects/");
     expect(call).toContain('target-org%2Ftarget-repo');
   });
 
@@ -112,14 +112,14 @@ describe('find-existing-pr-gitlab — argv + state translation', () => {
     onExec('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
     findExistingPrGitlabSync('kahuna/42-foo', 'main', 'open', undefined, '/work/tree');
     expect(optsForCall('git remote get-url origin')?.cwd).toBe('/work/tree');
-    expect(optsForCall('glab api projects/')?.cwd).toBe('/work/tree');
+    expect(optsForCall("glab api 'projects/")?.cwd).toBe('/work/tree');
   });
 
   test('leaves cwd undefined when not supplied (env default unchanged)', () => {
     onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
     onExec('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
     findExistingPrGitlabSync('kahuna/42-foo', 'main', 'open');
-    expect(optsForCall('glab api projects/')?.cwd).toBeUndefined();
+    expect(optsForCall("glab api 'projects/")?.cwd).toBeUndefined();
   });
 
   test('async wrapper threads args.cwd through to glab', async () => {
@@ -131,7 +131,7 @@ describe('find-existing-pr-gitlab — argv + state translation', () => {
       state: 'open',
       cwd: '/work/tree',
     });
-    expect(optsForCall('glab api projects/')?.cwd).toBe('/work/tree');
+    expect(optsForCall("glab api 'projects/")?.cwd).toBe('/work/tree');
   });
 });
 

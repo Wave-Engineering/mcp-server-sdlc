@@ -207,14 +207,14 @@ describe('pr_list handler', () => {
     onExec('glab api projects/org%2Frepo/merge_requests?state=', JSON.stringify([]));
 
     await prListHandler.execute({ state: 'merged' });
-    let glabCall = execCalls().find((c) => c.includes('glab api projects/')) ?? '';
+    let glabCall = execCalls().find((c) => c.includes("glab api 'projects/")) ?? '';
     expect(glabCall).toContain('state=merged');
 
     resetExecMock();
     onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
     onExec('glab api projects/org%2Frepo/merge_requests?state=', JSON.stringify([]));
     await prListHandler.execute({});
-    glabCall = execCalls().find((c) => c.includes('glab api projects/')) ?? '';
+    glabCall = execCalls().find((c) => c.includes("glab api 'projects/")) ?? '';
     expect(glabCall).toContain('state=opened');
   });
 
@@ -224,7 +224,7 @@ describe('pr_list handler', () => {
     onExec('glab api projects/org%2Frepo/merge_requests?author_username=', JSON.stringify([]));
 
     await prListHandler.execute({ author: 'alice' });
-    const glabCall = execCalls().find((c) => c.includes('glab api projects/')) ?? '';
+    const glabCall = execCalls().find((c) => c.includes("glab api 'projects/")) ?? '';
     expect(glabCall).toContain('author_username=alice');
   });
 
@@ -246,7 +246,7 @@ describe('pr_list handler', () => {
     onExec('glab api projects/org%2Frepo/merge_requests?state=opened&per_page=20', JSON.stringify([]));
 
     await prListHandler.execute({});
-    const glabCall = execCalls().find((c) => c.includes('glab api projects/')) ?? '';
+    const glabCall = execCalls().find((c) => c.includes("glab api 'projects/")) ?? '';
     expect(glabCall).toContain('per_page=20');
   });
 
@@ -304,7 +304,7 @@ describe('pr_list handler', () => {
     onExec('glab api projects/target-org%2Ftarget-repo/merge_requests', JSON.stringify([]));
 
     await prListHandler.execute({ repo: 'target-org/target-repo' });
-    const glabCall = execCalls().find((c) => c.includes('glab api projects/')) ?? '';
+    const glabCall = execCalls().find((c) => c.includes("glab api 'projects/")) ?? '';
     expect(glabCall).toContain('target-org%2Ftarget-repo');
     // Must NOT use the cwd-derived slug.
     expect(glabCall).not.toContain('other-org%2Fother-repo');
@@ -325,7 +325,7 @@ describe('pr_list handler', () => {
     onExec('glab api projects/cwd-org%2Fcwd-repo/merge_requests', JSON.stringify([]));
 
     await prListHandler.execute({});
-    const glabCall = execCalls().find((c) => c.includes('glab api projects/')) ?? '';
+    const glabCall = execCalls().find((c) => c.includes("glab api 'projects/")) ?? '';
     expect(glabCall).toContain('cwd-org%2Fcwd-repo');
   });
 

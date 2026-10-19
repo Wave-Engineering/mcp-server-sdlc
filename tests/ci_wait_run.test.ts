@@ -23,8 +23,9 @@ let execRegistry: Record<string, RegistryValue> = {};
 // Story 2.19 (#313): post-migration, subprocess calls go through `runArgv`
 // which single-quotes every argv element. To keep the existing registry keys
 // (`'gh run list'`, `'gh api repos/...'`, etc.) matching, strip single quotes
-// from the cmd before matching. `glab api ...` calls still pass through
-// `execGlab` (raw string), so those are unaffected by the normalization.
+// from the cmd before matching. `execGlab` quotes any token with shell
+// metacharacters (#585), so a GitLab endpoint with a query string is one
+// single-quoted token and its registry keys depend on this normalization too.
 function normalizeCmd(cmd: string): string {
   return cmd.replace(/'/g, '');
 }

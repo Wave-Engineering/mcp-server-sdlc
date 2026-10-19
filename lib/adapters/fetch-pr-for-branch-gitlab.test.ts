@@ -65,7 +65,7 @@ describe('fetch-pr-for-branch-gitlab — argv + state filter', () => {
       ]),
     );
     fetchPrForBranchGitlabSync('feature/42-thing', 'open');
-    const call = findCall('glab api projects/');
+    const call = findCall("glab api 'projects/");
     expect(call).toContain('source_branch=feature%2F42-thing');
     expect(call).toContain('state=opened');
   });
@@ -74,7 +74,7 @@ describe('fetch-pr-for-branch-gitlab — argv + state filter', () => {
     on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
     on('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
     fetchPrForBranchGitlabSync('feature/42-thing', 'merged');
-    const call = findCall('glab api projects/');
+    const call = findCall("glab api 'projects/");
     expect(call).toContain('state=merged');
   });
 
@@ -82,7 +82,7 @@ describe('fetch-pr-for-branch-gitlab — argv + state filter', () => {
     on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
     on('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
     fetchPrForBranchGitlabSync('feature/42-thing', 'all');
-    const call = findCall('glab api projects/');
+    const call = findCall("glab api 'projects/");
     expect(call).not.toContain('state=');
   });
 
@@ -92,7 +92,7 @@ describe('fetch-pr-for-branch-gitlab — argv + state filter', () => {
       JSON.stringify([]),
     );
     fetchPrForBranchGitlabSync('feature/42-thing', 'open', 'target-org/target-repo');
-    const call = findCall('glab api projects/');
+    const call = findCall("glab api 'projects/");
     expect(call).toContain('target-org%2Ftarget-repo');
   });
 
@@ -193,7 +193,7 @@ describe('fetch-pr-for-branch-gitlab — AdapterResult wrapper', () => {
     on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
     on('glab api projects/org%2Frepo/merge_requests', JSON.stringify([]));
     await fetchPrForBranchGitlab({ branch: 'feature/42-thing' });
-    const call = findCall('glab api projects/');
+    const call = findCall("glab api 'projects/");
     expect(call).toContain('state=opened');
   });
 
@@ -213,17 +213,14 @@ describe('fetch-pr-for-branch-gitlab — AdapterResult wrapper', () => {
     expect(result.error).toContain('glab');
   });
 
-  test('returns ok:true + data:null when glab returns empty output (#428)', async () => {
+  test('empty output is a failed lookup, not "no MR" (#585; was #428\'s ok:true + null)', async () => {
     on('git remote get-url origin', 'https://gitlab.com/org/repo.git');
-    on('glab api projects/org%2Frepo/merge_requests', () => {
-      throw new Error(
-        'glab returned empty output for: glab api projects/org%2Frepo/merge_requests?state=opened&source_branch=chore%2F4-thing&per_page=1',
-      );
-    });
+    on('glab api projects/org%2Frepo/merge_requests', '');
     const result = await fetchPrForBranchGitlab({
       branch: 'chore/4-thing',
     });
-    expectOk(result);
-    expect(result.data).toBeNull();
+    expectErr(result);
+    expect(result.code).toBe('glab_api_mr_list_failed');
+    expect(result.error).toContain('glab returned empty output');
   });
 });

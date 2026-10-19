@@ -18,6 +18,7 @@
 
 import { execSync } from 'child_process';
 import { parseRepoSlug } from './shared/parse-repo-slug.js';
+import { shellQuote } from './shared/shell-escape.js';
 
 /**
  * URL-encoded project path suitable for `glab api projects/<path>/...`
@@ -147,7 +148,19 @@ export interface GitlabRepo {
 // Exported for test: the guards here are the whole point of #502/#382, and a
 // test that only exercises the pure detector cannot tell whether this function
 // still consults it — that mutation survived until this was reachable.
-export function execGlab(cmd: string, cwd?: string): string {
+//
+// ARGV, NEVER A SHELL STRING (#585). A list endpoint joins its query with `&`,
+// which an unquoted shell string reads as the background operator:
+// `glab api …/pipelines?ref=x&per_page=20` sent glab to the background, the
+// shell exited at once, and stdout came back empty. #428's "empty output means
+// no results" then made that an authoritative `[]`, so `ci_wait_run` could
+// never see a GitLab pipeline. `encodeURIComponent` leaves `'()*!` alone too,
+// so a branch like `fix/(x)` was a shell syntax error. Every token is quoted
+// as needed, and the shell hands each one to glab intact. It stays on
+// `execSync` rather than `execFileSync` because the shared test mock
+// (`lib/test-support/mock-child-process.ts`) replaces only `execSync`.
+export function execGlab(argv: string[], cwd?: string): string {
+  const cmd = argv.map(shellQuote).join(' ');
   let raw: string;
   try {
     // `cwd` defaults to undefined, leaving execSync on `process.cwd()` —
@@ -245,6 +258,35 @@ function projectPath(opts?: { owner?: string; repo?: string }, cwd?: string): st
   return gitlabProjectPath(cwd);
 }
 
+/**
+ * The `{owner, repo}` opts for a caller-supplied slug, split at the LAST '/'.
+ *
+ * GitLab nests groups (`group/sub/project`; `repoOptionalSchema` accepts that
+ * depth since #290). A two-way `split('/', 2)` kept `group/sub` and dropped the
+ * rest, so an explicit `repo` queried the wrong project (#585).
+ */
+export function gitlabRepoOpts(slug: string | undefined): { owner: string; repo: string } | undefined {
+  if (!slug) return undefined;
+  const idx = slug.lastIndexOf('/');
+  if (idx <= 0 || idx === slug.length - 1) return undefined;
+  return { owner: slug.slice(0, idx), repo: slug.slice(idx + 1) };
+}
+
+/**
+ * Parse a list endpoint's response. Anything but an array is a failed call.
+ * `glab api` answers a list endpoint that matches nothing with `[]`, and
+ * `execGlab` already throws on empty stdout, so there is no "no results"
+ * path through here other than a real `[]` (#585).
+ */
+function parseList<T>(raw: string, endpoint: string): T[] {
+  const parsed = JSON.parse(raw) as unknown;
+  if (!Array.isArray(parsed)) {
+    // Quoted, so the command in the message is safe to paste (#492, #585).
+    throw new Error(`glab api ${shellQuote(endpoint)} returned a non-array`);
+  }
+  return parsed as T[];
+}
+
 // ---------------------------------------------------------------------------
 // Typed wrappers — one per GitLab REST API endpoint handlers need
 // ---------------------------------------------------------------------------
@@ -262,7 +304,7 @@ export function gitlabApiIssue(
   opts?: { owner?: string; repo?: string },
 ): GitlabIssue {
   const path = projectPath(opts);
-  const raw = execGlab(`glab api projects/${path}/issues/${String(iid)}`);
+  const raw = execGlab(['glab', 'api', `projects/${path}/issues/${String(iid)}`]);
   return JSON.parse(raw) as GitlabIssue;
 }
 
@@ -276,7 +318,7 @@ export function gitlabApiMr(
   opts?: { owner?: string; repo?: string },
 ): GitlabMr {
   const path = projectPath(opts);
-  const raw = execGlab(`glab api projects/${path}/merge_requests/${String(iid)}`);
+  const raw = execGlab(['glab', 'api', `projects/${path}/merge_requests/${String(iid)}`]);
   return JSON.parse(raw) as GitlabMr;
 }
 
@@ -313,11 +355,12 @@ export function gitlabApiMrDiffs(
   const all: GitlabMrDiff[] = [];
   for (let page = 1; page <= MR_DIFFS_MAX_PAGES; page++) {
     // Query params as `-f` fields on an explicit GET (glab appends them to the
-    // URL): no `&` in the shell string, so no quoting. `--paginate` is not used —
-    // it concatenates pages as separate JSON arrays (`[...][...]`), not one document.
-    const raw = execGlab(
-      `glab api projects/${path}/merge_requests/${String(iid)}/diffs -X GET -f per_page=${String(MR_DIFFS_PER_PAGE)} -f page=${String(page)}`,
-    );
+    // URL). `--paginate` is not used — it concatenates pages as separate JSON
+    // arrays (`[...][...]`), not one document.
+    const raw = execGlab([
+      'glab', 'api', `projects/${path}/merge_requests/${String(iid)}/diffs`,
+      '-X', 'GET', '-f', `per_page=${String(MR_DIFFS_PER_PAGE)}`, '-f', `page=${String(page)}`,
+    ]);
     const batch = JSON.parse(raw) as GitlabMrDiff[];
     if (!Array.isArray(batch)) {
       throw new Error(`glab api .../merge_requests/${String(iid)}/diffs returned a non-array`);
@@ -387,24 +430,25 @@ export function gitlabApiMrList(
     queryParts.push(`per_page=${String(params.limit)}`);
   }
 
-  const query = queryParts.length > 0 ? `?${queryParts.join('&')}` : '';
-  let raw: string;
-  try {
-    raw = execGlab(`glab api projects/${path}/merge_requests${query}`, cwd);
-  } catch (err) {
-    // List endpoints: empty output means "no results" — return [] rather
-    // than propagating "empty output" as a fatal error (#428).
-    const msg = err instanceof Error ? err.message : '';
-    if (msg.includes('empty output')) return [];
-    throw err;
-  }
-  return JSON.parse(raw) as GitlabMr[];
+  // No "empty output means no MRs" here. #428 added that mapping for an
+  // "intermittent" empty response, and the response was this bug: every query
+  // with two or more params was backgrounded by its unquoted `&` (#585).
+  const endpoint = `projects/${path}/merge_requests${queryString(queryParts)}`;
+  return parseList<GitlabMr>(execGlab(['glab', 'api', endpoint], cwd), endpoint);
+}
+
+function queryString(parts: string[]): string {
+  return parts.length > 0 ? `?${parts.join('&')}` : '';
 }
 
 /**
  * List pipelines with optional filters.
  *
  * Endpoint: `GET /projects/:id/pipelines?<query>`
+ *
+ * `onArgv` receives the argv about to run, so a caller reporting "no pipeline
+ * found" can show the query that actually ran (#493's `queried_argv`) without
+ * re-resolving the project path.
  */
 export function gitlabApiCiList(
   params: {
@@ -413,6 +457,7 @@ export function gitlabApiCiList(
     sha?: string;
   },
   opts?: { owner?: string; repo?: string },
+  onArgv?: (argv: string[]) => void,
 ): GitlabPipeline[] {
   const path = projectPath(opts);
   const queryParts: string[] = [];
@@ -427,16 +472,11 @@ export function gitlabApiCiList(
     queryParts.push(`per_page=${String(params.limit)}`);
   }
 
-  const query = queryParts.length > 0 ? `?${queryParts.join('&')}` : '';
-  let raw: string;
-  try {
-    raw = execGlab(`glab api projects/${path}/pipelines${query}`);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : '';
-    if (msg.includes('empty output')) return [];
-    throw err;
-  }
-  return JSON.parse(raw) as GitlabPipeline[];
+  // Empty output throws, as in gitlabApiMrList (#585).
+  const endpoint = `projects/${path}/pipelines${queryString(queryParts)}`;
+  const argv = ['glab', 'api', endpoint];
+  onArgv?.(argv);
+  return parseList<GitlabPipeline>(execGlab(argv), endpoint);
 }
 
 /**
@@ -446,7 +486,7 @@ export function gitlabApiCiList(
  */
 export function gitlabApiRepo(): GitlabRepo {
   const path = projectPath();
-  const raw = execGlab(`glab api projects/${path}`);
+  const raw = execGlab(['glab', 'api', `projects/${path}`]);
   return JSON.parse(raw) as GitlabRepo;
 }
 

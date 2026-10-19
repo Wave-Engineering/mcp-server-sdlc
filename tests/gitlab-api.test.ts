@@ -24,6 +24,7 @@ const {
   gitlabApiMrList,
   gitlabApiCiList,
   gitlabApiRepo,
+  gitlabRepoOpts,
 } = await import('../lib/gitlab-api.ts');
 
 function resetMocks() {
@@ -260,7 +261,7 @@ describe('gitlab-api', () => {
       gitlabApiMrList({ state: 'open' });
       expect(
         execCallsDetailed().some((c) =>
-          c.cmd.includes('glab api projects/owner%2Frepo/merge_requests?state=opened'),
+          c.cmd === "glab api 'projects/owner%2Frepo/merge_requests?state=opened'",
         ),
       ).toBe(true);
     });
@@ -279,7 +280,7 @@ describe('gitlab-api', () => {
       gitlabApiMrList({ state: 'closed' });
       expect(
         execCallsDetailed().some((c) =>
-          c.cmd.includes('glab api projects/owner%2Frepo/merge_requests?state=closed'),
+          c.cmd === "glab api 'projects/owner%2Frepo/merge_requests?state=closed'",
         ),
       ).toBe(true);
     });
@@ -298,7 +299,7 @@ describe('gitlab-api', () => {
       gitlabApiMrList({ state: 'merged' });
       expect(
         execCallsDetailed().some((c) =>
-          c.cmd.includes('glab api projects/owner%2Frepo/merge_requests?state=merged'),
+          c.cmd === "glab api 'projects/owner%2Frepo/merge_requests?state=merged'",
         ),
       ).toBe(true);
     });
@@ -401,11 +402,22 @@ describe('gitlab-api', () => {
         limit: 10,
       });
       const apiCall = execCallsDetailed().find((c) => c.cmd.includes('glab api'));
-      expect(apiCall?.cmd).toContain('state=opened');
-      expect(apiCall?.cmd).toContain('source_branch=feature%2Ftest');
-      expect(apiCall?.cmd).toContain('target_branch=main');
-      expect(apiCall?.cmd).toContain('author_username=dev');
-      expect(apiCall?.cmd).toContain('per_page=10');
+      // One quoted token: an unquoted `&` backgrounds glab and returns nothing (#585).
+      expect(apiCall?.cmd).toBe(
+        "glab api 'projects/owner%2Frepo/merge_requests?state=opened&source_branch=feature%2Ftest&target_branch=main&author_username=dev&per_page=10'",
+      );
+    });
+
+    test('empty output throws instead of meaning "no MRs" (#585)', () => {
+      setExecMock((cmd: string) => (cmd === 'git remote get-url origin' ? 'https://gitlab.com/owner/repo.git' : ''));
+      expect(() => gitlabApiMrList({ state: 'open', limit: 1 })).toThrow(/glab returned empty output for: glab api 'projects\//);
+    });
+
+    test('a non-array response throws, naming the command in pasteable form', () => {
+      setExecMock((cmd: string) => (cmd === 'git remote get-url origin' ? 'https://gitlab.com/owner/repo.git' : '{"iid":1}'));
+      expect(() => gitlabApiMrList({ state: 'open', limit: 1 })).toThrow(
+        "glab api 'projects/owner%2Frepo/merge_requests?state=opened&per_page=1' returned a non-array",
+      );
     });
   });
 
@@ -480,8 +492,36 @@ describe('gitlab-api', () => {
 
       gitlabApiCiList({ ref: 'main', limit: 5 });
       const apiCall = execCallsDetailed().find((c) => c.cmd.includes('glab api'));
-      expect(apiCall?.cmd).toContain('ref=main');
-      expect(apiCall?.cmd).toContain('per_page=5');
+      expect(apiCall?.cmd).toBe("glab api 'projects/owner%2Frepo/pipelines?ref=main&per_page=5'");
+    });
+
+    test('empty output throws instead of meaning "no pipelines" (#585)', () => {
+      setExecMock((cmd: string) => (cmd === 'git remote get-url origin' ? 'https://gitlab.com/owner/repo.git' : ''));
+      expect(() => gitlabApiCiList({ ref: 'main', limit: 20 })).toThrow(/glab returned empty output/);
+    });
+
+    test('onArgv receives the argv that runs', () => {
+      setExecMock((cmd: string) => (cmd === 'git remote get-url origin' ? 'https://gitlab.com/owner/repo.git' : '[]'));
+      let seen: string[] | undefined;
+      gitlabApiCiList({ ref: 'main', limit: 5 }, undefined, (argv) => { seen = argv; });
+      expect(seen).toEqual(['glab', 'api', 'projects/owner%2Frepo/pipelines?ref=main&per_page=5']);
+    });
+  });
+
+  describe('gitlabRepoOpts', () => {
+    test('splits a nested-group slug at the last slash (#585)', () => {
+      expect(gitlabRepoOpts('group/sub/sub/project')).toEqual({ owner: 'group/sub/sub', repo: 'project' });
+    });
+
+    test('a two-segment slug splits as before', () => {
+      expect(gitlabRepoOpts('owner/repo')).toEqual({ owner: 'owner', repo: 'repo' });
+    });
+
+    test('no slug, or one without both halves, falls back to the cwd project', () => {
+      expect(gitlabRepoOpts(undefined)).toBeUndefined();
+      expect(gitlabRepoOpts('noslash')).toBeUndefined();
+      expect(gitlabRepoOpts('/leading')).toBeUndefined();
+      expect(gitlabRepoOpts('trailing/')).toBeUndefined();
     });
   });
 

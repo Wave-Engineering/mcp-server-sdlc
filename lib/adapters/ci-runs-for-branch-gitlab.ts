@@ -22,21 +22,13 @@
  */
 
 import { execSync } from 'child_process';
-import { gitlabApiCiList } from '../gitlab-api.js';
+import { gitlabApiCiList, gitlabRepoOpts } from '../gitlab-api.js';
 import type {
   AdapterResult,
   CiRunsForBranchArgs,
   CiRunsForBranchResponse,
   CiRunsForBranchRun,
 } from './types.js';
-
-function splitRepoSlug(
-  repo: string | undefined,
-): { owner: string; repo: string } | undefined {
-  if (!repo) return undefined;
-  const [owner, name] = repo.split('/', 2);
-  return { owner, repo: name };
-}
 
 // Map the caller's normalized status filter to the GitLab-native pipeline
 // status value. `all` yields `null` — no filtering applied.
@@ -65,7 +57,7 @@ export async function ciRunsForBranchGitlab(
     const fetchLimit = args.status === 'all' ? args.limit : args.limit * 3;
     const pipelines = gitlabApiCiList(
       { ref: args.branch, limit: fetchLimit },
-      splitRepoSlug(args.repo),
+      gitlabRepoOpts(args.repo),
     );
 
     const targetStatus = gitlabStatusFlag(args.status);

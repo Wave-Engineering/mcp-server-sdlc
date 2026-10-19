@@ -18,3 +18,17 @@
 export function shellEscape(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
+
+/** Characters the shell never interprets, so a token made only of them needs no quotes. */
+const SHELL_INERT = /^[A-Za-z0-9_@%+=:,./-]+$/;
+
+/**
+ * {@link shellEscape}, except a token made only of shell-inert characters is
+ * left bare (Python's `shlex.quote` rule). Same safety, but the joined command
+ * stays readable and copy-pasteable in error messages:
+ * `glab api 'projects/g%2Fp/pipelines?ref=main&per_page=20'`, not every token
+ * wrapped in quotes. Same contract: RAW argv values only.
+ */
+export function shellQuote(value: string): string {
+  return SHELL_INERT.test(value) ? value : shellEscape(value);
+}

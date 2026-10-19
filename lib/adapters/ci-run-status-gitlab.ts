@@ -21,7 +21,7 @@
  */
 
 import { execSync } from 'child_process';
-import { gitlabApiCiList, type GitlabPipeline } from '../gitlab-api.js';
+import { gitlabApiCiList, gitlabRepoOpts, type GitlabPipeline } from '../gitlab-api.js';
 import type {
   AdapterResult,
   CiRunConclusion,
@@ -30,14 +30,6 @@ import type {
   CiRunStatusResponse,
   NormalizedRun,
 } from './types.js';
-
-function splitRepoSlug(
-  repo: string | undefined,
-): { owner: string; repo: string } | undefined {
-  if (!repo) return undefined;
-  const [owner, name] = repo.split('/', 2);
-  return { owner, repo: name };
-}
 
 function normalizeGlStatus(status: string): CiRunStatus {
   switch (status) {
@@ -101,7 +93,7 @@ export async function ciRunStatusGitlab(
     const limit = args.workflow_name ? 20 : 1;
     const runs = gitlabApiCiList(
       { ref: args.ref, limit },
-      splitRepoSlug(args.repo),
+      gitlabRepoOpts(args.repo),
     );
 
     const filtered = args.workflow_name
