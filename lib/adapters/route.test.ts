@@ -54,12 +54,12 @@ describe('getAdapter dispatch', () => {
 
   test('3+-segment repo routes to gitlab regardless of cwd', () => {
     setExecMock(() => 'https://github.com/owner/repo.git');
-    expect(getAdapter({ repo: 'analogicdev/blueshift/blueshift-cue' })).toBe(gitlabAdapter);
+    expect(getAdapter({ repo: 'partnerorg/team/project' })).toBe(gitlabAdapter);
   });
 
   test('deeply nested repo routes to gitlab', () => {
     setExecMock(() => 'https://github.com/owner/repo.git');
-    expect(getAdapter({ repo: 'analogicdev/internal/tools/blueshift/blueshift-cue' })).toBe(gitlabAdapter);
+    expect(getAdapter({ repo: 'partnerorg/internal/tools/team/project' })).toBe(gitlabAdapter);
   });
 });
 
