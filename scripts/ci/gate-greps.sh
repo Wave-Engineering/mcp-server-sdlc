@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Handler discipline gate-greps (R-09, R-10, #527).
+# Handler discipline gate-greps (R-09, R-10, #527, #603).
 #
-# Three greps run against handlers/*.ts MINUS the entries in
+# Four greps run against handlers/*.ts MINUS the entries in
 # scripts/ci/migration-allowlist.txt:
 #
 #   1. `if (platform === 'github'|'gitlab')` — inline platform branching (R-09)
@@ -9,6 +9,8 @@
 #       subprocess invocation (R-10)
 #   3. `envelope({ ok: false, error: result.error })` — dropping the adapter's
 #       typed error `code` on the ok:false path (#527)
+#   4. `detectPlatform` — cwd platform detection in a handler, which can
+#       disagree with the adapter `getAdapter({ repo })` picked (#603)
 #
 # The allowlist is the EXCLUDE list: handlers in it are exempt from the gate
 # until their migration story removes them. Handlers NOT in the allowlist must
@@ -112,6 +114,26 @@ if grep -nE "ok:[[:space:]]*false,[[:space:]]*error:[[:space:]]*result\.error" "
     echo ""
     echo "GATE FAIL [#527]: handler drops the adapter error 'code' on an ok:false envelope."
     echo "  Use { ok: false, code: result.code, error: result.error } so callers can branch on the failure type."
+    failed=1
+fi
+
+# Gate-grep #4 — cwd platform detection in a handler (#603).
+# `detectPlatform()` reads the server process's cwd origin and ignores the
+# handler's `repo` argument, while `getAdapter({ repo })` infers from `repo`
+# first. A handler that took its platform name from the one and its adapter
+# from the other fetched a nested-group GitLab pipeline but normalized it as
+# GitHub, and timed out on a green run. Handlers take the platform from
+# `platformFor({ repo })` (lib/adapters/route.ts), the same inference the
+# adapter uses. The ban covers EVERY handler, not just those taking `repo`:
+# `platformFor()` with no repo is exactly `detectPlatform()`, so no handler
+# needs the direct call, and a handler that gains a `repo` later is covered
+# without anyone remembering this gate. Word-bounded, so the ref-based
+# `detectPlatformForRef` is not matched; any mention (import, alias, call) is.
+if grep -nwE "detectPlatform" "${handlers_to_check[@]}"; then
+    echo ""
+    echo "GATE FAIL [#603]: handler uses cwd-based detectPlatform()."
+    echo "  Use platformFor({ repo }) / adapterFor(platform) from lib/adapters/index.js so the"
+    echo "  platform name always matches the adapter that fetched the data."
     failed=1
 fi
 

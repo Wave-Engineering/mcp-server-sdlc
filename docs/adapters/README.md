@@ -180,22 +180,41 @@ move it to `lib/shared/`.
 
 Handlers are platform-agnostic. They get a `PlatformAdapter` from
 `getAdapter()` and call the single interface method for the operation
-they want. The `getAdapter()` function picks the right adapter based on
-cwd detection.
+they want. The `getAdapter()` function picks the right adapter from the
+`repo` argument first, then cwd detection.
 
 ```ts
 // lib/adapters/route.ts
-export function getAdapter(_args?: { repo?: string }): PlatformAdapter {
-  const platform = detectPlatform();
+export function platformFor(args?: { repo?: string }): Platform {
+  const repo = args?.repo;
+  if (repo && repo.split('/').length > 2) return 'gitlab';
+  return detectPlatform();
+}
+
+export function adapterFor(platform: Platform): PlatformAdapter {
   return platform === 'gitlab' ? gitlabAdapter : githubAdapter;
+}
+
+export function getAdapter(args?: { repo?: string }): PlatformAdapter {
+  return adapterFor(platformFor(args));
 }
 ```
 
-`detectPlatform()` (`lib/shared/detect-platform.ts`) is sync; it inspects
-`git remote -v` in the current working directory and returns `'github'`
-or `'gitlab'`. `getAdapter` accepts a `{repo}` arg today for forward-
-compatibility with cross-repo dispatch (Dev Spec §5.4) but does not
-currently consume it — the signature is stable.
+A `repo` slug with three or more segments (`org/sub/repo`) can only be a
+GitLab nested group, so it decides the platform outright. A flat
+`owner/repo` is ambiguous and falls back to `detectPlatform()`
+(`lib/shared/detect-platform.ts`), which is sync and reads the cwd's
+`origin` remote (`'gitlab'` if the URL contains "gitlab", else `'github'`,
+and `'github'` when there is no readable origin).
+
+**A handler that needs the platform name too** (for example to normalize raw
+run statuses, as `ci_wait_run` does) resolves it once with `platformFor()`
+and takes the adapter from `adapterFor()` on that same value. It never calls
+`detectPlatform()` itself: cwd detection ignores `repo`, so it can name a
+different platform than the adapter that fetched the data. That split made
+`ci_wait_run` grade a green nested-group GitLab pipeline `timed_out` (#603).
+`scripts/ci/gate-greps.sh` (gate #4) fails the build on any `detectPlatform`
+in `handlers/`.
 
 ### 3.1 How a handler uses the adapter
 
