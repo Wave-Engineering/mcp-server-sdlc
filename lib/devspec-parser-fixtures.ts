@@ -1,8 +1,8 @@
 /**
  * Regression fixtures for devspec parser bugs.
  *
- * These fixtures are based on patterns observed in real Dev Specs from the
- * a partner's project and other Wave Engineering codebases.
+ * These fixtures are based on patterns observed in real Dev Specs from a
+ * partner's project and from Wave Engineering codebases.
  */
 
 /**
