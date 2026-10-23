@@ -61,11 +61,11 @@ describe('wave_finalize plan_id title pattern', () => {
   test('accepts plan_id and creates MR with plan(#N): <slug> — kahuna to <target>', async () => {
     await writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md', 'done');
 
-    mockGithubCreate(555, 'kahuna/77-docmancer-portal');
+    mockGithubCreate(555, 'kahuna/77-orion-portal');
 
     const result = await handler.execute({
       plan_id: 77,
-      kahuna_branch: 'kahuna/77-docmancer-portal',
+      kahuna_branch: 'kahuna/77-orion-portal',
       target_branch: 'main',
       body_artifacts_dir: tmpRoot,
     });
@@ -75,7 +75,7 @@ describe('wave_finalize plan_id title pattern', () => {
 
     const createCall = execCalls().find(c => c.includes("'pr' 'create'"));
     expect(createCall).toBeDefined();
-    expect(createCall).toContain("'--title' 'plan(#77): docmancer-portal — kahuna to main'");
+    expect(createCall).toContain("'--title' 'plan(#77): orion-portal — kahuna to main'");
   });
 
   // AC-2: title uses explicit target_branch (not hard-coded to 'main') and

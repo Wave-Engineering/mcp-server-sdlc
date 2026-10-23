@@ -302,7 +302,7 @@ function isTerminalRun(run: NormalizedCiRun, platform: 'github' | 'gitlab'): boo
 /**
  * GitLab merged-results pipelines live on `refs/merge-requests/<iid>/merge`.
  *
- * VERIFIED against live GitLab (analogicdev, 2026-07-13) — across real projects,
+ * VERIFIED against live GitLab (a partner's group, 2026-07-13) — across real projects,
  * `source == "merge_request_event"` covers THREE distinct ref shapes:
  *
  *   refs/merge-requests/N/merge   146x  merged-results — validates the MERGE   <-- the only one we want
@@ -616,7 +616,7 @@ export async function waitForRun(
   //     wait: after a push the branch pipeline is created near-instantly, so if it
   //     has not appeared in a few minutes it is not coming. Coupling this to the
   //     full timeout meant a transient first-poll miss spun SILENTLY for the whole
-  //     30-minute ceiling (wintermute, blueshift #100/#101). Bound it so a miss
+  //     30-minute ceiling (wintermute, a partner repo #100/#101). Bound it so a miss
   //     fails fast with an actionable message. Phase 2 (polling a run that HAS
   //     appeared) still uses the full timeout — only first-appearance is bounded.
   //

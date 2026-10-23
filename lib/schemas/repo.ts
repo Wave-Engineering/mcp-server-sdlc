@@ -7,7 +7,7 @@
  *
  * Pattern: `^[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+$` — accepts arbitrary `/`
  * depth so GitLab nested groups (e.g.
- * `analogicdev/internal/tools/blueshift/blueshift-docmancer-ui`) validate
+ * `example-group/internal/tools/orion/orion-portal-ui`) validate
  * the same way as flat GitHub `owner/repo` slugs (#290).
  *
  * Each segment must be ≥ 1 char from the set `[a-zA-Z0-9._-]` — empty

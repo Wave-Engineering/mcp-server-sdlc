@@ -76,19 +76,19 @@ describe('resolveMergeAnchorGitlab — subprocess boundary (#476)', () => {
 
   test('NESTED GROUPS: a 3+-segment slug resolves the FULL project path', async () => {
     // GitLab supports arbitrarily-nested groups. A 2-way split on '/' would
-    // resolve `analogicdev/internal` instead of the real project — and route.ts
+    // resolve `example-group/internal` instead of the real project — and route.ts
     // sends exactly these deep slugs to the GitLab adapter (#290).
     onExec('glab api', JSON.stringify({ iid: 4, head_pipeline: { id: 77 } }));
 
     const r = await resolveMergeAnchorGitlab({
       number: 4,
-      repo: 'analogicdev/internal/tools/waldorf',
+      repo: 'example-group/internal/tools/waldorf',
     });
     if (!('ok' in r) || !r.ok) throw new Error(`expected ok, got ${JSON.stringify(r)}`);
     expect(r.data.head_pipeline_id).toBe(77);
 
     const call = execCalls().join(' ');
-    // The full path, URL-encoded — not the truncated `analogicdev/internal`.
-    expect(call).toContain('analogicdev%2Finternal%2Ftools%2Fwaldorf');
+    // The full path, URL-encoded — not the truncated `example-group/internal`.
+    expect(call).toContain('example-group%2Finternal%2Ftools%2Fwaldorf');
   });
 });

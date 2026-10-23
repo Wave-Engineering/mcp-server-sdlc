@@ -2,7 +2,7 @@
  * Regression fixtures for devspec parser bugs.
  *
  * These fixtures are based on patterns observed in real Dev Specs from the
- * blueshift-docmancer-ui project and other Wave Engineering codebases.
+ * a partner's project and other Wave Engineering codebases.
  */
 
 /**

@@ -155,8 +155,8 @@ describe('work_item_update handler', () => {
     // GitLab nested groups validate as an explicit contract (not by accident
     // of an inline regex). A 3+ segment slug routes straight to the gitlab
     // adapter (route.ts inferPlatform), so no cwd detection is needed.
-    const nestedRepo = 'analogicdev/internal/tools/blueshift/blueshift-docmancer-ui';
-    onExec('glab issue update', 'https://gitlab.com/analogicdev/internal/tools/blueshift/blueshift-docmancer-ui/-/issues/7\n');
+    const nestedRepo = 'example-group/internal/tools/orion/orion-portal-ui';
+    onExec('glab issue update', 'https://gitlab.com/example-group/internal/tools/orion/orion-portal-ui/-/issues/7\n');
 
     const result = await handler.execute({
       issue_ref: '#7',

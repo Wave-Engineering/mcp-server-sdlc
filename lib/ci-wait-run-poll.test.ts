@@ -392,7 +392,7 @@ describe('waitForRun — phase machine', () => {
 });
 
 describe('require_merge_result — the wave trust gate contract (#476, #452)', () => {
-  // Ref shapes VERIFIED against live GitLab (analogicdev). All three carry
+  // Ref shapes VERIFIED against live GitLab (a partner's group). All three carry
   // source=merge_request_event; only /merge validates the merge:
   //   refs/merge-requests/N/merge  146x  merged-results   <-- the only valid signal
   //   refs/merge-requests/N/train   74x  merge-train

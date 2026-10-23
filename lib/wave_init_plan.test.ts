@@ -146,12 +146,12 @@ const noState = async () => ({ kahuna_branch: null });
 
 describe('kahunaBranchName (#503)', () => {
   test('derives the historical name when no branch is supplied', () => {
-    const r = kahunaBranchName({ plan_id: 56, slug: 'blueshift' });
-    expect(r).toEqual({ ok: true, branch: 'kahuna/56-blueshift' });
+    const r = kahunaBranchName({ plan_id: 56, slug: 'orion' });
+    expect(r).toEqual({ ok: true, branch: 'kahuna/56-orion' });
   });
 
   test('returns an explicit branch verbatim — no re-derivation, no normalization', () => {
-    const r = kahunaBranchName({ plan_id: 56, slug: 'blueshift', branch: 'kahuna/56-W-2' });
+    const r = kahunaBranchName({ plan_id: 56, slug: 'orion', branch: 'kahuna/56-W-2' });
     expect(r).toEqual({ ok: true, branch: 'kahuna/56-W-2' });
   });
 
@@ -165,7 +165,7 @@ describe('kahunaBranchName (#503)', () => {
     ['contains a glob char', 'kahuna/56-w*'],
     ['contains @{', 'kahuna/56-w@{1}'],
   ])('rejects a branch that %s', (_why, branch) => {
-    const r = kahunaBranchName({ plan_id: 56, slug: 'blueshift', branch });
+    const r = kahunaBranchName({ plan_id: 56, slug: 'orion', branch });
     expect(r.ok).toBe(false);
     expect((r as { error: string }).error).toContain('not a valid git ref');
   });
@@ -175,28 +175,28 @@ describe('bootstrapKahunaBranchRemote branch naming (#503)', () => {
   test('an explicit branch is the ref created — the derived name is not', async () => {
     const { created, deps } = fakeDeps();
     const r = await bootstrapKahunaBranchRemote(
-      '/tmp', { plan_id: 56, slug: 'blueshift', branch: 'kahuna/56-W-2' },
-      'campaign/56-blueshift', noState, deps, 'main',
+      '/tmp', { plan_id: 56, slug: 'orion', branch: 'kahuna/56-W-2' },
+      'campaign/56-orion', noState, deps, 'main',
     );
     expect(r).toMatchObject({ ok: true, kahuna_branch: 'kahuna/56-W-2', created: true });
     expect(created).toEqual(['kahuna/56-W-2']);
-    expect(created).not.toContain('kahuna/56-blueshift');
+    expect(created).not.toContain('kahuna/56-orion');
   });
 
   test('omitting branch keeps the derived kahuna/<plan_id>-<slug>', async () => {
     const { created, deps } = fakeDeps();
     const r = await bootstrapKahunaBranchRemote(
-      '/tmp', { plan_id: 56, slug: 'blueshift' }, 'main', noState, deps, 'main',
+      '/tmp', { plan_id: 56, slug: 'orion' }, 'main', noState, deps, 'main',
     );
-    expect(r).toMatchObject({ ok: true, kahuna_branch: 'kahuna/56-blueshift', created: true });
-    expect(created).toEqual(['kahuna/56-blueshift']);
+    expect(r).toMatchObject({ ok: true, kahuna_branch: 'kahuna/56-orion', created: true });
+    expect(created).toEqual(['kahuna/56-orion']);
   });
 
   test('a branch equal to the BASE is rejected and never created', async () => {
     const { created, deps } = fakeDeps();
     const r = await bootstrapKahunaBranchRemote(
-      '/tmp', { plan_id: 56, slug: 'blueshift', branch: 'campaign/56-blueshift' },
-      'campaign/56-blueshift', noState, deps, 'main',
+      '/tmp', { plan_id: 56, slug: 'orion', branch: 'campaign/56-orion' },
+      'campaign/56-orion', noState, deps, 'main',
     );
     expect(r.ok).toBe(false);
     expect((r as { error: string }).error).toContain('same ref as the base branch');
@@ -209,8 +209,8 @@ describe('bootstrapKahunaBranchRemote branch naming (#503)', () => {
   test('a branch equal to the REPO DEFAULT is rejected even though the base differs', async () => {
     const { created, deps } = fakeDeps({ onRemote: ['main'] });
     const r = await bootstrapKahunaBranchRemote(
-      '/tmp', { plan_id: 56, slug: 'blueshift', branch: 'main' },
-      'campaign/56-blueshift', noState, deps, 'main',
+      '/tmp', { plan_id: 56, slug: 'orion', branch: 'main' },
+      'campaign/56-orion', noState, deps, 'main',
     );
     expect(r.ok).toBe(false);
     expect((r as { error: string }).error).toContain('same ref as the repo default branch');
@@ -220,8 +220,8 @@ describe('bootstrapKahunaBranchRemote branch naming (#503)', () => {
   test('an invalid ref is rejected before any platform call', async () => {
     const { created, deps } = fakeDeps();
     const r = await bootstrapKahunaBranchRemote(
-      '/tmp', { plan_id: 56, slug: 'blueshift', branch: 'kahuna/56 W2' },
-      'campaign/56-blueshift', noState, deps, 'main',
+      '/tmp', { plan_id: 56, slug: 'orion', branch: 'kahuna/56 W2' },
+      'campaign/56-orion', noState, deps, 'main',
     );
     expect(r.ok).toBe(false);
     expect((r as { error: string }).error).toContain('not a valid git ref');
@@ -233,8 +233,8 @@ describe('bootstrapKahunaBranchRemote branch naming (#503)', () => {
   test('an existing explicit branch is claimed as reuse, not re-cut', async () => {
     const { created, deps } = fakeDeps({ onRemote: ['kahuna/56-W-2'] });
     const r = await bootstrapKahunaBranchRemote(
-      '/tmp', { plan_id: 56, slug: 'blueshift', branch: 'kahuna/56-W-2' },
-      'campaign/56-blueshift', noState, deps, 'main',
+      '/tmp', { plan_id: 56, slug: 'orion', branch: 'kahuna/56-W-2' },
+      'campaign/56-orion', noState, deps, 'main',
     );
     expect(r).toMatchObject({ ok: true, kahuna_branch: 'kahuna/56-W-2', created: false, previously_recorded: false });
     expect(created).toEqual([]);
