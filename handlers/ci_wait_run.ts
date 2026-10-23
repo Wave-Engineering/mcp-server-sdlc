@@ -7,8 +7,7 @@
 
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
-import { getAdapter } from '../lib/adapters/index.js';
-import { detectPlatform } from '../lib/shared/detect-platform.js';
+import { adapterFor, platformFor } from '../lib/adapters/index.js';
 import {
   waitForRun,
   defaultSleep,
@@ -82,10 +81,15 @@ const ciWaitRunHandler: HandlerDef = {
     } catch (err) {
       return envelope({ ok: false, error: err instanceof Error ? err.message : String(err) });
     }
-    const platform = detectPlatform();
+    // Resolve the platform ONCE, from `repo` first, and take the adapter from
+    // that same value: status normalization must use the platform that did the
+    // fetching. cwd detection alone ignores `repo`, so a nested-group GitLab
+    // pipeline fetched from a GitHub (or non-repo) cwd was normalized as GitHub,
+    // kept its raw 'success', and timed out waiting for 'completed' (#603).
+    const platform = platformFor({ repo: args.repo });
     const result = await waitForRun(
       { ...args, platform },
-      { adapter: getAdapter({ repo: args.repo }), sleep: sleepFn, now: Date.now },
+      { adapter: adapterFor(platform), sleep: sleepFn, now: Date.now },
     );
     // FlightDeck emit (S1.5, additive) — a ci_wait event records the terminal
     // status of the blocked wait. Scope to the handler's explicit repo (else a

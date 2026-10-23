@@ -5,10 +5,12 @@
  *
  * Importing the per-method `<method>-<platform>.ts` files directly from
  * handlers is a code smell: handlers should remain platform-agnostic and
- * dispatch through `getAdapter()`.
+ * dispatch through `getAdapter()`. A handler that needs the platform name as
+ * well resolves it once with `platformFor()` and gets the matching adapter
+ * from `adapterFor()`, never from `detectPlatform()` (#603).
  */
 
-export { getAdapter } from './route.js';
+export { getAdapter, platformFor, adapterFor } from './route.js';
 export type {
   PlatformAdapter,
   AdapterResult,

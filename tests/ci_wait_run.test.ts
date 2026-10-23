@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import {
   installChildProcessMock,
   setExecMock,
@@ -506,6 +506,79 @@ describe('ci_wait_run handler', () => {
       expect(c).toContain('projects/other-org%2Fother-repo/pipelines');
       expect(c).not.toContain('projects/cwd-org%2Fcwd-repo/pipelines');
     }
+  });
+
+  // --- Issue #603: normalize with the ADAPTER's platform, not cwd detection ---
+  //
+  // cwd origin says GitHub, but `repo` is a nested GitLab group, so the GitLab
+  // adapter does the fetching. Before the fix the handler took its platform
+  // from cwd detection alone, normalized the GitLab pipeline as a GitHub run,
+  // kept the raw 'success' status, waited for 'completed' that never came,
+  // and timed out "while run was still 'success'". A fake clock bounds the
+  // wait so the pre-fix behavior reports timed_out instead of hanging.
+  describe('nested-group repo with a GitHub cwd (#603)', () => {
+    const nestedRepo = 'g/sub/proj';
+    const nestedEndpoint = 'glab api projects/g%2Fsub%2Fproj/pipelines?ref=';
+    const targetSha = 'c'.repeat(40);
+    let realDateNow: () => number;
+    let fakeNow: number;
+
+    beforeEach(() => {
+      realDateNow = Date.now;
+      fakeNow = realDateNow();
+      Date.now = () => fakeNow;
+      __setSleep(async (ms: number) => {
+        fakeNow += ms;
+      });
+      execRegistry['git remote get-url origin'] = 'https://github.com/org/repo.git';
+    });
+
+    afterEach(() => {
+      Date.now = realDateNow;
+    });
+
+    test('finished-success pipeline returns success immediately, no wait', async () => {
+      execRegistry[nestedEndpoint] = JSON.stringify([
+        glabPipeline({ id: 4242, status: 'success', sha: targetSha }),
+      ]);
+
+      const result = await ciWaitRunHandler.execute({
+        ref: 'main',
+        repo: nestedRepo,
+        expected_sha: targetSha,
+        poll_interval_sec: 10,
+        timeout_sec: 60,
+      });
+      const data = parseResult(result.content);
+      expect(data.ok).toBe(true);
+      expect(data.final_status).toBe('success');
+      expect(data.run_id).toBe(4242);
+      expect(data.waited_sec).toBe(0);
+      // The GitLab adapter fetched it, and no gh call was ever made.
+      expect(glabApiCalls().length).toBeGreaterThan(0);
+      expect(ghRunListCalls().length).toBe(0);
+    });
+
+    test('running pipeline still waits, then reports success', async () => {
+      execRegistry[nestedEndpoint] = [
+        JSON.stringify([glabPipeline({ status: 'running', sha: targetSha })]),
+        JSON.stringify([glabPipeline({ status: 'running', sha: targetSha })]),
+        JSON.stringify([glabPipeline({ status: 'success', sha: targetSha })]),
+      ];
+
+      const result = await ciWaitRunHandler.execute({
+        ref: 'main',
+        repo: nestedRepo,
+        expected_sha: targetSha,
+        poll_interval_sec: 10,
+        timeout_sec: 300,
+      });
+      const data = parseResult(result.content);
+      expect(data.ok).toBe(true);
+      expect(data.final_status).toBe('success');
+      expect(data.waited_sec as number).toBeGreaterThan(0);
+      expect(data.waited_sec as number).toBeLessThan(300);
+    });
   });
 
   // Branch ref with explicit repo → merge-queue SHA resolution uses the
