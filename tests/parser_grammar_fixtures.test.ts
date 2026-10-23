@@ -39,7 +39,7 @@ function fixture(name: string): string {
   return readFileSync(join(import.meta.dir, 'fixtures/parser-grammar', name), 'utf8');
 }
 
-function mockBody(body: string, origin = 'https://github.com/blueshift/cue.git') {
+function mockBody(body: string, origin = 'https://github.com/orion/cue.git') {
   setExecMock((cmd: string) => {
     if (cmd.startsWith('git remote')) return origin + '\n';
     if (cmd.includes('gh issue view')) return JSON.stringify({ body });
@@ -57,7 +57,7 @@ describe('parser grammar fixtures — /devspec upshift', () => {
     const parsed = parseResult(result);
     expect(parsed.ok).toBe(true);
     expect(parsed.count).toBe(5);
-    expect(parsed.sub_issues[0].ref).toBe('blueshift/cue#86');
+    expect(parsed.sub_issues[0].ref).toBe('orion/cue#86');
   });
 
   test('epic-wave-grouped — ## Waves with ### Wave N + bullets parses all refs', async () => {
@@ -67,13 +67,13 @@ describe('parser grammar fixtures — /devspec upshift', () => {
     expect(parsed.ok).toBe(true);
     expect(parsed.count).toBe(7);
     expect(parsed.sub_issues.map((s: { ref: string }) => s.ref)).toEqual([
-      'blueshift/cue#86',
-      'blueshift/cue#87',
-      'blueshift/cue#89',
-      'blueshift/cue#90',
-      'blueshift/cue#92',
-      'blueshift/cue#93',
-      'blueshift/cue#94',
+      'orion/cue#86',
+      'orion/cue#87',
+      'orion/cue#89',
+      'orion/cue#90',
+      'orion/cue#92',
+      'orion/cue#93',
+      'orion/cue#94',
     ]);
   });
 
@@ -95,8 +95,8 @@ describe('parser grammar fixtures — /devspec upshift', () => {
     expect(parsed.ok).toBe(true);
     expect(parsed.source).toBe('bold_label_fallback');
     expect(parsed.dependencies.map((d: { ref: string }) => d.ref)).toEqual([
-      'blueshift/cue#86',
-      'blueshift/cue#87',
+      'orion/cue#86',
+      'orion/cue#87',
     ]);
   });
 });
@@ -121,7 +121,7 @@ describe('parser grammar fixtures — /issue feature', () => {
     // order is by form, not input position. Assert membership, not order.
     expect(parsed.count).toBe(2);
     expect(parsed.dependencies.map((d: { ref: string }) => d.ref)).toEqual(
-      expect.arrayContaining(['blueshift/cue#86', 'Wave-Engineering/mcp-server-sdlc#181']),
+      expect.arrayContaining(['orion/cue#86', 'Wave-Engineering/mcp-server-sdlc#181']),
     );
   });
 });

@@ -37,7 +37,7 @@ describe('REPO_SLUG_REGEX', () => {
       ['org/sub/repo'],
       ['org/sub/subsub/repo'],
       // The exact failing case from #290 — 4-level deep group path.
-      ['analogicdev/internal/tools/blueshift/blueshift-docmancer-ui'],
+      ['example-group/internal/tools/orion/orion-portal-ui'],
       ['a/b/c'],
       ['a/b/c/d/e/f/g'],
       ['Org-Name/Sub-Group/Repo.With.Dots'],
@@ -85,7 +85,7 @@ describe('repoSchema (Zod wrapper)', () => {
   });
 
   test('parses a nested-group slug', () => {
-    const slug = 'analogicdev/internal/tools/blueshift/blueshift-docmancer-ui';
+    const slug = 'example-group/internal/tools/orion/orion-portal-ui';
     expect(repoSchema.parse(slug)).toBe(slug);
   });
 

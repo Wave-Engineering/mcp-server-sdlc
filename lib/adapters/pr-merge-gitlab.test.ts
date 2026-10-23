@@ -643,9 +643,9 @@ describe('prMergeGitlab — --sha stale-head guard (#486)', () => {
   test('deep 5-segment nested group — encodes path and still passes --sha', async () => {
     // The reported repro (#486): a deeply nested group. A 2-level repo can pass
     // while this fails, which is what made the defect look intermittent.
-    const deep = 'analogicdev/internal/tools/blueshift/site-interpreters/rhel9';
+    const deep = 'example-group/internal/tools/orion/site-interpreters/rhel9';
     const encoded =
-      'analogicdev%2Finternal%2Ftools%2Fblueshift%2Fsite-interpreters%2Frhel9';
+      'example-group%2Finternal%2Ftools%2Forion%2Fsite-interpreters%2Frhel9';
 
     onExec('glab mr merge 4 --squash --remove-source-branch --yes', '');
     onExec(

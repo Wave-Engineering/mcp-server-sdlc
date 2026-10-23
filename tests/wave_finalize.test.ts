@@ -171,17 +171,17 @@ describe('wave_finalize handler', () => {
   // the protected branch is written exactly once, at the DoD gate.
   test('a campaign integration base is targeted, not trunk', async () => {
     await writeArtifact(tmpRoot, 'wave-1/flight-1/issue-5/results.md', 'done');
-    mockGithubCreate(601, 'kahuna/56-W-2', 'campaign/56-blueshift');
+    mockGithubCreate(601, 'kahuna/56-W-2', 'campaign/56-orion');
 
     const result = await handler.execute({
       plan_id: 56,
       kahuna_branch: 'kahuna/56-W-2',
-      target_branch: 'campaign/56-blueshift',
+      target_branch: 'campaign/56-orion',
       body_artifacts_dir: tmpRoot,
     });
     expect(parseResult(result).ok).toBe(true);
     const createCall = execCalls().find(c => c.includes("'pr' 'create'"));
-    expect(createCall as string).toContain("'--base' 'campaign/56-blueshift'");
+    expect(createCall as string).toContain("'--base' 'campaign/56-orion'");
     expect(createCall as string).not.toContain("'--base' 'main'");
   });
 
@@ -761,8 +761,8 @@ describe('wave_finalize handler', () => {
 // pinned pattern was a title-corruption bug waiting on a non-kahuna prefix.
 describe('epicSlugFromBranch (#503)', () => {
   test.each([
-    ['campaign/56-blueshift', 'blueshift'],
-    ['kahuna/56-blueshift', 'blueshift'],
+    ['campaign/56-orion', 'orion'],
+    ['kahuna/56-orion', 'orion'],
     ['kahuna/56-W-2', 'W-2'],
     ['integration/7-multi-part-slug', 'multi-part-slug'],
   ])('%s → %s', (branch, expected) => {
@@ -770,10 +770,10 @@ describe('epicSlugFromBranch (#503)', () => {
   });
 
   test.each([
-    ['no id segment', 'campaign/blueshift'],
+    ['no id segment', 'campaign/orion'],
     ['no slug after the id', 'kahuna/56'],
     ['no prefix at all', 'main'],
-    ['a nested prefix (the id is not in the second segment)', 'wave/kahuna/56-blueshift'],
+    ['a nested prefix (the id is not in the second segment)', 'wave/kahuna/56-orion'],
   ])('returns empty for %s', (_why, branch) => {
     expect(epicSlugFromBranch(branch)).toBe('');
   });

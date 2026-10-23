@@ -456,15 +456,15 @@ describe('wave_init handler', () => {
     setExecRoutes([
       { match: 'git remote get-url', respond: 'git@github.com:Wave-Engineering/mcp-server-sdlc.git' },
       { match: 'git ls-remote --heads origin', respond: '' },
-      { match: 'gh api repos/Wave-Engineering/mcp-server-sdlc/git/refs/heads/campaign/56-blueshift', respond: '0000000000000000000000000000000000000abc' },
+      { match: 'gh api repos/Wave-Engineering/mcp-server-sdlc/git/refs/heads/campaign/56-orion', respond: '0000000000000000000000000000000000000abc' },
       { match: 'gh api repos/Wave-Engineering/mcp-server-sdlc/git/refs -X POST', respond: '' },
       { match: 'wave-status set-kahuna-branch', respond: '' },
     ]);
 
     const result = await handler.execute({
       // A campaign: the plan's base is the campaign branch, not trunk.
-      plan_json: JSON.stringify({ phases: [], base_branch: 'campaign/56-blueshift' }),
-      kahuna: { plan_id: 56, slug: 'blueshift', branch: 'kahuna/56-W-2' },
+      plan_json: JSON.stringify({ phases: [], base_branch: 'campaign/56-orion' }),
+      kahuna: { plan_id: 56, slug: 'orion', branch: 'kahuna/56-W-2' },
     });
     const parsed = parseResult(result);
 
@@ -473,11 +473,11 @@ describe('wave_init handler', () => {
     expect(parsed.kahuna_created).toBe(true);
 
     const calls = mockExecSync.mock.calls.map(c => unquote(c[0] as string));
-    // The caller's name was created; the derived `kahuna/56-blueshift` was not.
+    // The caller's name was created; the derived `kahuna/56-orion` was not.
     expect(calls.some(c => c.includes('ref=refs/heads/kahuna/56-W-2'))).toBe(true);
-    expect(calls.some(c => c.includes('ref=refs/heads/kahuna/56-blueshift'))).toBe(false);
+    expect(calls.some(c => c.includes('ref=refs/heads/kahuna/56-orion'))).toBe(false);
     // ...and it was cut from the CAMPAIGN branch's SHA, not trunk's.
-    expect(calls.some(c => c.includes('git/refs/heads/campaign/56-blueshift'))).toBe(true);
+    expect(calls.some(c => c.includes('git/refs/heads/campaign/56-orion'))).toBe(true);
   });
 
   test('#503 — a branch equal to the repo default is refused, and nothing is created', async () => {
@@ -491,8 +491,8 @@ describe('wave_init handler', () => {
     ]);
 
     const result = await handler.execute({
-      plan_json: JSON.stringify({ phases: [], base_branch: 'campaign/56-blueshift' }),
-      kahuna: { plan_id: 56, slug: 'blueshift', branch: 'main' },
+      plan_json: JSON.stringify({ phases: [], base_branch: 'campaign/56-orion' }),
+      kahuna: { plan_id: 56, slug: 'orion', branch: 'main' },
     });
     const parsed = parseResult(result);
 
@@ -513,8 +513,8 @@ describe('wave_init handler', () => {
     ]);
 
     const result = await handler.execute({
-      plan_json: JSON.stringify({ phases: [], base_branch: 'campaign/56-blueshift' }),
-      kahuna: { plan_id: 56, slug: 'blueshift', branch: 'kahuna/56-W 2' },
+      plan_json: JSON.stringify({ phases: [], base_branch: 'campaign/56-orion' }),
+      kahuna: { plan_id: 56, slug: 'orion', branch: 'kahuna/56-W 2' },
     });
     const parsed = parseResult(result);
 
@@ -527,7 +527,7 @@ describe('wave_init handler', () => {
   test('#503 — the schema rejects an unknown key inside kahuna (strict object)', async () => {
     const result = await handler.execute({
       plan_json: JSON.stringify({ phases: [] }),
-      kahuna: { plan_id: 56, slug: 'blueshift', branch_name: 'kahuna/56-W-2' },
+      kahuna: { plan_id: 56, slug: 'orion', branch_name: 'kahuna/56-W-2' },
     });
     const parsed = parseResult(result);
     // `.strict()` — a near-miss key must fail loudly rather than being dropped

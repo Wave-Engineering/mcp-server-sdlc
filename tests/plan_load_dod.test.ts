@@ -390,16 +390,16 @@ Other: \`other.md\`
     test('accepts valid GitLab nested-group repo and routes to glab', async () => {
       // A 3+ segment slug routes straight to the gitlab adapter (route.ts
       // inferPlatform), so no cwd detection is needed. parseSlugOpts splits at
-      // the first `/`: owner=`analogicdev`, repo=`internal/tools/blueshift`;
+      // the first `/`: owner=`example-group`, repo=`internal/tools/orion`;
       // projectPath url-encodes the full `owner/repo` path.
       onExec(
-        'glab api projects/analogicdev%2Finternal%2Ftools%2Fblueshift/issues/7',
+        'glab api projects/example-group%2Finternal%2Ftools%2Forion/issues/7',
         JSON.stringify({
           iid: 7,
           title: 'Plan: Nested',
           state: 'opened',
           web_url:
-            'https://gitlab.com/analogicdev/internal/tools/blueshift/-/issues/7',
+            'https://gitlab.com/example-group/internal/tools/orion/-/issues/7',
           description: CANONICAL_PLAN_BODY,
           labels: [],
         }),
@@ -407,7 +407,7 @@ Other: \`other.md\`
 
       const result = await handler.execute({
         plan_id: 7,
-        repo: 'analogicdev/internal/tools/blueshift',
+        repo: 'example-group/internal/tools/orion',
       });
       const parsed = parseResult(result);
 

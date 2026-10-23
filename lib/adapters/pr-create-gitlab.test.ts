@@ -288,11 +288,11 @@ describe('prCreateGitlab — subprocess boundary', () => {
 
   test('nested GitLab group path is forwarded verbatim and URL-encoded for api lookup (#290)', async () => {
     // Regression guard: the deep group path
-    // `analogicdev/internal/tools/blueshift/blueshift-docmancer-ui`
+    // `example-group/internal/tools/orion/orion-portal-ui`
     // (4 `/` levels) was the exact case that motivated #290's regex fix.
     // The adapter must forward the slug verbatim to `-R` and URL-encode
     // every `/` (→ `%2F`) for the api lookup path segment.
-    const repo = 'analogicdev/internal/tools/blueshift/blueshift-docmancer-ui';
+    const repo = 'example-group/internal/tools/orion/orion-portal-ui';
     onExec('git branch --show-current', 'feature/nested\n');
     onExec('glab mr create', 'created\n');
     onExec(
