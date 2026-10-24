@@ -114,7 +114,7 @@ Trunk-based flow. Always branch from `main`: `git checkout main && git pull && g
 
 Canonical `<type>` prefixes are singular (the prefix names the topic, not a file type — `doc/` not `docs/`) and are the single source of truth in `lib/shared/branch-prefixes.ts`: `feature`, `fix`, `chore`, `doc`, `bug`, `kahuna`, `campaign`.
 
-`kahuna/` is reserved for wave-integration branches, not issue work.
+`kahuna/` and `campaign/` are reserved for integration branches (a wave's and a `/wavemachine` campaign's), not issue work; their `<N>` is the Plan or epic.
 
 ---
 
