@@ -134,6 +134,7 @@ describe('lib/wave-reconcile pure helpers', () => {
     expect(issueNumberFromBranch('doc/100-update-readme')).toBe(100);
     expect(issueNumberFromBranch('bug/200-crash')).toBe(200);
     expect(issueNumberFromBranch('kahuna/542-wave-1')).toBe(542); // #449: kahuna was omitted
+    expect(issueNumberFromBranch('campaign/26-mattermost-p1')).toBe(26); // #607
     expect(issueNumberFromBranch('main')).toBeNull();
     expect(issueNumberFromBranch('docs/foo-no-num')).toBeNull();
     expect(issueNumberFromBranch('docs/500-plural-rejected')).toBeNull(); // plural is not canonical

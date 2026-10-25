@@ -162,9 +162,11 @@ describe('ibm handler', () => {
     expect(data.pr_url).toBe('https://github.com/org/repo/pull/7');
   });
 
-  // --- all 6 type prefixes ---
-  test('branch_types — feature, fix, chore, doc, bug, kahuna prefixes all parse correctly', async () => {
-    const types = ['feature', 'fix', 'chore', 'doc', 'bug', 'kahuna'];
+  // --- all 7 type prefixes ---
+  // campaign/<plan>-* is the /wavemachine phase-release branch (#607): it was
+  // rejected here, which failed /precheck's IBM gate on every campaign release.
+  test('branch_types — feature, fix, chore, doc, bug, kahuna, campaign prefixes all parse correctly', async () => {
+    const types = ['feature', 'fix', 'chore', 'doc', 'bug', 'kahuna', 'campaign'];
 
     for (const type of types) {
       const branch = `${type}/10-something`;
