@@ -175,10 +175,13 @@ export interface PrMergeResponse {
   url: string;
   merge_commit_sha?: string;
   /**
-   * #611: the head this call pinned a merge of an open PR/MR to. Set by the
-   * pr_merge / pr_merge_wait handlers from the gate (`pinnedHead`), never by an
-   * adapter. Absent when unpinned, when the PR/MR was already merged or closed,
-   * and on any error.
+   * #611: the head this call pinned the merge, or the queue enrollment, of an
+   * open PR/MR to, confirmed by a read of the head after the call. Set by the
+   * pr_merge / pr_merge_wait handlers (`confirmPin`), never by an adapter. It
+   * is not a merge signal: a queue enrollment carries it with `merged: false`.
+   * Absent when unpinned, when nothing was merged or enrolled, when the PR/MR
+   * was already merged or closed, when the head after the call differs, and on
+   * any error.
    */
   pinned_head_sha?: string;
   warnings: string[];
@@ -232,6 +235,11 @@ export interface PrMergeWaitResponse {
   url: string;
   merge_commit_sha?: string;
   warnings: string[];
+  /**
+   * #611: true when the PR/MR was already merged and no merge ran. Internal:
+   * the handler reads it for the pin echo and drops it from the response.
+   */
+  merge_skipped?: boolean;
 }
 
 /**

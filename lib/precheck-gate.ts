@@ -259,16 +259,49 @@ export type MergeGate =
   | { kind: 'gated'; commit: SquashCommit; head_sha: string }
   | { kind: 'refused'; refusal: GateRefusal };
 
+/** What a successful merge reported, as far as the pin echo needs it. */
+export interface PinEvidence {
+  enrolled: boolean;
+  /** pr_merge_wait found the PR/MR merged since the gate read it, and ran no merge. */
+  merge_skipped?: boolean;
+}
+
 /**
  * The head a successful merge was pinned to, for the response's `pinned_head_sha`
- * (#611). Only a merge of a PR/MR that was open at the gate snapshot counts: an
- * already merged or closed one also comes back `merged: true` with its old merge
- * commit, and echoing a pin there would let a stale merge read as a pinned one.
+ * (#611), plus a warning when a pin was not confirmed. Echoed only when all hold:
+ *
+ * - this call had a pin, and the PR/MR was open at the gate snapshot. An already
+ *   merged or closed one also comes back `merged: true` with its old merge commit;
+ * - the adapter merged or enrolled it. GitLab's blocked shape is `enrolled: false`,
+ *   and nothing is in progress;
+ * - the merge command ran. pr_merge_wait skips it on a PR/MR merged since;
+ * - the PR/MR's head, read again after the call, is the pin. `gh pr merge` exits 0
+ *   on a PR that merged out of band without checking --match-head-commit, so the
+ *   adapter's success alone can't say the pin held.
  */
-export function pinnedHead(gate: MergeGate, pin: string | undefined): string | undefined {
-  if (pin === undefined) return undefined;
-  if (gate.kind === 'gated' || (gate.kind === 'pass' && gate.open)) return pin;
-  return undefined;
+export async function confirmPin(
+  adapter: PlatformAdapter,
+  gate: MergeGate,
+  pin: string | undefined,
+  merge: PinEvidence,
+  args: { number: number; repo?: string },
+  what: string,
+): Promise<{ pinned?: string; warning?: string }> {
+  if (pin === undefined) return {};
+  if (!(gate.kind === 'gated' || (gate.kind === 'pass' && gate.open))) return {};
+  if (!merge.enrolled || merge.merge_skipped === true) return {};
+  const snap = await prSnapshot(adapter, args.number, args.repo, what);
+  if (!snap.ok) {
+    return { warning: `pinned_head_sha omitted: the head after the merge could not be read (${snap.refusal.error})` };
+  }
+  if (snap.info.head_sha !== pin) {
+    return {
+      warning:
+        `pinned_head_sha omitted: PR/MR #${args.number}'s head after the merge is ` +
+        `${snap.info.head_sha.slice(0, 7)}, not the pinned ${pin.slice(0, 7)}`,
+    };
+  }
+  return { pinned: pin };
 }
 
 export async function mergeGate(adapter: PlatformAdapter, args: MergeGateInput, what: string): Promise<MergeGate> {

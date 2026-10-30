@@ -49,6 +49,7 @@ function synthesizeAlreadyMerged(num: number, info: PrStateInfo): PrMergeWaitRes
     url: info.url,
     merge_commit_sha: info.mergeCommitSha,
     warnings: ['PR was already merged before invocation; pr_merge was not called'],
+    merge_skipped: true,
   };
 }
 

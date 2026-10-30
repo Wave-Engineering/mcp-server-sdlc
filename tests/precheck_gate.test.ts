@@ -120,6 +120,12 @@ function glMr(f: PrFixture = {}): string {
   });
 }
 
+/** A stub that gives each read the next answer, then repeats the last. */
+function seq(...answers: string[]): () => string {
+  let i = 0;
+  return () => answers[Math.min(i++, answers.length - 1)];
+}
+
 function ghStatus(state: string | null): void {
   onExec(
     '/status?per_page=100',
@@ -620,11 +626,103 @@ describe('pinned_head_sha — the pin echo (#611)', () => {
     expect(r.pinned_head_sha).toBe(SHA);
   });
 
+  test("the echo needs the head after the merge to be the pin: gh exits 0 on a PR merged out of band", async () => {
+    // gh pr merge returns early on an already-merged PR and never checks
+    // --match-head-commit, so the adapter reports merged:true for someone
+    // else's merge of a head that moved. Registered first: the first stub wins.
+    onExec('--json id,headRefOid', seq(ghPr(), ghPr({ sha: OTHER_SHA, state: 'MERGED' })));
+    ghMergeStubs();
+    ghStatus('success');
+    const r = parse(await prMerge.execute({ number: 42 }));
+    expect(r.ok).toBe(true);
+    expect(r.merged).toBe(true);
+    expect(r.pinned_head_sha).toBeUndefined();
+    expect((r.warnings as string[]).join(' ')).toContain(
+      `head after the merge is ${OTHER_SHA.slice(0, 7)}, not the pinned ${SHA.slice(0, 7)}`,
+    );
+  });
+
+  test('a queue enrollment echoes the pin with merged:false (the echo is not a merge signal)', async () => {
+    onExec('gh api graphql', JSON.stringify({ data: { repository: { mergeQueue: { __typename: 'MergeQueue' } } } }));
+    onExec(
+      'gh pr view 42 --json state,url,mergeCommit',
+      JSON.stringify({ state: 'OPEN', url: 'https://github.com/org/repo/pull/42', mergeCommit: null }),
+    );
+    ghMergeStubs();
+    ghStatus('success');
+    const r = parse(await prMerge.execute({ number: 42 }));
+    expect(r.ok).toBe(true);
+    expect(r.enrolled).toBe(true);
+    expect(r.merged).toBe(false);
+    expect(call('gh pr merge 42')).toContain('--auto');
+    expect(r.pinned_head_sha).toBe(SHA);
+  });
+
+  test('gitlab: a blocked merge (enrolled:false) echoes nothing', async () => {
+    gitlab();
+    onExec('glab api projects/:id/merge_requests/5', glMr());
+    glStatus('success');
+    onExec('glab mr merge 5', '');
+    onExec(
+      'glab api projects/org%2Frepo/merge_requests/5',
+      JSON.stringify({ ...JSON.parse(glMr()), detailed_merge_status: 'not_approved' }),
+    );
+    const r = parse(await prMerge.execute({ number: 5 }));
+    expect(r.ok).toBe(true);
+    expect(r.enrolled).toBe(false);
+    expect(r.pinned_head_sha).toBeUndefined();
+  });
+
   test('pr_merge_wait: a gated merge echoes the checked head', async () => {
+    // Open when the executor first reads it, so the merge really runs.
+    onExec(
+      'gh pr view 42 --json state,url,mergeCommit',
+      seq(
+        JSON.stringify({ state: 'OPEN', url: 'https://github.com/org/repo/pull/42', mergeCommit: null }),
+        JSON.stringify({ state: 'MERGED', url: 'https://github.com/org/repo/pull/42', mergeCommit: { oid: 'abc123' } }),
+      ),
+    );
     ghMergeStubs();
     ghStatus('success');
     const r = parse(await prMergeWait.execute({ number: 42 }));
     expect(r.ok).toBe(true);
+    expect(call('gh pr merge 42')).toContain(`--match-head-commit '${SHA}'`);
+    expect(r.pinned_head_sha).toBe(SHA);
+  });
+
+  test('pr_merge_wait: a PR merged after the gate read it runs no merge and echoes nothing', async () => {
+    // The gate sees it open; the executor's own read sees it merged and skips.
+    ghMergeStubs();
+    ghStatus('success');
+    const r = parse(await prMergeWait.execute({ number: 42 }));
+    expect(r.ok).toBe(true);
+    expect(call('gh pr merge 42')).toBe('');
+    expect((r.warnings as string[]).join(' ')).toContain('pr_merge was not called');
+    expect(r.pinned_head_sha).toBeUndefined();
+    expect(r.merge_skipped).toBeUndefined();
+  });
+
+  test("pr_merge_wait: a gated merge refuses an expected_head_sha that isn't the gate's head", async () => {
+    ghMergeStubs();
+    ghStatus('success');
+    const r = parse(await prMergeWait.execute({ number: 42, expected_head_sha: OTHER_SHA }));
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe('head_moved');
+    expect(call('gh pr merge 42')).toBe('');
+  });
+
+  test("pr_merge_wait: an open integration pair pins and echoes the caller's expected_head_sha", async () => {
+    onExec(
+      'gh pr view 42 --json state,url,mergeCommit',
+      seq(
+        JSON.stringify({ state: 'OPEN', url: 'https://github.com/org/repo/pull/42', mergeCommit: null }),
+        JSON.stringify({ state: 'MERGED', url: 'https://github.com/org/repo/pull/42', mergeCommit: { oid: 'abc123' } }),
+      ),
+    );
+    ghMergeStubs({ head: 'kahuna/56-w1', body: '' });
+    const r = parse(await prMergeWait.execute({ number: 42, expected_head_sha: SHA }));
+    expect(r.ok).toBe(true);
+    expect(call('gh pr merge 42')).toContain(`--match-head-commit '${SHA}'`);
     expect(r.pinned_head_sha).toBe(SHA);
   });
 

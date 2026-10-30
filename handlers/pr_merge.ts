@@ -13,7 +13,7 @@ import type { HandlerDef } from '../types.js';
 import { getAdapter } from '../lib/adapters/index.js';
 import { repoOptionalSchema } from '../lib/schemas/repo.js';
 import { emitStateEvent, scopeRoot } from '../lib/flightdeck_emit.js';
-import { mergeGate, pinnedHead } from '../lib/precheck-gate.js';
+import { confirmPin, mergeGate } from '../lib/precheck-gate.js';
 
 const inputSchema = z.object({
   number: z.number().int().positive('number must be a positive integer'),
@@ -68,10 +68,13 @@ const prMergeHandler: HandlerDef = {
     'the merge is pinned to it (GitHub --match-head-commit, GitLab --sha), so a head that moved since ' +
     'refuses rather than merging ungraded code; on a gated merge the gate\'s head stays authoritative and ' +
     'a different expected_head_sha refuses with head_moved before any merge is attempted. Omitted, nothing changes. ' +
-    'pinned_head_sha (#611) in the response is the head this call pinned a merge of an OPEN PR/MR to: the ' +
-    'gate\'s head on a gated merge, the caller\'s expected_head_sha on an integration pair. It is absent on an ' +
-    'unpinned or already-merged/closed PR/MR. Callers that need the pin should require it: a server older ' +
-    'than v5.1.0 drops expected_head_sha silently and merges unpinned, and returns no pinned_head_sha.',
+    'pinned_head_sha (#611) in the response is the head this call pinned the merge (or queue enrollment) of an ' +
+    'OPEN PR/MR to, confirmed by reading the head again after the call: the gate\'s head on a gated merge, the ' +
+    'caller\'s expected_head_sha on an integration pair. It is NOT a merge signal: a queue enrollment carries it ' +
+    'with merged=false, so require merged=true as well (or use pr_merge_wait). It is absent on an unpinned ' +
+    'merge, on enrolled=false, on an already-merged/closed PR/MR, and when the head after the call differs ' +
+    '(a warning names it). Callers that need the pin should require it: a server older than v5.1.0 drops ' +
+    'expected_head_sha silently and merges unpinned, and v5.1.x pins but returns no pinned_head_sha.',
   inputSchema,
   async execute(rawArgs: unknown) {
     let args;
@@ -131,8 +134,13 @@ const prMergeHandler: HandlerDef = {
     }
     // #611: echo the pin, so a caller can require it. A server older than v5.1.0
     // strips an unknown expected_head_sha and merges unpinned, silently.
-    const pinned = pinnedHead(gate, mergeArgs.expected_head_sha);
-    return envelope({ ok: true, ...result.data, ...(pinned !== undefined ? { pinned_head_sha: pinned } : {}) });
+    const pin = await confirmPin(adapter, gate, mergeArgs.expected_head_sha, data, args, 'pr_merge');
+    return envelope({
+      ok: true,
+      ...data,
+      warnings: pin.warning !== undefined ? [...data.warnings, pin.warning] : data.warnings,
+      ...(pin.pinned !== undefined ? { pinned_head_sha: pin.pinned } : {}),
+    });
   },
 };
 
