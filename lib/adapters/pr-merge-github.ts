@@ -79,8 +79,15 @@ function stderrIndicatesMergeQueue(text: string): boolean {
 //   "failed to delete remote branch <name>: HTTP 503: No server is currently available"
 // The merge is the point of no return — if we can confirm it landed, the deletion
 // failure is cosmetic cleanup and belongs in `warnings`, not `ok:false`.
+// #609: gh deletes the local branch first, and a branch checked out in a
+// worktree fails with "failed to delete local branch <name>: …". That is the
+// same cosmetic failure, so it gets the same recovery.
 function isBranchDeleteFailure(text: string): boolean {
-  return /failed to delete (remote )?branch/i.test(text);
+  return /failed to delete (local |remote )?branch/i.test(text);
+}
+
+function isLocalBranchDeleteFailure(text: string): boolean {
+  return /failed to delete local branch/i.test(text);
 }
 
 function exec(cmd: string): string {
@@ -406,6 +413,11 @@ async function mergeGithubDirect(
       try {
         const info = await fetchPrStateRouted(args.number, args.repo);
         if (info.state === 'merged') {
+          const localFailed = isLocalBranchDeleteFailure(fail.message) || isLocalBranchDeleteFailure(fail.stderr);
+          const warning = localFailed
+            ? `local branch deletion failed after successful merge (cosmetic — the merge landed); ` +
+              `the local delete failed first, so the remote branch may still exist: ${fail.message}`
+            : `branch deletion failed after successful merge (cosmetic — the merge landed): ${fail.message}`;
           return {
             ok: true,
             data: aggregateOk({
@@ -416,10 +428,7 @@ async function mergeGithubDirect(
               queue,
               url: info.url,
               mergeCommitSha: info.mergeCommitSha,
-              warnings: [
-                ...warnings,
-                `branch deletion failed after successful merge (cosmetic — the merge landed): ${fail.message}`,
-              ],
+              warnings: [...warnings, warning],
             }),
           };
         }

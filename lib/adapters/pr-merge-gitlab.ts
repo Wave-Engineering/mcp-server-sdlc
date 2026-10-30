@@ -329,30 +329,26 @@ export async function prMergeGitlab(
     // mean every attempt hit a stale-head rejection, which the explicit
     // post-loop return names. No path exits this block without a result.
     for (let attempt = 1; attempt <= MAX_SHA_ATTEMPTS && !merged; attempt += 1) {
+      // #609: a pinned head (the precheck gate's, or an integration-pair
+      // caller's graded head) IS the merge sha: GitLab's own stale-head guard
+      // then refuses any other commit, with no lookup window between a read
+      // and the merge. Unpinned, resolve the head ourselves (#486).
       let headSha: string;
-      try {
-        headSha = resolveHeadSha(args.number, args.repo);
-      } catch (err) {
-        return {
-          ok: false,
-          code: 'gitlab_head_sha_unresolved',
-          error:
-            `could not resolve source-branch head sha for MR !${String(args.number)}: ` +
-            `${extractFailure(err).message}. GitLab requires \`sha\` as a stale-head guard when ` +
-            'merging; refusing to merge without it.',
-        };
-      }
-      // #592: the precheck pass was checked on one commit; merge only that one.
-      // A push since then (including one the 409 retry below re-resolves to) is
-      // unreviewed, so it refuses rather than merging the newer head.
-      if (args.expected_head_sha !== undefined && headSha !== args.expected_head_sha) {
-        return {
-          ok: false,
-          code: 'head_moved',
-          error:
-            `MR !${String(args.number)}'s head moved to ${headSha.slice(0, 7)} after its precheck pass ` +
-            `was checked on ${args.expected_head_sha.slice(0, 7)}. Run /precheck rearm, then merge again.`,
-        };
+      if (args.expected_head_sha !== undefined) {
+        headSha = args.expected_head_sha;
+      } else {
+        try {
+          headSha = resolveHeadSha(args.number, args.repo);
+        } catch (err) {
+          return {
+            ok: false,
+            code: 'gitlab_head_sha_unresolved',
+            error:
+              `could not resolve source-branch head sha for MR !${String(args.number)}: ` +
+              `${extractFailure(err).message}. GitLab requires \`sha\` as a stale-head guard when ` +
+              'merging; refusing to merge without it.',
+          };
+        }
       }
 
       // #488: ALWAYS attempt the deterministic merge first, regardless of
@@ -475,6 +471,18 @@ export async function prMergeGitlab(
           // merged via the enrollment retry above — fall out of the catch and
           // the for-loop (condition `!merged` is now false) to the ordinary
           // post-loop poll, which reports the enrollment honestly.
+        } else if (args.expected_head_sha !== undefined) {
+          // #592/#609: the merge is pinned, and the head is no longer the pinned
+          // commit. Re-resolving and retrying would merge a head nobody checked,
+          // so the stale-head rejection is final.
+          return {
+            ok: false,
+            code: 'head_moved',
+            error:
+              `MR !${String(args.number)}'s head moved off ${args.expected_head_sha.slice(0, 7)}, the commit ` +
+              `this merge is pinned to, and GitLab refused the merge: ${failure}. Check the new head ` +
+              '(/precheck rearm on a gated MR), then merge again.',
+          };
         } else {
           // Source branch moved mid-merge — loop to refetch the head and retry.
           lastStaleRejection = failure;

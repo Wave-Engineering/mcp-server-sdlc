@@ -6,6 +6,7 @@ import {
   execCalls,
 } from '../test-support/mock-child-process.ts';
 import type { AdapterResult, PrMergeResponse } from './types.ts';
+import { VALID_SQUASH_MESSAGE } from '../test-support/precheck-stubs.ts';
 
 // Subprocess-boundary tests for the GitHub pr_merge adapter (R-15).
 // Integration-level coverage (handler dispatch, error envelope, full
@@ -27,6 +28,7 @@ function unquote(cmd: string): string {
 installChildProcessMock();
 
 const { prMergeGithub } = await import('./pr-merge-github.ts');
+const { default: prMerge } = await import('../../handlers/pr_merge.ts');
 const { clearMergeQueueCache } = await import('../merge_queue_detect.ts');
 
 // Default GraphQL stub for queue detection: respond "no queue" so the
@@ -734,5 +736,136 @@ describe('prMergeGithub — subprocess boundary', () => {
     // Also should not fetch node_id
     const nodeIdCall = execCalls().find((c) => c.includes('gh api repos/org/repo/pulls/286'));
     expect(nodeIdCall).toBeUndefined();
+  });
+});
+
+// --- #609: pr_merge's expected_head_sha, through the handler and its gate ----
+//
+// The gate decides whether the pin is the caller's (integration pair) or the
+// gate's own (gated merge), so these drive the real handler at the subprocess
+// boundary. The gate's snapshot is the `--json id,headRefOid,...` read.
+describe('#609 — pr_merge expected_head_sha', () => {
+  const GRADED = 'b'.repeat(40);
+  const GATE_HEAD = 'c'.repeat(40);
+
+  function prView(head: string, sha: string, body = ''): string {
+    return JSON.stringify({
+      id: 'PR_609',
+      headRefOid: sha,
+      headRefName: head,
+      baseRefName: 'main',
+      title: 'x',
+      body,
+      isDraft: false,
+      state: 'OPEN',
+      isCrossRepository: false,
+    });
+  }
+
+  function mergedView(): void {
+    onExec(
+      'gh pr view 42 --json state,url,mergeCommit',
+      JSON.stringify({ state: 'MERGED', url: 'https://github.com/org/repo/pull/42', mergeCommit: { oid: 'm609' } }),
+    );
+  }
+
+  test('an integration-pair merge with expected_head_sha passes --match-head-commit <sha>', async () => {
+    onExec('--json id,headRefOid', prView('kahuna/56-w1', GRADED));
+    stubNoQueue();
+    onExec('gh pr merge 42', '');
+    mergedView();
+
+    const r = JSON.parse((await prMerge.execute({ number: 42, expected_head_sha: GRADED })).content[0].text);
+    expect(r.ok).toBe(true);
+    expect(findCall('gh pr merge 42')).toBe(
+      `gh pr merge 42 --squash --delete-branch --match-head-commit '${GRADED}'`,
+    );
+  });
+
+  test('a gated merge whose expected_head_sha differs from the gate head refuses head_moved, never invoking gh pr merge', async () => {
+    const { withSquashBlock, validateSquashMessage } = await import('../precheck-gate.ts');
+    const commit = validateSquashMessage(VALID_SQUASH_MESSAGE);
+    if (!commit.ok) throw new Error('VALID_SQUASH_MESSAGE must validate');
+    onExec('--json id,headRefOid', prView('feature/609-x', GATE_HEAD, withSquashBlock('Body.', commit.commit)));
+    onExec('/status?per_page=100', JSON.stringify({ state: 'success', statuses: [{ context: 'precheck', state: 'success' }] }));
+    stubNoQueue();
+    onExec('gh pr merge 42', '');
+    mergedView();
+
+    const r = JSON.parse((await prMerge.execute({ number: 42, expected_head_sha: GRADED })).content[0].text);
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe('head_moved');
+    // Both SHAs are named, so the caller can see which head it graded.
+    expect(r.error).toContain(GATE_HEAD.slice(0, 7));
+    expect(r.error).toContain(GRADED.slice(0, 7));
+    expect(findCall('gh pr merge')).toBe('');
+  });
+
+  test('omitted, the integration-pair argv is unchanged (pinned byte-for-byte)', async () => {
+    onExec('--json id,headRefOid', prView('kahuna/56-w1', GRADED));
+    stubNoQueue();
+    onExec('gh pr merge 42', '');
+    mergedView();
+
+    const r = JSON.parse((await prMerge.execute({ number: 42 })).content[0].text);
+    expect(r.ok).toBe(true);
+    expect(findCall('gh pr merge 42')).toBe('gh pr merge 42 --squash --delete-branch');
+  });
+
+  test('omitted at the adapter, the argv is unchanged (pinned byte-for-byte)', async () => {
+    stubNoQueue();
+    onExec('gh pr merge 42', '');
+    mergedView();
+
+    const result = await prMergeGithub({ number: 42 });
+    expectOk(result);
+    expect(findCall('gh pr merge 42')).toBe('gh pr merge 42 --squash --delete-branch');
+  });
+});
+
+// --- #609: a failed LOCAL branch delete is cosmetic too (#497 recovery) -----
+describe('#609 — local branch-delete failure after a landed merge', () => {
+  function localDeleteError(): ThrowableError {
+    const err = new Error(
+      "failed to delete local branch fix/x: error: cannot delete branch 'fix/x' used by worktree at '/tmp/wt'",
+    ) as ThrowableError;
+    err.stderr = err.message;
+    err.status = 1;
+    return err;
+  }
+
+  test('state merged → ok:true, merged:true, with a warning naming the local delete', async () => {
+    stubNoQueue();
+    onExec('gh pr merge 609 --squash --delete-branch', () => {
+      throw localDeleteError();
+    });
+    onExec(
+      'gh pr view 609 --json state,url,mergeCommit',
+      JSON.stringify({ state: 'MERGED', url: 'https://github.com/org/repo/pull/609', mergeCommit: { oid: '5ba1175' } }),
+    );
+
+    const result = await prMergeGithub({ number: 609 });
+    expectOk(result);
+    expect(result.data.merged).toBe(true);
+    expect(result.data.merge_commit_sha).toBe('5ba1175');
+    const w = result.data.warnings.join(' ');
+    expect(w).toContain('local branch deletion failed');
+    expect(w).toContain('fix/x');
+    expect(w).toContain('remote branch may still exist');
+  });
+
+  test('state open → ok:false gh_pr_merge_failed', async () => {
+    stubNoQueue();
+    onExec('gh pr merge 610 --squash --delete-branch', () => {
+      throw localDeleteError();
+    });
+    onExec(
+      'gh pr view 610 --json state,url,mergeCommit',
+      JSON.stringify({ state: 'OPEN', url: 'https://github.com/org/repo/pull/610', mergeCommit: null }),
+    );
+
+    const result = await prMergeGithub({ number: 610 });
+    expectErr(result);
+    expect(result.code).toBe('gh_pr_merge_failed');
   });
 });

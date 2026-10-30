@@ -176,14 +176,18 @@ export function probeGithub(number: number, repo?: string): PrProbeResponse {
 
 /**
  * Resolve the empty-rollup short-circuit blocker (#416). Returns `null` when
- * the PR is mergeable today (no checks AND no obstructions). Otherwise returns
+ * nothing makes the settle window pointless: the PR is mergeable today, or its
+ * mergeability is still `UNKNOWN` (see below). Otherwise returns
  * a short string naming the obstruction — `draft`, `closed`, `merged`,
  * `conflicts`, or `not_mergeable` — for inclusion in the typed response.
  *
  * `mergeable` is a tri-state on GitHub: `MERGEABLE | CONFLICTING | UNKNOWN`
- * (or boolean on older REST shapes). We treat anything that isn't an explicit
- * "yes, mergeable" as a blocker so callers never get a false-positive on a PR
- * that GitHub is still computing.
+ * (or boolean on older REST shapes). Anything that isn't an explicit "yes,
+ * mergeable" is a blocker, with one exception (#609): `UNKNOWN` (with
+ * `mergeStateStatus` not `DIRTY`) returns `null`. GitHub computes mergeability
+ * lazily, so `UNKNOWN` at t=0 is usually transient and needs the settle window,
+ * not an instant verdict. A null here is NOT "mergeable": the caller re-checks
+ * the latest probe with `isMergeabilityUnknown` after the window.
  */
 export function emptyRollupBlocker(probe: PrProbeResponse): string | null {
   const state = (probe.state ?? '').toUpperCase();
@@ -197,9 +201,21 @@ export function emptyRollupBlocker(probe: PrProbeResponse): string | null {
   if (!mergeable) {
     const mergeState = (probe.mergeStateStatus ?? '').toUpperCase();
     if (mergeState === 'DIRTY' || mergeableRaw === 'CONFLICTING') return 'conflicts';
+    if (mergeableRaw === 'UNKNOWN') return null;
     return 'not_mergeable';
   }
   return null;
+}
+
+/** True when GitHub has not computed this PR's mergeability yet (and it isn't `DIRTY`) — #609. */
+export function isMergeabilityUnknown(probe: PrProbeResponse): boolean {
+  const mergeableRaw = typeof probe.mergeable === 'string' ? probe.mergeable.toUpperCase() : probe.mergeable;
+  return mergeableRaw === 'UNKNOWN' && (probe.mergeStateStatus ?? '').toUpperCase() !== 'DIRTY';
+}
+
+/** The probe's raw `mergeable/mergeStateStatus` pair as gh reports it, e.g. `"UNKNOWN/UNKNOWN"` (#609). */
+export function mergeableState(probe: PrProbeResponse): string {
+  return `${String(probe.mergeable ?? '')}/${probe.mergeStateStatus ?? ''}`;
 }
 
 /**
@@ -308,17 +324,23 @@ export async function prWaitCiGithub(
       // A hard blocker makes waiting pointless: a closed, merged or draft PR is
       // not going to start CI, and holding the caller for the window buys
       // nothing. Returning at once here is the ONE place a zero settle is right.
+      //
+      // #609: but it is `no_checks_yet`, not `no_checks_configured`. A blocked
+      // PR says nothing about whether the repo runs CI (a conflicting PR gets
+      // no test-merge commit, so no `pull_request` run), and only a certified-
+      // empty run query may claim "no CI here".
       const blocker = emptyRollupBlocker(probe);
       if (blocker !== null) {
         return {
           ok: true,
           data: {
             number: args.number,
-            status: 'no_checks_configured',
+            status: 'no_checks_yet',
             elapsed_sec: Math.max(0, Math.floor((deps.now() - probeStart) / 1000)),
             settled_sec: 0,
             mergeable: false,
             blocker,
+            mergeable_state: mergeableState(probe),
             url: probe.url ?? '',
           },
         };
@@ -346,15 +368,27 @@ export async function prWaitCiGithub(
         const settledSec = Math.max(0, Math.floor((deps.now() - probeStart) / 1000));
 
         // Only ONE branch may claim "this repo runs no checks": a query that
-        // SUCCEEDED and found nothing. Everything else — the query failed, no
-        // SHA to anchor it, or runs found — is `no_checks_yet` and not mergeable.
-        const certified = evidence.ok && evidence.runs.length === 0;
+        // SUCCEEDED and found nothing, on a PR that is mergeable on the LATEST
+        // probe. Everything else — the query failed, no SHA to anchor it, runs
+        // found, GitHub still can't say whether the PR merges, or it turned
+        // draft/closed/conflicting during the window (#609: no test-merge
+        // commit, so possibly no `pull_request` run at all) — is
+        // `no_checks_yet` and not mergeable.
+        const unknown = isMergeabilityUnknown(probe);
+        const lateBlocker = emptyRollupBlocker(probe);
+        const certified = evidence.ok && evidence.runs.length === 0 && !unknown && lateBlocker === null;
         const runs = evidence.ok ? evidence.runs : [];
-        const blocker = certified
-          ? undefined
-          : runs.length > 0
-            ? 'checks_not_registered'
-            : 'evidence_unavailable';
+        // The obstruction comes first: GitHub reports a closed or merged PR as
+        // UNKNOWN, and "closed" tells the caller to stop waiting.
+        const blocker = lateBlocker !== null
+          ? lateBlocker
+          : unknown
+            ? 'mergeability_unknown'
+            : certified
+              ? undefined
+              : runs.length > 0
+                ? 'checks_not_registered'
+                : 'evidence_unavailable';
 
         const data: PrWaitCiNoChecksResponse = {
           number: args.number,
@@ -364,6 +398,7 @@ export async function prWaitCiGithub(
           // `no_checks_yet` is NEVER mergeable: either CI exists and has not
           // reported, or we could not establish that it doesn't.
           mergeable: certified,
+          mergeable_state: mergeableState(probe),
           url: probe.url ?? '',
           ...(blocker !== undefined ? { blocker } : {}),
           ...(runs.length > 0 ? { pending_runs: runs } : {}),

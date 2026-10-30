@@ -24,6 +24,13 @@ const inputSchema = z.object({
   // hardcoded behavior (no change for existing callers). `squash_message` is
   // applied to the squash/merge commit and ignored for `rebase`.
   merge_method: z.enum(['squash', 'merge', 'rebase']).default('squash'),
+  // #609: the head the caller graded. On an integration pair it pins the merge
+  // (GitHub --match-head-commit, GitLab --sha); on a gated merge the gate's
+  // head stays authoritative and a different one refuses with head_moved.
+  expected_head_sha: z
+    .string()
+    .regex(/^[0-9a-f]{40}$/, 'expected_head_sha must be a full 40-character lowercase hex SHA')
+    .optional(),
   // GitLab nested groups need arbitrary `/` depth — see lib/schemas/repo.ts (#290).
   repo: repoOptionalSchema,
 });
@@ -56,7 +63,11 @@ const prMergeHandler: HandlerDef = {
     'merge must be a squash, the PR/MR body must carry a valid `## Squash commit` block (pr_create writes it), ' +
     'and the head SHA must carry `precheck` = success. The block IS the squash commit, subject and body; a ' +
     'squash_message that differs from it is refused (omit squash_message, or edit the block). The merge is ' +
-    'pinned to the head the pass was checked on, so a push after review refuses with head_moved.',
+    'pinned to the head the pass was checked on, so a push after review refuses with head_moved. ' +
+    'expected_head_sha (optional, 40 lowercase hex) is the head the caller graded: on an integration pair ' +
+    'the merge is pinned to it (GitHub --match-head-commit, GitLab --sha), so a head that moved since ' +
+    'refuses rather than merging ungraded code; on a gated merge the gate\'s head stays authoritative and ' +
+    'a different expected_head_sha refuses with head_moved before any merge is attempted. Omitted, nothing changes.',
   inputSchema,
   async execute(rawArgs: unknown) {
     let args;
@@ -69,6 +80,8 @@ const prMergeHandler: HandlerDef = {
     const adapter = getAdapter({ repo: args.repo });
     const gate = await mergeGate(adapter, args, 'pr_merge');
     if (gate.kind === 'refused') return envelope({ ok: false, ...gate.refusal });
+    // An ungated merge (an integration pair) keeps the caller's expected_head_sha
+    // (#609) in `args`, so the adapter pins it; a gated merge pins the gate's head.
     const mergeArgs =
       gate.kind === 'gated'
         ? {

@@ -676,6 +676,63 @@ describe('prMergeGitlab — --sha stale-head guard (#486)', () => {
   });
 });
 
+// #609: a pinned head (pr_merge's expected_head_sha on an integration pair, or
+// the precheck gate's head) IS the merge sha. No self-resolve, so no window
+// between reading the head and merging it.
+describe('prMergeGitlab — a pinned expected_head_sha (#609)', () => {
+  const PINNED = 'd'.repeat(40);
+
+  test('a given expected_head_sha is the merge --sha, and there is no head lookup', async () => {
+    let mrReads = 0;
+    onExec('glab api projects/org%2Frepo/merge_requests/609', () => {
+      mrReads += 1;
+      return JSON.stringify({
+        iid: 609,
+        state: 'merged',
+        source_branch: 'kahuna/56-w1',
+        target_branch: 'main',
+        web_url: 'https://gitlab.com/org/repo/-/merge_requests/609',
+        labels: [],
+        // A different head than the pin: had the adapter resolved it, it would show.
+        sha: 'e'.repeat(40),
+        merge_commit_sha: 'merged609',
+      });
+    });
+    onExec('glab mr merge 609 --squash --remove-source-branch --yes', '');
+
+    const result = await prMergeGitlab({ number: 609, repo: 'org/repo', expected_head_sha: PINNED });
+    expectOk(result);
+    const mergeCall = findCall('glab mr merge 609');
+    expect(mergeCall).toContain(`--sha '${PINNED}'`);
+    // The one MR read is the post-merge state poll, not a head lookup before it.
+    expect(mrReads).toBe(1);
+    const firstMerge = execCalls().findIndex((c) => c.includes('glab mr merge 609'));
+    const firstRead = execCalls().findIndex((c) => c.includes('merge_requests/609'));
+    expect(firstRead).toBeGreaterThan(firstMerge);
+  });
+
+  test('a stale-head rejection of a pinned sha refuses head_moved, with no retry', async () => {
+    onExec(
+      'glab api projects/org%2Frepo/merge_requests/611',
+      JSON.stringify({ iid: 611, state: 'opened', web_url: 'https://gitlab.com/org/repo/-/merge_requests/611', sha: 'f'.repeat(40) }),
+    );
+    let mergeAttempts = 0;
+    onExec('glab mr merge 611 --squash --remove-source-branch --yes', () => {
+      mergeAttempts += 1;
+      const err = new Error('merge failed') as ThrowableError;
+      err.stderr = '409 SHA does not match HEAD of source branch\n';
+      throw err;
+    });
+
+    const result = await prMergeGitlab({ number: 611, repo: 'org/repo', expected_head_sha: PINNED });
+    expectErr(result);
+    expect(result.code).toBe('head_moved');
+    expect(result.error).toContain(PINNED.slice(0, 7));
+    // Re-resolving and retrying would merge a head nobody checked.
+    expect(mergeAttempts).toBe(1);
+  });
+});
+
 // ===========================================================================
 // #488 — allow_gitlab_enrollment: pr_merge_wait's enrollment path
 // ===========================================================================
