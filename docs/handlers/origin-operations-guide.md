@@ -453,6 +453,7 @@ Same fields as `pr_status`; this tool wraps `pr_status` logic in a poll loop.
     - **GitHub:** adds `--subject <s> --match-head-commit <sha>`. The GraphQL `enqueuePullRequest` fallback sends `expectedHeadOid`. On a merge-queue repo the queue's own method writes the commit, so the block is the squash commit only on the direct path (the fleet is queue-less).
     - **GitLab:** sends `--squash-message "<subject>\n\n<body>"` and uses `expected_head_sha` as the merge `--sha`, with no head lookup. GitLab's stale-head 409 on a pinned merge refuses `head_moved` and is never retried on the newer head (#609).
 - **Integration pairs (#609)** skip the gate. `expected_head_sha` is a public `pr_merge` input there: given, it pins the merge to the graded head (GitHub `--match-head-commit`, GitLab `--sha`); omitted, the merge is unpinned as before.
+- **`pinned_head_sha` (#611)** is in the response of `pr_merge` and `pr_merge_wait` when this call pinned a merge of a PR/MR that was open at the gate snapshot. Its value is the head it pinned to (the gate's head, or the caller's `expected_head_sha` on an integration pair). It is absent on an unpinned integration pair, on an already merged or closed PR/MR (which also reports `merged: true`, with its old merge commit), and on every error. A caller that relies on the pin should require it: a server older than v5.1.0 strips `expected_head_sha` without an error and merges unpinned.
 
 ### 3.5 `pr_diff`
 

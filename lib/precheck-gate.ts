@@ -252,19 +252,32 @@ export interface MergeGateInput {
  * What the merge may proceed with. `pass` = not gated (an integration pair, or
  * a PR/MR that is no longer open, which the adapter reports on itself);
  * `gated` = the block's commit and the head SHA the pass was checked on.
+ * `open` on `pass` says whether the PR/MR was open at the snapshot (#611).
  */
 export type MergeGate =
-  | { kind: 'pass' }
+  | { kind: 'pass'; open: boolean }
   | { kind: 'gated'; commit: SquashCommit; head_sha: string }
   | { kind: 'refused'; refusal: GateRefusal };
+
+/**
+ * The head a successful merge was pinned to, for the response's `pinned_head_sha`
+ * (#611). Only a merge of a PR/MR that was open at the gate snapshot counts: an
+ * already merged or closed one also comes back `merged: true` with its old merge
+ * commit, and echoing a pin there would let a stale merge read as a pinned one.
+ */
+export function pinnedHead(gate: MergeGate, pin: string | undefined): string | undefined {
+  if (pin === undefined) return undefined;
+  if (gate.kind === 'gated' || (gate.kind === 'pass' && gate.open)) return pin;
+  return undefined;
+}
 
 export async function mergeGate(adapter: PlatformAdapter, args: MergeGateInput, what: string): Promise<MergeGate> {
   const snap = await prSnapshot(adapter, args.number, args.repo, what);
   if (!snap.ok) return { kind: 'refused', refusal: snap.refusal };
   const info = snap.info;
   // Already merged or closed: nothing to gate. pr_merge_wait short-circuits on it.
-  if (info.state !== 'open') return { kind: 'pass' };
-  if (isExemptPr(info)) return { kind: 'pass' };
+  if (info.state !== 'open') return { kind: 'pass', open: false };
+  if (isExemptPr(info)) return { kind: 'pass', open: true };
   // #609: the gate's head is the one the pass is checked on and the merge is
   // pinned to. A caller that graded a different head must not have it swapped
   // silently for this one, so a mismatch refuses before any merge is attempted.

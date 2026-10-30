@@ -557,6 +557,86 @@ describe('pr_merge_wait — the same gate (no bypass around pr_merge)', () => {
   });
 });
 
+describe('pinned_head_sha — the pin echo (#611)', () => {
+  test('a gated merge echoes the checked head', async () => {
+    ghMergeStubs();
+    ghStatus('success');
+    const r = parse(await prMerge.execute({ number: 42 }));
+    expect(r.ok).toBe(true);
+    expect(r.pinned_head_sha).toBe(SHA);
+  });
+
+  test("an open integration pair echoes the caller's expected_head_sha", async () => {
+    ghMergeStubs({ head: 'kahuna/56-w1', body: '' });
+    const r = parse(await prMerge.execute({ number: 42, expected_head_sha: SHA }));
+    expect(r.ok).toBe(true);
+    expect(call('gh pr merge 42')).toContain(`--match-head-commit '${SHA}'`);
+    expect(r.pinned_head_sha).toBe(SHA);
+  });
+
+  test('an integration pair without expected_head_sha echoes nothing', async () => {
+    ghMergeStubs({ head: 'kahuna/56-w1', body: '' });
+    const r = parse(await prMerge.execute({ number: 42 }));
+    expect(r.ok).toBe(true);
+    expect(r.pinned_head_sha).toBeUndefined();
+  });
+
+  test('an already-merged PR echoes nothing, though it reports merged', async () => {
+    // It comes back merged:true with its old merge commit; an echo would let a
+    // stale merge read as one pinned to the caller's head.
+    ghMergeStubs({ state: 'MERGED', body: '' });
+    const r = parse(await prMerge.execute({ number: 42, expected_head_sha: SHA }));
+    expect(r.ok).toBe(true);
+    expect(r.merged).toBe(true);
+    expect(r.pinned_head_sha).toBeUndefined();
+  });
+
+  test('a failed merge is an error envelope with no echo', async () => {
+    // Registered before ghMergeStubs: the first matching stub wins.
+    fail('gh pr merge 42', 'GraphQL: Pull request is not mergeable (mergePullRequest)');
+    onExec(
+      'gh pr view 42 --json state,url,mergeCommit',
+      JSON.stringify({ state: 'OPEN', url: 'https://github.com/org/repo/pull/42', mergeCommit: null }),
+    );
+    ghMergeStubs();
+    ghStatus('success');
+    const r = parse(await prMerge.execute({ number: 42 }));
+    expect(r.ok).toBe(false);
+    expect(r.pinned_head_sha).toBeUndefined();
+  });
+
+  test('gitlab: a gated merge echoes the checked head', async () => {
+    gitlab();
+    onExec('glab api projects/:id/merge_requests/5', glMr());
+    glStatus('success');
+    onExec('glab mr merge 5', '');
+    let reads = 0;
+    onExec('glab api projects/org%2Frepo/merge_requests/5', () => {
+      reads += 1;
+      return glMr({ state: reads >= 2 ? 'merged' : 'opened' });
+    });
+    const r = parse(await prMerge.execute({ number: 5 }));
+    expect(r.ok).toBe(true);
+    expect(r.pinned_head_sha).toBe(SHA);
+  });
+
+  test('pr_merge_wait: a gated merge echoes the checked head', async () => {
+    ghMergeStubs();
+    ghStatus('success');
+    const r = parse(await prMergeWait.execute({ number: 42 }));
+    expect(r.ok).toBe(true);
+    expect(r.pinned_head_sha).toBe(SHA);
+  });
+
+  test('pr_merge_wait: an already-merged PR echoes nothing', async () => {
+    ghMergeStubs({ state: 'MERGED', body: '' });
+    onExec('gh pr view 42', JSON.stringify({ state: 'MERGED', url: 'https://github.com/org/repo/pull/42', mergeCommit: { oid: 'abc123' } }));
+    const r = parse(await prMergeWait.execute({ number: 42 }));
+    expect(r.ok).toBe(true);
+    expect(r.pinned_head_sha).toBeUndefined();
+  });
+});
+
 // =============================================================================
 // pr_ready
 // =============================================================================

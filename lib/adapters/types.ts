@@ -174,6 +174,13 @@ export interface PrMergeResponse {
   pr_state: PrStateLabel;
   url: string;
   merge_commit_sha?: string;
+  /**
+   * #611: the head this call pinned a merge of an open PR/MR to. Set by the
+   * pr_merge / pr_merge_wait handlers from the gate (`pinnedHead`), never by an
+   * adapter. Absent when unpinned, when the PR/MR was already merged or closed,
+   * and on any error.
+   */
+  pinned_head_sha?: string;
   warnings: string[];
   /**
    * True when a direct-merge invocation failed with the GitHub queue-strategy

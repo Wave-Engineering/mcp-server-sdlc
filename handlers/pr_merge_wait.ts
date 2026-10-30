@@ -14,7 +14,7 @@ import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { getAdapter } from '../lib/adapters/index.js';
 import { repoOptionalSchema } from '../lib/schemas/repo.js';
-import { mergeGate } from '../lib/precheck-gate.js';
+import { mergeGate, pinnedHead } from '../lib/precheck-gate.js';
 
 const inputSchema = z.object({
   number: z.number().int().positive('number must be a positive integer'),
@@ -77,7 +77,10 @@ const prMergeWaitHandler: HandlerDef = {
       return envelope({ ok: true, platform_unsupported: true, hint: result.hint });
     }
     if (!result.ok) return envelope({ ok: false, code: result.code, error: result.error });
-    return envelope({ ok: true, ...result.data });
+    // #611: the same pin echo as pr_merge. pr_merge_wait takes no caller pin, so
+    // the only pin is the gate's head.
+    const pinned = pinnedHead(gate, gate.kind === 'gated' ? gate.head_sha : undefined);
+    return envelope({ ok: true, ...result.data, ...(pinned !== undefined ? { pinned_head_sha: pinned } : {}) });
   },
 };
 
