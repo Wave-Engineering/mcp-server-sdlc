@@ -174,6 +174,16 @@ export interface PrMergeResponse {
   pr_state: PrStateLabel;
   url: string;
   merge_commit_sha?: string;
+  /**
+   * #611: the head this call pinned the merge, or the queue enrollment, of an
+   * open PR/MR to, confirmed by a read of the head after the call. Set by the
+   * pr_merge / pr_merge_wait handlers (`confirmPin`), never by an adapter. It
+   * is not a merge signal: a queue enrollment carries it with `merged: false`.
+   * Absent when unpinned, when nothing was merged or enrolled, when the PR/MR
+   * was already merged or closed, when the head after the call differs, and on
+   * any error.
+   */
+  pinned_head_sha?: string;
   warnings: string[];
   /**
    * True when a direct-merge invocation failed with the GitHub queue-strategy
@@ -205,7 +215,7 @@ export interface PrMergeWaitArgs {
   merge_method?: MergeMethod;
   /** Internal (#592), set by the precheck gate. See `PrMergeArgs.squash_subject`. */
   squash_subject?: string;
-  /** Internal (#592), set by the precheck gate. See `PrMergeArgs.expected_head_sha`. */
+  /** The gate's head on a gated merge, the caller's on an integration pair (#611). See `PrMergeArgs.expected_head_sha`. */
   expected_head_sha?: string;
 }
 
@@ -225,6 +235,11 @@ export interface PrMergeWaitResponse {
   url: string;
   merge_commit_sha?: string;
   warnings: string[];
+  /**
+   * #611: true when the PR/MR was already merged and no merge ran. Internal:
+   * the handler reads it for the pin echo and drops it from the response.
+   */
+  merge_skipped?: boolean;
 }
 
 /**

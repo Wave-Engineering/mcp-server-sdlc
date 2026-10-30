@@ -453,6 +453,11 @@ Same fields as `pr_status`; this tool wraps `pr_status` logic in a poll loop.
     - **GitHub:** adds `--subject <s> --match-head-commit <sha>`. The GraphQL `enqueuePullRequest` fallback sends `expectedHeadOid`. On a merge-queue repo the queue's own method writes the commit, so the block is the squash commit only on the direct path (the fleet is queue-less).
     - **GitLab:** sends `--squash-message "<subject>\n\n<body>"` and uses `expected_head_sha` as the merge `--sha`, with no head lookup. GitLab's stale-head 409 on a pinned merge refuses `head_moved` and is never retried on the newer head (#609).
 - **Integration pairs (#609)** skip the gate. `expected_head_sha` is a public `pr_merge` input there: given, it pins the merge to the graded head (GitHub `--match-head-commit`, GitLab `--sha`); omitted, the merge is unpinned as before.
+- **`pinned_head_sha` (#611)** is in the response of `pr_merge` and `pr_merge_wait` when this call pinned the merge, or the queue enrollment, of a PR/MR that was open at the gate snapshot, and a read of the head after the call shows that head. Its value is the head it pinned to (the gate's head, or the caller's `expected_head_sha` on an integration pair; `pr_merge_wait` takes `expected_head_sha` with the same meaning).
+  - **It is not a merge signal.** A queue enrollment carries it with `merged: false`, because the queue drops the PR if its head moves. A caller must still require `merged: true`, or use `pr_merge_wait`.
+  - **Absent:** on an unpinned integration pair; on `enrolled: false` (GitLab's blocked shape, where nothing is in progress); on an already merged or closed PR/MR (which also reports `merged: true`, with its old merge commit), including one `pr_merge_wait` finds merged after the gate read it; on every error.
+  - **Absent, with a warning:** when the head after the call is not the pin, or can't be read. `gh pr merge` exits 0 on a PR that merged out of band, without checking `--match-head-commit`, so the adapter's success alone can't prove the pin held.
+  - A caller that relies on the pin should require it, because no older server echoes. A server older than v5.1.0 strips `expected_head_sha` without an error and merges unpinned. On v5.1.x, `pr_merge` pins but returns no echo, and `pr_merge_wait` still strips `expected_head_sha` and merges an integration pair unpinned.
 
 ### 3.5 `pr_diff`
 

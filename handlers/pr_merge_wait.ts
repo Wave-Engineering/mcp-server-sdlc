@@ -14,7 +14,7 @@ import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { getAdapter } from '../lib/adapters/index.js';
 import { repoOptionalSchema } from '../lib/schemas/repo.js';
-import { mergeGate } from '../lib/precheck-gate.js';
+import { confirmPin, mergeGate } from '../lib/precheck-gate.js';
 
 const inputSchema = z.object({
   number: z.number().int().positive('number must be a positive integer'),
@@ -25,6 +25,12 @@ const inputSchema = z.object({
   // pr_merge. Default `squash` preserves prior behavior. Same queue caveat as
   // pr_merge — see this tool's description.
   merge_method: z.enum(['squash', 'merge', 'rebase']).default('squash'),
+  // #611: the head the caller graded, with pr_merge's meaning (#609). Without it
+  // zod would strip a caller's pin here silently, the failure the echo exposes.
+  expected_head_sha: z
+    .string()
+    .regex(/^[0-9a-f]{40}$/, 'expected_head_sha must be a full 40-character lowercase hex SHA')
+    .optional(),
   // GitLab nested groups need arbitrary `/` depth — see lib/schemas/repo.ts (#290).
   repo: repoOptionalSchema,
   timeout_sec: z
@@ -50,7 +56,10 @@ const prMergeWaitHandler: HandlerDef = {
     'path; on a merge-queue-ENFORCED repo the queue\'s own configured method governs the merge. ' +
     'The same precheck gate as pr_merge applies (#592): outside integration pairs, squash only, a valid ' +
     '`## Squash commit` block in the body (which IS the squash commit), and `precheck` = success on the head, ' +
-    'with the merge pinned to that head. An already-merged PR/MR is not gated.',
+    'with the merge pinned to that head. An already-merged PR/MR is not gated. ' +
+    'expected_head_sha has pr_merge\'s meaning: it pins an integration pair\'s merge, and on a gated merge a ' +
+    'different one refuses with head_moved. pinned_head_sha (#611) follows pr_merge\'s rule, and is absent when ' +
+    'the PR/MR was already merged and no merge ran.',
   inputSchema,
   async execute(rawArgs: unknown) {
     let args;
@@ -77,7 +86,23 @@ const prMergeWaitHandler: HandlerDef = {
       return envelope({ ok: true, platform_unsupported: true, hint: result.hint });
     }
     if (!result.ok) return envelope({ ok: false, code: result.code, error: result.error });
-    return envelope({ ok: true, ...result.data });
+    // #611: the same pin echo as pr_merge. merge_skipped is internal: it says the
+    // executor found the PR/MR merged since the gate read it, and ran no merge.
+    const { merge_skipped, ...data } = result.data;
+    const pin = await confirmPin(
+      adapter,
+      gate,
+      waitArgs.expected_head_sha,
+      { enrolled: data.enrolled, merge_skipped },
+      args,
+      'pr_merge_wait',
+    );
+    return envelope({
+      ok: true,
+      ...data,
+      warnings: pin.warning !== undefined ? [...data.warnings, pin.warning] : data.warnings,
+      ...(pin.pinned !== undefined ? { pinned_head_sha: pin.pinned } : {}),
+    });
   },
 };
 
