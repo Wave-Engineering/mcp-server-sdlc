@@ -244,6 +244,8 @@ export interface MergeGateInput {
   repo?: string;
   merge_method?: 'squash' | 'merge' | 'rebase';
   squash_message?: string;
+  /** The head the caller graded (#609). The gate's own head read stays authoritative. */
+  expected_head_sha?: string;
 }
 
 /**
@@ -263,6 +265,20 @@ export async function mergeGate(adapter: PlatformAdapter, args: MergeGateInput, 
   // Already merged or closed: nothing to gate. pr_merge_wait short-circuits on it.
   if (info.state !== 'open') return { kind: 'pass' };
   if (isExemptPr(info)) return { kind: 'pass' };
+  // #609: the gate's head is the one the pass is checked on and the merge is
+  // pinned to. A caller that graded a different head must not have it swapped
+  // silently for this one, so a mismatch refuses before any merge is attempted.
+  if (args.expected_head_sha !== undefined && args.expected_head_sha !== info.head_sha) {
+    return {
+      kind: 'refused',
+      refusal: {
+        code: 'head_moved',
+        error:
+          `${what}: PR/MR #${args.number}'s head is ${info.head_sha.slice(0, 7)}, not the ` +
+          `expected_head_sha ${args.expected_head_sha.slice(0, 7)} the caller graded. Grade the current head, then merge again.`,
+      },
+    };
+  }
   if ((args.merge_method ?? 'squash') !== 'squash') {
     return { kind: 'refused', refusal: { code: 'merge_method_not_squash', error: `${what}: only squash merges are allowed into ${info.base_ref || 'this base'}; got merge_method=${args.merge_method}` } };
   }

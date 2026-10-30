@@ -94,10 +94,13 @@ export interface PrMergeArgs {
    */
   squash_subject?: string;
   /**
-   * Internal adapter arg (#592), NOT part of any MCP tool schema. The head SHA
-   * the precheck gate checked the pass on. The merge must land exactly that
-   * commit: GitHub passes `--match-head-commit`; GitLab refuses if the head it
-   * resolves (including on a stale-sha retry) is any other commit.
+   * The head SHA the merge must land exactly (#592). On a gated merge the
+   * precheck gate sets it to the head it checked the pass on. On an integration
+   * pair it is `pr_merge`'s own `expected_head_sha` input (#609), the head the
+   * caller graded. GitHub passes `--match-head-commit`; GitLab uses it as the
+   * merge `--sha` in place of resolving the head itself, and a stale-head
+   * rejection refuses with `head_moved` instead of retrying. Unset, both
+   * adapters behave exactly as before.
    */
   expected_head_sha?: string;
   use_merge_queue?: boolean;
@@ -396,7 +399,10 @@ export interface PrWaitCiPolledResponse {
  *   is coming. The repo genuinely runs no checks for this ref.
  * - `no_checks_yet` — the settle window elapsed but a CI run EXISTS for the head
  *   SHA that has not registered as a check. Checks are coming; we ran out of
- *   patience, not out of CI. **Never merge on this.**
+ *   patience, not out of CI. **Never merge on this.** On GitHub (#609) it is
+ *   also the answer for every hard blocker (draft, closed, conflicts, …) and a
+ *   persistent `UNKNOWN` mergeability: none of them says whether the repo runs
+ *   CI, so none of them may claim it doesn't.
  *
  * Replaces the single `no_checks_required` of #416, which meant both. That token
  * is deliberately gone rather than aliased: its plain-English name reads as
@@ -422,8 +428,14 @@ export interface PrWaitCiNoChecksResponse {
   status: PrWaitCiNoChecksStatus;
   elapsed_sec: number;
   mergeable: boolean;
-  /** Reason the PR is not mergeable today (e.g. `draft`, `conflicts`, `closed`). Omitted when mergeable. */
+  /** Reason the PR is not mergeable today (e.g. `draft`, `conflicts`, `closed`, `mergeability_unknown`). Omitted when mergeable. */
   blocker?: string;
+  /**
+   * GitHub only (#609): the latest probe's raw `mergeable/mergeStateStatus`
+   * pair as gh reports it, e.g. `"UNKNOWN/UNKNOWN"`, so a caller can say why
+   * no run exists for the head. Optional so the GitLab adapter need not set it.
+   */
+  mergeable_state?: string;
   url: string;
   /** Seconds spent waiting for checks to register before concluding. 0 only when a hard blocker made waiting pointless. */
   settled_sec: number;

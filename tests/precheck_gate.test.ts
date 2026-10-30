@@ -502,14 +502,25 @@ describe('pr_merge — the precheck gate', () => {
   });
 
   test('gitlab: a head that moved after the check refuses with head_moved, and nothing merges', async () => {
+    // #609: the checked head is the merge --sha itself (no second head read), so
+    // GitLab's stale-head guard is what catches the move: one attempt, pinned
+    // to the checked head, refused, and never retried on the newer head.
     gitlab();
     onExec('glab api projects/:id/merge_requests/5', glMr({ sha: SHA }));
     glStatus('success');
-    onExec('glab mr merge 5', '');
+    let attempts = 0;
+    onExec('glab mr merge 5', () => {
+      attempts += 1;
+      const err = new Error('merge failed') as ThrowableError;
+      err.stderr = '409 SHA does not match HEAD of source branch\n';
+      throw err;
+    });
     onExec('glab api projects/org%2Frepo/merge_requests/5', glMr({ sha: OTHER_SHA }));
     const r = parse(await prMerge.execute({ number: 5 }));
     expect(r.code).toBe('head_moved');
-    expect(call('glab mr merge 5')).toBe('');
+    expect(attempts).toBe(1);
+    expect(call('glab mr merge 5')).toContain(`--sha '${SHA}'`);
+    expect(call(`--sha '${OTHER_SHA}'`)).toBe('');
   });
 
   test('gitlab: a failed status refuses', async () => {

@@ -643,7 +643,7 @@ describe('pr_wait_ci handler', () => {
     expect(data.final_state).toBeUndefined();
   });
 
-  test('test_pr_wait_ci_empty_rollup_with_conflict — empty rollup + conflict returns no_checks_configured + blocker', async () => {
+  test('test_pr_wait_ci_empty_rollup_with_conflict — empty rollup + conflict returns no_checks_yet + blocker (#609)', async () => {
     setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote'))
         return 'https://github.com/org/repo.git\n';
@@ -666,13 +666,15 @@ describe('pr_wait_ci handler', () => {
     });
     const data = parseResult(result);
     expect(data.ok).toBe(true);
-    expect(data.status).toBe('no_checks_configured');
+    // #609: a conflicting PR says nothing about whether the repo runs CI.
+    expect(data.status).toBe('no_checks_yet');
     expect(data.mergeable).toBe(false);
     expect(data.blocker).toBe('conflicts');
+    expect(data.mergeable_state).toBe('CONFLICTING/DIRTY');
     expect(data.elapsed_sec).toBeLessThan(5);
   });
 
-  test('test_pr_wait_ci_empty_rollup_draft — empty rollup + draft PR returns no_checks_configured + draft blocker', async () => {
+  test('test_pr_wait_ci_empty_rollup_draft — empty rollup + draft PR returns no_checks_yet + draft blocker (#609)', async () => {
     setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote'))
         return 'https://github.com/org/repo.git\n';
@@ -691,7 +693,7 @@ describe('pr_wait_ci handler', () => {
     const result = await handler.execute({ number: 44, poll_interval_sec: 5, timeout_sec: 60 });
     const data = parseResult(result);
     expect(data.ok).toBe(true);
-    expect(data.status).toBe('no_checks_configured');
+    expect(data.status).toBe('no_checks_yet');
     expect(data.mergeable).toBe(false);
     expect(data.blocker).toBe('draft');
   });

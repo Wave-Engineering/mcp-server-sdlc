@@ -357,6 +357,7 @@ interface NoChecksData {
   status?: string;
   mergeable?: boolean;
   blocker?: string;
+  mergeable_state?: string;
   elapsed_sec?: number;
   settled_sec?: number;
   url?: string;
@@ -483,7 +484,9 @@ describe('prWaitCiGithub — settle window (#508)', () => {
       );
       if (!('ok' in result) || !result.ok) throw new Error('expected ok');
       const data = result.data as NoChecksData;
-      expect(data.status).toBe('no_checks_configured');
+      // #609: a blocked PR says nothing about whether the repo runs CI, so it
+      // is `no_checks_yet`, never `no_checks_configured`.
+      expect(data.status).toBe('no_checks_yet');
       expect(data.blocker).toBe(expected);
       expect(data.mergeable).toBe(false);
       expect(data.settled_sec).toBe(0);
@@ -586,6 +589,124 @@ describe('prWaitCiGithub — settle window (#508)', () => {
   });
 });
 
+// --- #609: only a certified-empty run query may say "no CI here" -----------
+//
+// mattermost-crew#78 had a criss-cross merge base: no test-merge commit, so no
+// `pull_request` run for ~80 minutes, and an `UNKNOWN` mergeability that the
+// old code read as a hard blocker and reported as `no_checks_configured` at
+// t=0. The caller was told the repo had no CI, which was false.
+describe('prWaitCiGithub — honest no-run verdicts (#609)', () => {
+  function settleDeps(probe: () => ReturnType<typeof openMergeable>, clock = fakeClock()) {
+    return {
+      probe,
+      pendingRuns: async () => ({ ok: true as const, runs: [] }),
+      now: clock.now,
+      sleep: clock.sleep,
+      settleWindowSec: 45,
+      settlePollSec: 5,
+    };
+  }
+
+  test('a draft PR → no_checks_yet, blocker draft, settled_sec 0', async () => {
+    const clock = fakeClock();
+    const result = await prWaitCiGithub(
+      { number: 42, poll_interval_sec: 5, timeout_sec: 1800 },
+      settleDeps(() => openMergeable({ isDraft: true }), clock),
+    );
+    if (!('ok' in result) || !result.ok) throw new Error('expected ok');
+    const data = result.data as NoChecksData;
+    expect(data.status).toBe('no_checks_yet');
+    expect(data.blocker).toBe('draft');
+    expect(data.mergeable).toBe(false);
+    expect(data.settled_sec).toBe(0);
+    expect(data.mergeable_state).toBe('MERGEABLE/CLEAN');
+    expect(clock.sleeps()).toBe(0);
+  });
+
+  test('CONFLICTING → no_checks_yet, blocker conflicts', async () => {
+    const clock = fakeClock();
+    const result = await prWaitCiGithub(
+      { number: 42, poll_interval_sec: 5, timeout_sec: 1800 },
+      settleDeps(() => openMergeable({ mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY' }), clock),
+    );
+    if (!('ok' in result) || !result.ok) throw new Error('expected ok');
+    const data = result.data as NoChecksData;
+    expect(data.status).toBe('no_checks_yet');
+    expect(data.blocker).toBe('conflicts');
+    expect(data.mergeable).toBe(false);
+    expect(data.settled_sec).toBe(0);
+    expect(data.mergeable_state).toBe('CONFLICTING/DIRTY');
+    expect(clock.sleeps()).toBe(0);
+  });
+
+  test('UNKNOWN at t=0, then MERGEABLE with a check inside the window → falls through to polling', async () => {
+    onExec(
+      'gh pr view',
+      JSON.stringify({
+        url: 'https://github.com/org/repo/pull/42',
+        statusCheckRollup: [
+          { __typename: 'CheckRun', name: 'validate', status: 'COMPLETED', conclusion: 'SUCCESS' },
+        ],
+      }),
+    );
+    const clock = fakeClock();
+    let probes = 0;
+    const result = await prWaitCiGithub(
+      { number: 42, poll_interval_sec: 5, timeout_sec: 60 },
+      {
+        ...settleDeps(() => {
+          probes += 1;
+          return probes >= 3
+            ? openMergeable({
+                statusCheckRollup: [{ __typename: 'CheckRun', name: 'validate', status: 'QUEUED' }],
+              })
+            : openMergeable({ mergeable: 'UNKNOWN', mergeStateStatus: 'UNKNOWN' });
+        }, clock),
+        pendingRuns: async () => {
+          throw new Error('must not cross-check the ref once a check has registered');
+        },
+      },
+    );
+    if (!('ok' in result) || !result.ok) throw new Error('expected ok');
+    const data = result.data as NoChecksData;
+    // UNKNOWN at t=0 waited instead of returning at once.
+    expect(clock.sleeps()).toBeGreaterThan(0);
+    expect(data.final_state).toBe('passed');
+    expect(data.status).toBeUndefined();
+  });
+
+  test('UNKNOWN throughout, run query certifies no runs → no_checks_yet, mergeability_unknown', async () => {
+    const clock = fakeClock();
+    const result = await prWaitCiGithub(
+      { number: 42, poll_interval_sec: 5, timeout_sec: 1800 },
+      settleDeps(() => openMergeable({ mergeable: 'UNKNOWN', mergeStateStatus: 'UNKNOWN' }), clock),
+    );
+    if (!('ok' in result) || !result.ok) throw new Error('expected ok');
+    const data = result.data as NoChecksData;
+    expect(data.status).toBe('no_checks_yet');
+    expect(data.blocker).toBe('mergeability_unknown');
+    expect(data.mergeable).toBe(false);
+    expect(data.mergeable_state).toBe('UNKNOWN/UNKNOWN');
+    // It waited out the window rather than concluding at t=0.
+    expect(clock.sleeps()).toBeGreaterThan(0);
+    expect(data.settled_sec).toBeGreaterThanOrEqual(45);
+  });
+
+  test('MERGEABLE throughout with no runs → no_checks_configured, as before', async () => {
+    const clock = fakeClock();
+    const result = await prWaitCiGithub(
+      { number: 42, poll_interval_sec: 5, timeout_sec: 1800 },
+      settleDeps(() => openMergeable(), clock),
+    );
+    if (!('ok' in result) || !result.ok) throw new Error('expected ok');
+    const data = result.data as NoChecksData;
+    expect(data.status).toBe('no_checks_configured');
+    expect(data.mergeable).toBe(true);
+    expect(data.blocker).toBeUndefined();
+    expect(data.mergeable_state).toBe('MERGEABLE/CLEAN');
+  });
+});
+
 // --- evidence classifier: what counts as "CI is coming" (#508) --------------
 describe('isUnfinished — only unfinished runs are evidence', () => {
   test('queued / in_progress / requested / waiting → evidence', () => {
@@ -632,10 +753,16 @@ describe('emptyRollupBlocker — pure mapping table', () => {
     expect(emptyRollupBlocker({ state: 'OPEN', isDraft: false, mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY' })).toBe('conflicts');
   });
 
-  test('mergeable=UNKNOWN → not_mergeable (defensive)', () => {
-    // GitHub returns UNKNOWN while it's still computing mergeability. We don't
-    // promise the caller "yes mergeable" until GitHub has actually decided.
-    expect(emptyRollupBlocker({ state: 'OPEN', isDraft: false, mergeable: 'UNKNOWN' })).toBe('not_mergeable');
+  test('mergeable=UNKNOWN → null: not a hard blocker, the settle window decides (#609)', () => {
+    // GitHub returns UNKNOWN while it's still computing mergeability, usually
+    // only briefly. A null here enters the settle window; it does NOT promise
+    // "mergeable" — a persistent UNKNOWN reports `mergeability_unknown` after it.
+    expect(emptyRollupBlocker({ state: 'OPEN', isDraft: false, mergeable: 'UNKNOWN' })).toBeNull();
+    expect(emptyRollupBlocker({ state: 'OPEN', isDraft: false, mergeable: 'UNKNOWN', mergeStateStatus: 'UNKNOWN' })).toBeNull();
+  });
+
+  test('mergeable=UNKNOWN with mergeStateStatus=DIRTY → still conflicts (#609)', () => {
+    expect(emptyRollupBlocker({ state: 'OPEN', isDraft: false, mergeable: 'UNKNOWN', mergeStateStatus: 'DIRTY' })).toBe('conflicts');
   });
 
   test('mergeable=false (boolean) → not_mergeable', () => {

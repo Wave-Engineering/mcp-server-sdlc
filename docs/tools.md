@@ -69,20 +69,30 @@ never return the answer a caller might merge on.
 
 When there are no checks AND the PR/MR is obstructed (draft, closed, conflicts, …),
 the settle window is skipped entirely — a closed PR is not going to start CI — and
-`settled_sec` is `0`:
+`settled_sec` is `0`. On GitHub (#609) the status is `no_checks_yet`: an obstructed
+PR says nothing about whether the repo runs CI (a conflicting PR gets no test-merge
+commit, so no `pull_request` run). GitLab still reports `no_checks_configured` here.
 
 ```json
 {
   "ok": true,
   "number": 42,
-  "status": "no_checks_configured",
+  "status": "no_checks_yet",
   "elapsed_sec": 0,
   "settled_sec": 0,
   "mergeable": false,
   "blocker": "draft" | "closed" | "merged" | "conflicts" | "not_mergeable" | "locked",
+  "mergeable_state": "CONFLICTING/DIRTY",
   "url": "https://github.com/org/repo/pull/42"
 }
 ```
+
+GitHub's `UNKNOWN` mergeability (computed lazily, usually transient) is not an
+obstruction: it waits out the settle window. If the PR is still `UNKNOWN` with an
+empty rollup after it, the answer is `no_checks_yet` with
+`blocker: "mergeability_unknown"`, even when the run query found no runs.
+Every GitHub no-checks response carries `mergeable_state`, the latest probe's raw
+`mergeable/mergeStateStatus` pair (for example `"UNKNOWN/UNKNOWN"`).
 
 > **`no_checks_required` is gone.** It meant both facts above, and its
 > plain-English name reads as "nothing is wrong". It is removed rather than

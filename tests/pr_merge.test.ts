@@ -5,7 +5,7 @@ import {
   resetExecMock,
   execCalls,
 } from '../lib/test-support/mock-child-process.ts';
-import { stubPrecheckPassThrough } from '../lib/test-support/precheck-stubs.ts';
+import { STUB_SHA, stubPrecheckPassThrough } from '../lib/test-support/precheck-stubs.ts';
 
 // Intercept execSync via the shared child_process mock helper, keyed by command
 // substring. Each registered value may be a plain string (returned as stdout)
@@ -100,6 +100,32 @@ describe('pr_merge handler — aggregate response (#225)', () => {
     const data = parseResult(result);
     expect(data.ok).toBe(false);
     expect((data.error as string).length).toBeGreaterThan(0);
+  });
+
+  // #609: expected_head_sha is a full 40-character lowercase hex SHA.
+  test('expected_head_sha — the schema accepts a 40-hex SHA', async () => {
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git\n');
+    stubNoQueue();
+    onExec('gh pr merge 609 --squash --delete-branch', '');
+    onExec(
+      'gh pr view 609 --json state,url,mergeCommit',
+      JSON.stringify({ state: 'MERGED', url: 'https://github.com/org/repo/pull/609', mergeCommit: { oid: 'm609' } }),
+    );
+
+    const result = await prMergeHandler.execute({ number: 609, expected_head_sha: STUB_SHA });
+    const data = parseResult(result);
+    expect(data.ok).toBe(true);
+    expect(execCalls().find((c) => c.includes('gh pr merge 609'))).toContain('--match-head-commit');
+  });
+
+  test('expected_head_sha — the schema rejects a short SHA, before any merge', async () => {
+    for (const expected_head_sha of ['abc1234', 'A'.repeat(40), `${'a'.repeat(39)}g`]) {
+      const result = await prMergeHandler.execute({ number: 609, expected_head_sha });
+      const data = parseResult(result);
+      expect(data.ok).toBe(false);
+      expect(data.error as string).toContain('expected_head_sha');
+    }
+    expect(execCalls().find((c) => c.includes('gh pr merge'))).toBeUndefined();
   });
 
   // #474: merge_method='merge' produces a merge-commit call end-to-end through
