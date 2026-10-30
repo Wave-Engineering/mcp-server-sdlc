@@ -716,6 +716,27 @@ describe('prWaitCiGithub — honest no-run verdicts (#609)', () => {
     expect(clock.sleeps()).toBeGreaterThan(0);
   });
 
+  test('UNKNOWN at t=0, closed (still UNKNOWN) by the end of the window → blocker closed, not mergeability_unknown', async () => {
+    // GitHub reports a closed PR's mergeability as UNKNOWN; "closed" is the
+    // blocker that tells the caller to stop waiting.
+    const clock = fakeClock();
+    let probes = 0;
+    const result = await prWaitCiGithub(
+      { number: 42, poll_interval_sec: 5, timeout_sec: 1800 },
+      settleDeps(() => {
+        probes += 1;
+        return probes === 1
+          ? openMergeable({ mergeable: 'UNKNOWN', mergeStateStatus: 'UNKNOWN' })
+          : openMergeable({ state: 'CLOSED', mergeable: 'UNKNOWN', mergeStateStatus: 'UNKNOWN' });
+      }, clock),
+    );
+    if (!('ok' in result) || !result.ok) throw new Error('expected ok');
+    const data = result.data as NoChecksData;
+    expect(data.status).toBe('no_checks_yet');
+    expect(data.blocker).toBe('closed');
+    expect(data.mergeable).toBe(false);
+  });
+
   test('MERGEABLE at t=0, draft by the end of the window → no_checks_yet, draft', async () => {
     const clock = fakeClock();
     let probes = 0;

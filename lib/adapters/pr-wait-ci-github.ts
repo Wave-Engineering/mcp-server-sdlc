@@ -378,10 +378,12 @@ export async function prWaitCiGithub(
         const lateBlocker = emptyRollupBlocker(probe);
         const certified = evidence.ok && evidence.runs.length === 0 && !unknown && lateBlocker === null;
         const runs = evidence.ok ? evidence.runs : [];
-        const blocker = unknown
-          ? 'mergeability_unknown'
-          : lateBlocker !== null
-            ? lateBlocker
+        // The obstruction comes first: GitHub reports a closed or merged PR as
+        // UNKNOWN, and "closed" tells the caller to stop waiting.
+        const blocker = lateBlocker !== null
+          ? lateBlocker
+          : unknown
+            ? 'mergeability_unknown'
             : certified
               ? undefined
               : runs.length > 0

@@ -448,9 +448,11 @@ Same fields as `pr_status`; this tool wraps `pr_status` logic in a poll loop.
   - Squash only: `merge_method_not_squash` otherwise.
   - The body's `## Squash commit` block is required (`squash_block_missing`), and a differing `squash_message` is refused (`squash_message_mismatch`).
   - `precheck` = success on the head (`precheck_missing` / `precheck_unreadable`).
-  - The adapter then gets the internal args `squash_subject` + `squash_message` (the block's subject and body) and `expected_head_sha`.
+  - A caller-supplied `expected_head_sha` that differs from the gate's head refuses `head_moved` before any merge (#609).
+  - The adapter then gets the internal args `squash_subject` + `squash_message` (the block's subject and body) and `expected_head_sha`, set to the gate's head.
     - **GitHub:** adds `--subject <s> --match-head-commit <sha>`. The GraphQL `enqueuePullRequest` fallback sends `expectedHeadOid`. On a merge-queue repo the queue's own method writes the commit, so the block is the squash commit only on the direct path (the fleet is queue-less).
-    - **GitLab:** sends `--squash-message "<subject>\n\n<body>"`, and refuses with `head_moved` if the head it resolves (including on the 409 retry) is not `expected_head_sha`.
+    - **GitLab:** sends `--squash-message "<subject>\n\n<body>"` and uses `expected_head_sha` as the merge `--sha`, with no head lookup. GitLab's stale-head 409 on a pinned merge refuses `head_moved` and is never retried on the newer head (#609).
+- **Integration pairs (#609)** skip the gate. `expected_head_sha` is a public `pr_merge` input there: given, it pins the merge to the graded head (GitHub `--match-head-commit`, GitLab `--sha`); omitted, the merge is unpinned as before.
 
 ### 3.5 `pr_diff`
 
