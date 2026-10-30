@@ -24,9 +24,11 @@
  * the global registry becomes a no-op instead of a leak. Bun runs files
  * sequentially; each file resets state on entry (`resetFsMock()` in
  * `beforeEach`) and, where needed, swaps individual behaviors via
- * {@link setFsMock}. The exported surface is the UNION of what every converted
- * file needs (`writeFileSync` + the `logger.ts` trio), so a file that only
- * mocked `writeFileSync` gains harmless extra exports rather than losing any.
+ * {@link setFsMock}. The exported surface is the REAL fs with four functions
+ * stubbed (`writeFileSync` + the `logger.ts` trio). A file that only mocked
+ * `writeFileSync` gains harmless extra exports rather than losing any. A source
+ * that imports any other fs name (`readFileSync`, `statSync`, …) still links,
+ * which a stub-only surface did not (#609).
  *
  * USAGE
  * -----
@@ -45,6 +47,14 @@
  * `.mock.calls` array), exactly as a local `mock(...)` would have been used.
  */
 import { mock } from 'bun:test';
+import * as realFsNamespace from 'node:fs';
+
+// A copy of the real fs surface, taken before any mock is installed: mock.module
+// rewrites an already-imported namespace in place. The mock starts from it, so a
+// module first linked under the mock that imports any other fs name (e.g.
+// flightdeck_emit.ts → readFileSync) links against the real function instead of
+// failing "Export named … not found" and poisoning every later importer (#609).
+const realFs: Record<string, unknown> = { ...realFsNamespace };
 
 /** Per-test overrides — swap an individual fs function's behavior. */
 export interface FsOverrides {
@@ -89,12 +99,14 @@ export const mockExistsSync = mock((path: unknown): boolean => {
  * to `'node:fs'`, so both import specifiers resolve to this surface.
  */
 export function installFsMock(): void {
-  mock.module('fs', () => ({
+  const surface = {
+    ...realFs,
     writeFileSync: mockWriteFileSync,
     appendFileSync: mockAppendFileSync,
     mkdirSync: mockMkdirSync,
     existsSync: mockExistsSync,
-  }));
+  };
+  mock.module('fs', () => ({ ...surface, default: surface }));
 }
 
 /** Swap one or more fs behaviors for the current test (merges over existing). */
