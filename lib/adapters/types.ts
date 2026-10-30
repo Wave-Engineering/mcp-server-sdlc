@@ -215,7 +215,7 @@ export interface PrMergeWaitArgs {
   merge_method?: MergeMethod;
   /** Internal (#592), set by the precheck gate. See `PrMergeArgs.squash_subject`. */
   squash_subject?: string;
-  /** Internal (#592), set by the precheck gate. See `PrMergeArgs.expected_head_sha`. */
+  /** The gate's head on a gated merge, the caller's on an integration pair (#611). See `PrMergeArgs.expected_head_sha`. */
   expected_head_sha?: string;
 }
 

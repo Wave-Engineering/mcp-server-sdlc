@@ -72,9 +72,9 @@ const prMergeHandler: HandlerDef = {
     'OPEN PR/MR to, confirmed by reading the head again after the call: the gate\'s head on a gated merge, the ' +
     'caller\'s expected_head_sha on an integration pair. It is NOT a merge signal: a queue enrollment carries it ' +
     'with merged=false, so require merged=true as well (or use pr_merge_wait). It is absent on an unpinned ' +
-    'merge, on enrolled=false, on an already-merged/closed PR/MR, and when the head after the call differs ' +
-    '(a warning names it). Callers that need the pin should require it: a server older than v5.1.0 drops ' +
-    'expected_head_sha silently and merges unpinned, and v5.1.x pins but returns no pinned_head_sha.',
+    'merge, on enrolled=false, on an already-merged/closed PR/MR, and when the head after the call differs or ' +
+    'cannot be read (a warning names it). Callers that need the pin should require it: a server older than ' +
+    'v5.1.0 drops expected_head_sha silently and merges unpinned, and v5.1.x pins but returns no pinned_head_sha.',
   inputSchema,
   async execute(rawArgs: unknown) {
     let args;

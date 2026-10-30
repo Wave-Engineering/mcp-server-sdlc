@@ -457,7 +457,7 @@ Same fields as `pr_status`; this tool wraps `pr_status` logic in a poll loop.
   - **It is not a merge signal.** A queue enrollment carries it with `merged: false`, because the queue drops the PR if its head moves. A caller must still require `merged: true`, or use `pr_merge_wait`.
   - **Absent:** on an unpinned integration pair; on `enrolled: false` (GitLab's blocked shape, where nothing is in progress); on an already merged or closed PR/MR (which also reports `merged: true`, with its old merge commit), including one `pr_merge_wait` finds merged after the gate read it; on every error.
   - **Absent, with a warning:** when the head after the call is not the pin, or can't be read. `gh pr merge` exits 0 on a PR that merged out of band, without checking `--match-head-commit`, so the adapter's success alone can't prove the pin held.
-  - A caller that relies on the pin should require it: a server older than v5.1.0 strips `expected_head_sha` without an error and merges unpinned, and v5.1.x pins but returns no echo.
+  - A caller that relies on the pin should require it, because no older server echoes. A server older than v5.1.0 strips `expected_head_sha` without an error and merges unpinned. On v5.1.x, `pr_merge` pins but returns no echo, and `pr_merge_wait` still strips `expected_head_sha` and merges an integration pair unpinned.
 
 ### 3.5 `pr_diff`
 
