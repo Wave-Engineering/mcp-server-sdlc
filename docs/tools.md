@@ -90,8 +90,10 @@ commit, so no `pull_request` run). GitLab still reports `no_checks_configured` h
 GitHub's `UNKNOWN` mergeability (computed lazily, usually transient) is not an
 obstruction: it waits out the settle window. If the PR is still `UNKNOWN` with an
 empty rollup after it, the answer is `no_checks_yet` with
-`blocker: "mergeability_unknown"`, even when the run query found no runs.
-Every GitHub no-checks response carries `mergeable_state`, the latest probe's raw
+`blocker: "mergeability_unknown"`, even when the run query found no runs. The
+obstruction check runs again on the latest probe after the window, so a PR that
+turned draft, closed or conflicting while it waited is `no_checks_yet` with that
+`blocker`, never `no_checks_configured`. Every GitHub no-checks response carries `mergeable_state`, the latest probe's raw
 `mergeable/mergeStateStatus` pair (for example `"UNKNOWN/UNKNOWN"`).
 
 > **`no_checks_required` is gone.** It meant both facts above, and its

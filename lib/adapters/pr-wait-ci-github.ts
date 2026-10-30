@@ -368,21 +368,25 @@ export async function prWaitCiGithub(
         const settledSec = Math.max(0, Math.floor((deps.now() - probeStart) / 1000));
 
         // Only ONE branch may claim "this repo runs no checks": a query that
-        // SUCCEEDED and found nothing, on a PR whose mergeability is known.
-        // Everything else — the query failed, no SHA to anchor it, runs found,
-        // or GitHub still can't say whether the PR merges (#609: no test-merge
+        // SUCCEEDED and found nothing, on a PR that is mergeable on the LATEST
+        // probe. Everything else — the query failed, no SHA to anchor it, runs
+        // found, GitHub still can't say whether the PR merges, or it turned
+        // draft/closed/conflicting during the window (#609: no test-merge
         // commit, so possibly no `pull_request` run at all) — is
         // `no_checks_yet` and not mergeable.
         const unknown = isMergeabilityUnknown(probe);
-        const certified = evidence.ok && evidence.runs.length === 0 && !unknown;
+        const lateBlocker = emptyRollupBlocker(probe);
+        const certified = evidence.ok && evidence.runs.length === 0 && !unknown && lateBlocker === null;
         const runs = evidence.ok ? evidence.runs : [];
         const blocker = unknown
           ? 'mergeability_unknown'
-          : certified
-            ? undefined
-            : runs.length > 0
-              ? 'checks_not_registered'
-              : 'evidence_unavailable';
+          : lateBlocker !== null
+            ? lateBlocker
+            : certified
+              ? undefined
+              : runs.length > 0
+                ? 'checks_not_registered'
+                : 'evidence_unavailable';
 
         const data: PrWaitCiNoChecksResponse = {
           number: args.number,

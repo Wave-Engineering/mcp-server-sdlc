@@ -692,6 +692,47 @@ describe('prWaitCiGithub — honest no-run verdicts (#609)', () => {
     expect(data.settled_sec).toBeGreaterThanOrEqual(45);
   });
 
+  test('UNKNOWN at t=0, CONFLICTING by the end of the window → no_checks_yet, conflicts, never certified', async () => {
+    // The triage #42 shape: a conflicting PR gets no test-merge commit, so no
+    // `pull_request` run ever registers, and the empty run query must not be
+    // read as "this repo runs no CI".
+    const clock = fakeClock();
+    let probes = 0;
+    const result = await prWaitCiGithub(
+      { number: 42, poll_interval_sec: 5, timeout_sec: 1800 },
+      settleDeps(() => {
+        probes += 1;
+        return probes === 1
+          ? openMergeable({ mergeable: 'UNKNOWN', mergeStateStatus: 'UNKNOWN' })
+          : openMergeable({ mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY' });
+      }, clock),
+    );
+    if (!('ok' in result) || !result.ok) throw new Error('expected ok');
+    const data = result.data as NoChecksData;
+    expect(data.status).toBe('no_checks_yet');
+    expect(data.blocker).toBe('conflicts');
+    expect(data.mergeable).toBe(false);
+    expect(data.mergeable_state).toBe('CONFLICTING/DIRTY');
+    expect(clock.sleeps()).toBeGreaterThan(0);
+  });
+
+  test('MERGEABLE at t=0, draft by the end of the window → no_checks_yet, draft', async () => {
+    const clock = fakeClock();
+    let probes = 0;
+    const result = await prWaitCiGithub(
+      { number: 42, poll_interval_sec: 5, timeout_sec: 1800 },
+      settleDeps(() => {
+        probes += 1;
+        return probes === 1 ? openMergeable() : openMergeable({ isDraft: true });
+      }, clock),
+    );
+    if (!('ok' in result) || !result.ok) throw new Error('expected ok');
+    const data = result.data as NoChecksData;
+    expect(data.status).toBe('no_checks_yet');
+    expect(data.blocker).toBe('draft');
+    expect(data.mergeable).toBe(false);
+  });
+
   test('MERGEABLE throughout with no runs → no_checks_configured, as before', async () => {
     const clock = fakeClock();
     const result = await prWaitCiGithub(
