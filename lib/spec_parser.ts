@@ -93,6 +93,38 @@ export function parseIssueRef(ref: string): IssueRef | null {
   return null;
 }
 
+export type IssueTarget =
+  | { ok: true; number: number; repo?: string }
+  | { ok: false; code: 'invalid_issue_ref' | 'ambiguous_issue_ref'; error: string };
+
+/**
+ * The issue a write should land on: its number and, when known, its project.
+ *
+ * A qualified ref names its own project, and that project is the target. An
+ * explicit `repo` that names a different one is refused, never silently
+ * preferred and never dropped: a write that falls back to the cwd repo
+ * overwrites an unrelated issue with the same number (#615). A bare `#N`
+ * keeps the old rule — `repo` if given, else the caller's cwd.
+ */
+export function resolveIssueTarget(ref: string, repo: string | undefined): IssueTarget {
+  const parsed = parseIssueRef(ref);
+  if (!parsed) {
+    return { ok: false, code: 'invalid_issue_ref', error: `cannot parse issue_ref: ${ref}` };
+  }
+  if (parsed.owner === null || parsed.repo === null) {
+    return { ok: true, number: parsed.number, ...(repo !== undefined ? { repo } : {}) };
+  }
+  const refRepo = `${parsed.owner}/${parsed.repo}`;
+  if (repo !== undefined && repo !== refRepo) {
+    return {
+      ok: false,
+      code: 'ambiguous_issue_ref',
+      error: `issue_ref ${ref} names ${refRepo}, but repo is ${repo}; drop repo or make them agree`,
+    };
+  }
+  return { ok: true, number: parsed.number, repo: refRepo };
+}
+
 /**
  * Canonical list of normalized H2 heading keys an Epic body can use to
  * declare its sub-issues. Both `epic_sub_issues` and `wave_compute` consume

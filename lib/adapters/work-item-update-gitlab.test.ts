@@ -218,6 +218,53 @@ describe('workItemUpdateGitlab — subprocess boundary', () => {
     expect(call).toContain('--description');
   });
 
+  test('qualified_ref_targets_its_project — a nested-group ref reads and writes that project (#615)', async () => {
+    onExec(
+      'glab api projects/',
+      JSON.stringify({ iid: 6, web_url: 'https://gitlab.com/g/sub/other/-/issues/6', description: '## Acceptance Criteria\n- [ ] old\n' }),
+    );
+    onExec('glab issue update', 'https://gitlab.com/g/sub/other/-/issues/6\n');
+
+    const result = await workItemUpdateGitlab({
+      issue_ref: 'g/sub/other#6',
+      patch: { body_section: { heading: 'Acceptance Criteria', content: '- [x] new' } },
+    });
+    expectOk(result);
+    // The exact shape of the reported bug: before #615 the read went to
+    // `projects/:id` (cwd) and the update carried no -R.
+    expect(unquote(findCall('glab api projects/'))).toBe('glab api projects/g%2Fsub%2Fother/issues/6');
+    expect(unquote(findCall('glab issue update'))).toContain('-R g/sub/other');
+  });
+
+  test('qualified_ref_conflicting_repo_refuses — no subprocess runs', async () => {
+    const result = await workItemUpdateGitlab({
+      issue_ref: 'g/sub/other#6',
+      repo: 'g/sub/proj',
+      patch: { title: 'x' },
+    });
+    expectErr(result);
+    expect(result.code).toBe('ambiguous_issue_ref');
+    expect(execCalls()).toEqual([]);
+  });
+
+  test('positive control — a repo equal to the ref\'s path writes there', async () => {
+    onExec('glab issue update', 'https://gitlab.com/g/sub/other/-/issues/6\n');
+    const result = await workItemUpdateGitlab({
+      issue_ref: 'g/sub/other#6',
+      repo: 'g/sub/other',
+      patch: { title: 'x' },
+    });
+    expectOk(result);
+    expect(unquote(findCall('glab issue update'))).toContain('-R g/sub/other');
+  });
+
+  test('positive control — a bare ref with no repo keeps cwd (no -R)', async () => {
+    onExec('glab issue update', 'https://gitlab.com/org/repo/-/issues/6\n');
+    const result = await workItemUpdateGitlab({ issue_ref: '#6', patch: { title: 'x' } });
+    expectOk(result);
+    expect(findCall('glab issue update')).not.toContain('-R');
+  });
+
   test('body_section missing returns typed error', async () => {
     onExec(
       'glab api projects/',

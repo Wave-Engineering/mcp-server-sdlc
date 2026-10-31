@@ -170,6 +170,37 @@ describe('work_item_update handler', () => {
     expect(call).toContain(`'-R' '${nestedRepo}'`);
   });
 
+  test('a nested-group qualified ref with no repo routes to glab and targets that project (#615)', async () => {
+    // cwd is a GitHub repo: routing by `repo` alone (absent) would pick gh and
+    // write to cwd's issue #6. The ref's own path must decide both.
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
+    onExec('glab issue update', 'https://gitlab.com/g/sub/other/-/issues/6\n');
+
+    const data = parseResult((await handler.execute({ issue_ref: 'g/sub/other#6', patch: { title: 'x' } })).content);
+    expect(data.ok).toBe(true);
+    const call = unquote(execCalls().find((c) => unquote(c).includes('glab issue update')) ?? '');
+    expect(call).toContain('-R g/sub/other');
+    expect(execCalls().some((c) => c.includes('gh issue edit'))).toBe(false);
+  });
+
+  test('a qualified ref that conflicts with repo refuses before any write (#615)', async () => {
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
+    const data = parseResult(
+      (await handler.execute({ issue_ref: 'org/other#6', repo: 'org/repo', patch: { title: 'x' } })).content,
+    );
+    expect(data).toMatchObject({ ok: false, code: 'ambiguous_issue_ref' });
+    expect(execCalls().some((c) => c.includes('issue edit') || c.includes('issue update'))).toBe(false);
+  });
+
+  test('positive control — a two-segment qualified ref targets its repo on the cwd platform', async () => {
+    onExec('git remote get-url origin', 'https://github.com/org/repo.git');
+    onExec('gh issue edit', 'https://github.com/org/other/issues/6\n');
+    const data = parseResult((await handler.execute({ issue_ref: 'org/other#6', patch: { title: 'x' } })).content);
+    expect(data.ok).toBe(true);
+    const call = unquote(execCalls().find((c) => unquote(c).includes('gh issue edit')) ?? '');
+    expect(call).toContain('--repo org/other');
+  });
+
   test('schema rejects bare owner (no slash) with the shared REPO_SLUG_ERROR', async () => {
     const result = await handler.execute({
       issue_ref: '#1',
