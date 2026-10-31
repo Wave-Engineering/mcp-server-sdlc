@@ -39,6 +39,7 @@
 import { execSync } from 'child_process';
 import { detectGlabApiError } from '../gitlab-api.js';
 import { runArgv } from '../shared/error-norm.js';
+import { resolveIssueTarget } from '../spec_parser.js';
 import { spliceH2Section } from '../work-item-section.js';
 import type {
   AdapterResult,
@@ -56,14 +57,6 @@ interface GlabIssueViewBody {
   web_url?: string;
   labels?: string[];
   assignees?: Array<{ username?: string }>;
-}
-
-function parseIssueRefNumber(ref: string): number | null {
-  const full = /^(.+)\/([^/\s#]+)#(\d+)$/.exec(ref);
-  if (full) return parseInt(full[3], 10);
-  const short = /^#?(\d+)$/.exec(ref);
-  if (short) return parseInt(short[1], 10);
-  return null;
 }
 
 function fetchCurrentIssue(
@@ -109,14 +102,11 @@ function diffSets(current: string[], next: string[]): { add: string[]; remove: s
 export async function workItemUpdateGitlab(
   args: WorkItemUpdateArgs,
 ): Promise<AdapterResult<WorkItemUpdateResponse>> {
-  const num = parseIssueRefNumber(args.issue_ref);
-  if (num === null) {
-    return {
-      ok: false,
-      code: 'invalid_issue_ref',
-      error: `cannot parse issue_ref: ${args.issue_ref}`,
-    };
-  }
+  // A qualified ref's project is the target; see resolveIssueTarget (#615).
+  const target = resolveIssueTarget(args.issue_ref, args.repo);
+  if (!target.ok) return { ok: false, code: target.code, error: target.error };
+  const num = target.number;
+  const repo = target.repo;
 
   const patch = args.patch;
   if (patch.body !== undefined && patch.body_section !== undefined) {
@@ -144,7 +134,7 @@ export async function workItemUpdateGitlab(
   let currentAssignees: string[] = [];
 
   if (needCurrentLabels || needCurrentAssignees || needCurrentBody) {
-    const fetched = fetchCurrentIssue(num, args.repo, cwd);
+    const fetched = fetchCurrentIssue(num, repo, cwd);
     if (!fetched.ok) {
       return { ok: false, code: 'glab_issue_view_failed', error: fetched.error };
     }
@@ -211,7 +201,7 @@ export async function workItemUpdateGitlab(
     if (add.length > 0) cmd.push('--assignee', add.join(','));
     if (remove.length > 0) cmd.push('--unassign', remove.join(','));
   }
-  if (args.repo !== undefined) cmd.push('-R', args.repo);
+  if (repo !== undefined) cmd.push('-R', repo);
 
   const result = runArgv(cmd, cwd);
   if (result.exitCode !== 0) {

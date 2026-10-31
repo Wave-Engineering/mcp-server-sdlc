@@ -29,6 +29,7 @@
 
 import { execSync } from 'child_process';
 import { runArgv } from '../shared/error-norm.js';
+import { resolveIssueTarget } from '../spec_parser.js';
 import { spliceH2Section } from '../work-item-section.js';
 import type {
   AdapterResult,
@@ -48,14 +49,6 @@ interface GhIssueViewBody {
   number?: number;
   labels?: Array<{ name?: string }>;
   assignees?: Array<{ login?: string }>;
-}
-
-function parseIssueRefNumber(ref: string): number | null {
-  const full = /^(.+)\/([^/\s#]+)#(\d+)$/.exec(ref);
-  if (full) return parseInt(full[3], 10);
-  const short = /^#?(\d+)$/.exec(ref);
-  if (short) return parseInt(short[1], 10);
-  return null;
 }
 
 function fetchCurrentIssue(
@@ -103,19 +96,16 @@ function diffSets(current: string[], next: string[]): { add: string[]; remove: s
 export async function workItemUpdateGithub(
   args: WorkItemUpdateArgs,
 ): Promise<AdapterResult<WorkItemUpdateResponse>> {
-  const num = parseIssueRefNumber(args.issue_ref);
-  if (num === null) {
-    return {
-      ok: false,
-      code: 'invalid_issue_ref',
-      error: `cannot parse issue_ref: ${args.issue_ref}`,
-    };
-  }
-  if (args.repo !== undefined && !GITHUB_REPO_SLUG.test(args.repo)) {
+  // A qualified ref's project is the target; see resolveIssueTarget (#615).
+  const target = resolveIssueTarget(args.issue_ref, args.repo);
+  if (!target.ok) return { ok: false, code: target.code, error: target.error };
+  const num = target.number;
+  const repo = target.repo;
+  if (repo !== undefined && !GITHUB_REPO_SLUG.test(repo)) {
     return {
       ok: false,
       code: 'invalid_repo_slug',
-      error: `invalid repo slug: ${args.repo}`,
+      error: `invalid repo slug: ${repo}`,
     };
   }
 
@@ -139,7 +129,7 @@ export async function workItemUpdateGithub(
   let currentAssignees: string[] = [];
 
   if (needCurrentLabels || needCurrentAssignees || needCurrentBody) {
-    const fetched = fetchCurrentIssue(num, args.repo, cwd);
+    const fetched = fetchCurrentIssue(num, repo, cwd);
     if (!fetched.ok) {
       return { ok: false, code: 'gh_issue_view_failed', error: fetched.error };
     }
@@ -210,7 +200,7 @@ export async function workItemUpdateGithub(
     for (const a of remove) cmd.push('--remove-assignee', a);
   }
   if (patch.milestone !== undefined) cmd.push('--milestone', patch.milestone);
-  if (args.repo !== undefined) cmd.push('--repo', args.repo);
+  if (repo !== undefined) cmd.push('--repo', repo);
 
   const result = runArgv(cmd, cwd);
   if (result.exitCode !== 0) {
