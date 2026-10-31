@@ -31,9 +31,35 @@
 import { execSync } from 'child_process';
 import { log } from '../logger.js';
 
-export type FinalState = 'passed' | 'failed' | 'timed_out';
+/**
+ * `pending` is NOT terminal: this call's `max_wait_sec` budget ran out before CI
+ * finished, and the caller re-invokes to keep waiting (#587). It is never a pass.
+ */
+export type FinalState = 'passed' | 'failed' | 'timed_out' | 'pending';
 
 export const POLL_FLOOR_SEC = 5;
+
+/**
+ * The MCP client aborts a tool call that is idle for 1800 s, and an aborted call
+ * returns nothing at all (#587). One call's wait is therefore budgeted well under
+ * it: the default leaves room for the settle window and a slow snapshot, and the
+ * ceiling is the most any caller may ask for.
+ */
+export const MAX_WAIT_DEFAULT_SEC = 1500;
+export const MAX_WAIT_CEILING_SEC = 1700;
+
+/**
+ * What is left of a call's `max_wait_sec` (or `timeout_sec`) once the adapter
+ * has spent `spentMs` on its first probe and settle window, so each bounds the
+ * whole call, not just the loop. Both are charged the same `spentMs`, so which
+ * one binds first is decided by the caller's own values alone.
+ */
+export function remainingWaitSec(sec: number, spentMs: number): number;
+export function remainingWaitSec(sec: number | undefined, spentMs: number): number | undefined;
+export function remainingWaitSec(sec: number | undefined, spentMs: number): number | undefined {
+  if (sec === undefined) return undefined;
+  return Math.max(0, sec - Math.floor(spentMs / 1000));
+}
 
 export interface ChecksSnapshot {
   total: number;
@@ -56,7 +82,25 @@ export interface PollArgs {
   number: number;
   poll_interval_sec: number;
   timeout_sec: number;
+  /**
+   * This call's wall-clock budget (#587). When it runs out before `timeout_sec`
+   * and before CI finishes, the loop returns `pending` with `resume: true`
+   * instead of a terminal state. Absent: `timeout_sec` alone bounds the call.
+   */
+  max_wait_sec?: number;
+  /**
+   * What running out means, fixed from the caller's ORIGINAL values (#587). An
+   * adapter that spends time before the loop passes clamped remainders, and two
+   * values both clamped to 0 can no longer tell `pending` from `timed_out`.
+   * Absent: derived from this call's own `max_wait_sec < timeout_sec`.
+   */
+  expire_as?: 'pending' | 'timed_out';
   repo?: string;
+}
+
+/** `pending` when the caller's per-call budget is the tighter bound (#587). */
+export function expireAs(maxWaitSec: number | undefined, timeoutSec: number): 'pending' | 'timed_out' {
+  return maxWaitSec !== undefined && maxWaitSec < timeoutSec ? 'pending' : 'timed_out';
 }
 
 export interface PollResult {
@@ -68,6 +112,8 @@ export interface PollResult {
   url: string;
   /** The pipeline behind `final_state`, so a caller can check it (#588). */
   graded_pipeline?: GradedPipeline;
+  /** Present only with `final_state: 'pending'`: call again with the same args to keep waiting. */
+  resume?: true;
 }
 
 function pollResult(
@@ -90,6 +136,7 @@ function pollResult(
     waited_sec: waitedSec,
     url: snap.url,
     ...(snap.graded !== undefined ? { graded_pipeline: snap.graded } : {}),
+    ...(finalState === 'pending' ? { resume: true as const } : {}),
   };
 }
 
@@ -147,6 +194,12 @@ export function defaultDeps(snapshotFn: Deps['snapshotFn']): Deps {
 export async function runPollLoop(args: PollArgs, deps: Deps): Promise<PollResult> {
   const intervalMs = args.poll_interval_sec * 1000;
   const timeoutMs = args.timeout_sec * 1000;
+  // #587: whichever runs out first ends this call. When the per-call budget is
+  // the tighter one, running out is not a verdict, so the call hands back a
+  // resumable `pending`; only the caller's own `timeout_sec` yields `timed_out`.
+  const budgetMs = args.max_wait_sec !== undefined ? args.max_wait_sec * 1000 : Infinity;
+  const deadlineMs = Math.min(timeoutMs, budgetMs);
+  const expired: FinalState = args.expire_as ?? (budgetMs < timeoutMs ? 'pending' : 'timed_out');
   const start = deps.nowFn();
 
   let lastSnap: ChecksSnapshot = {
@@ -175,23 +228,25 @@ export async function runPollLoop(args: PollArgs, deps: Deps): Promise<PollResul
       return pollResult(args.number, decision, lastSnap, elapsedSec);
     }
 
-    if (deps.nowFn() - start >= timeoutMs) {
+    if (deps.nowFn() - start >= deadlineMs) {
       return pollResult(
         args.number,
-        'timed_out',
+        expired,
         lastSnap,
         Math.floor((deps.nowFn() - start) / 1000),
       );
     }
 
-    await deps.sleepFn(intervalMs);
+    // Never sleep past the deadline: a long `poll_interval_sec` would otherwise
+    // carry the call beyond its budget and into the client's idle timeout.
+    await deps.sleepFn(Math.min(intervalMs, start + deadlineMs - deps.nowFn()));
 
-    // Re-check timeout after sleep in case we slept past the deadline.
-    if (deps.nowFn() - start >= timeoutMs) {
+    // Re-check the deadline after sleep; one last snapshot can still decide.
+    if (deps.nowFn() - start >= deadlineMs) {
       lastSnap = await deps.snapshotFn(args.number, args.repo);
       const finalElapsed = Math.floor((deps.nowFn() - start) / 1000);
       logCycle(args.number, finalElapsed, lastSnap);
-      return pollResult(args.number, decide(lastSnap) ?? 'timed_out', lastSnap, finalElapsed);
+      return pollResult(args.number, decide(lastSnap) ?? expired, lastSnap, finalElapsed);
     }
   }
 }

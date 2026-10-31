@@ -14,7 +14,8 @@ Tools below are listed in alphabetic order. To add a tool: drop a file in `handl
 |-------|------|---------|-------------|
 | `number` | number | (required) | PR (GitHub) or MR (GitLab) iid. |
 | `poll_interval_sec` | number | `30` | Seconds between snapshots. Hard floor `5`. |
-| `timeout_sec` | number | `1800` | Maximum wall-clock wait. |
+| `timeout_sec` | number | `1800` | Maximum wall-clock wait **for this call**, settle window included. When it binds first (at or below `max_wait_sec`), the result is the terminal `timed_out`. |
+| `max_wait_sec` | number | `1500` | This call's budget, settle window included (#587). Ceiling `1700`; values above it, or below `1`, are rejected. When it binds first, the result is the resumable `pending`. |
 | `expected_sha` | string | (none) | 40-hex head the caller pushed (#588). Checks grade only once the PR/MR reports this head; until then they read as pending. Recommended for every merge gate: the PR/MR record lags a push. |
 | `repo` | string | (cwd remote) | `owner/repo` slug for cross-repo dispatch. GitLab nested groups (`group/subgroup/repo`) are accepted. |
 
@@ -35,14 +36,40 @@ GitLab result names its pipeline in `graded_pipeline`.
 {
   "ok": true,
   "number": 42,
-  "final_state": "passed" | "failed" | "timed_out",
+  "final_state": "passed" | "failed" | "timed_out" | "pending",
   "checks": { "total": 3, "passed": 3, "failed": 0, "pending": 0, "summary": "3/3 passed" },
   "waited_sec": 8,
-  "url": "https://github.com/org/repo/pull/42"
+  "url": "https://github.com/org/repo/pull/42",
+  "resume": true
 }
 ```
 
 `final_state: 'passed'` requires `total > 0 && pending === 0 && failed === 0`. All-skipped checks (every workflow's `if:` guard didn't match) count as `passed` — see #221.
+
+**Resumable `pending`** (#587). The MCP client aborts a tool call that is idle
+for 1800 s, and an aborted call returns nothing at all. So each call is bounded
+by `max_wait_sec`, and when that budget runs out before CI finishes, the call
+returns `final_state: "pending"` with `resume: true` and the current counts.
+`resume` appears only on `pending`.
+
+- **`pending` is not a pass and not terminal.** Call again with the same
+  arguments to keep waiting. Callers that allowlist on `final_state === 'passed'`
+  stay fail-closed with no change.
+- **`failed` is never deferred.** A failure seen on any snapshot, including the
+  last one at the deadline, returns `failed` at once.
+- **`timeout_sec` is per call**, so with the defaults (`1500` under `1800`) a
+  call ends `pending`, not `timed_out`. A caller that wants an overall deadline
+  keeps it itself, across calls. Set `timeout_sec` at or below `max_wait_sec`
+  to get a terminal `timed_out` from one call. The first probe and any settle
+  window count against both, so which one binds depends only on the two
+  values, never on how long the probe took.
+- Sleeps are clamped to the time left, so a long `poll_interval_sec` cannot
+  carry the call past its budget. The settle window is not cut short by the
+  budget (that would weaken a `no_checks_configured` verdict), but its time is
+  taken out of what the poll loop gets. A call therefore lasts at most the
+  larger of `max_wait_sec` and the settle window, plus one final snapshot
+  (and, for the window, its last poll sleep). `settle_window_sec` takes the
+  same 1700 s ceiling as `max_wait_sec`.
 
 **Returns — no checks** (#416, reworked by #508). When the head ref still has no
 registered checks after a **settle window**, the handler returns without entering

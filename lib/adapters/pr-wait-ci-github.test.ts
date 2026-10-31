@@ -619,6 +619,117 @@ describe('prWaitCiGithub — settle window (#508)', () => {
     expect(data.status).toBeUndefined();
     expect(clock.sleeps()).toBe(0);
   });
+
+  test('#587: the settle window spends the same per-call budget as the poll loop', async () => {
+    // The window burns 10 s of a 10 s budget before a check registers, so the
+    // poll loop gets nothing left: one snapshot, then a resumable pending.
+    onExec(
+      'gh pr view',
+      JSON.stringify({
+        url: 'https://github.com/org/repo/pull/42',
+        statusCheckRollup: [{ __typename: 'CheckRun', name: 'validate', status: 'IN_PROGRESS' }],
+      }),
+    );
+    const clock = fakeClock();
+    let probes = 0;
+    const result = await prWaitCiGithub(
+      { number: 42, poll_interval_sec: 5, timeout_sec: 600, max_wait_sec: 10 },
+      {
+        probe: () => {
+          probes += 1;
+          return probes >= 3
+            ? openMergeable({
+                statusCheckRollup: [{ __typename: 'CheckRun', name: 'validate', status: 'QUEUED' }],
+              })
+            : openMergeable();
+        },
+        pendingRuns: async () => ({ ok: true, runs: [] }),
+        now: clock.now,
+        sleep: clock.sleep,
+        settleWindowSec: 45,
+        settlePollSec: 5,
+      },
+    );
+    if (!('ok' in result) || !result.ok) throw new Error('expected ok');
+    const data = result.data as NoChecksData & { resume?: boolean; waited_sec?: number };
+    expect(data.final_state).toBe('pending');
+    expect(data.resume).toBe(true);
+    expect(data.waited_sec).toBe(0);
+  });
+
+  test('#587: timeout_sec equal to max_wait_sec is timed_out, however long the settle window ran', async () => {
+    // Both are charged the 10 s the window spent, so the caller's equal values
+    // stay equal and the terminal timed_out wins. Charging only the budget would
+    // make this `pending`, depending on probe timing.
+    onExec(
+      'gh pr view',
+      JSON.stringify({
+        url: 'https://github.com/org/repo/pull/42',
+        statusCheckRollup: [{ __typename: 'CheckRun', name: 'validate', status: 'IN_PROGRESS' }],
+      }),
+    );
+    const clock = fakeClock();
+    let probes = 0;
+    const result = await prWaitCiGithub(
+      { number: 42, poll_interval_sec: 5, timeout_sec: 10, max_wait_sec: 10 },
+      {
+        probe: () => {
+          probes += 1;
+          return probes >= 3
+            ? openMergeable({
+                statusCheckRollup: [{ __typename: 'CheckRun', name: 'validate', status: 'QUEUED' }],
+              })
+            : openMergeable();
+        },
+        pendingRuns: async () => ({ ok: true, runs: [] }),
+        now: clock.now,
+        sleep: clock.sleep,
+        settleWindowSec: 45,
+        settlePollSec: 5,
+      },
+    );
+    if (!('ok' in result) || !result.ok) throw new Error('expected ok');
+    const data = result.data as NoChecksData & { resume?: boolean };
+    expect(data.final_state).toBe('timed_out');
+    expect(data.resume).toBeUndefined();
+  });
+
+  test('#587: a tighter max_wait_sec stays pending when the window clamps both to 0', async () => {
+    // The window spends 10 s, so max_wait_sec 5 and timeout_sec 10 both reach
+    // the loop as 0. Comparing the remainders would call that timed_out; the
+    // caller's own values say the budget was the tighter bound.
+    onExec(
+      'gh pr view',
+      JSON.stringify({
+        url: 'https://github.com/org/repo/pull/42',
+        statusCheckRollup: [{ __typename: 'CheckRun', name: 'validate', status: 'IN_PROGRESS' }],
+      }),
+    );
+    const clock = fakeClock();
+    let probes = 0;
+    const result = await prWaitCiGithub(
+      { number: 42, poll_interval_sec: 5, timeout_sec: 10, max_wait_sec: 5 },
+      {
+        probe: () => {
+          probes += 1;
+          return probes >= 3
+            ? openMergeable({
+                statusCheckRollup: [{ __typename: 'CheckRun', name: 'validate', status: 'QUEUED' }],
+              })
+            : openMergeable();
+        },
+        pendingRuns: async () => ({ ok: true, runs: [] }),
+        now: clock.now,
+        sleep: clock.sleep,
+        settleWindowSec: 45,
+        settlePollSec: 5,
+      },
+    );
+    if (!('ok' in result) || !result.ok) throw new Error('expected ok');
+    const data = result.data as NoChecksData & { resume?: boolean };
+    expect(data.final_state).toBe('pending');
+    expect(data.resume).toBe(true);
+  });
 });
 
 // --- #609: only a certified-empty run query may say "no CI here" -----------

@@ -695,3 +695,67 @@ describe('#588 — only a pipeline bound to the current head is graded', () => {
     expect(calls[0]).toContain('projects/42/repository/branches/feature%2Fx');
   });
 });
+
+// --- #587: the settle window charges the per-call budget and timeout alike ---
+
+describe('prWaitCiGitlab — per-call budget (#587)', () => {
+  // The window spends 10 s (probes at +0, +5, +10) before a pipeline appears.
+  function settleThenPipeline() {
+    let t = 1_000_000;
+    let probes = 0;
+    const noPipeline = JSON.parse(mrJson(undefined));
+    const withPipeline = JSON.parse(mrJson('running'));
+    return {
+      now: () => t,
+      sleep: async (ms: number) => {
+        t += ms;
+      },
+      probe: () => {
+        probes += 1;
+        return probes >= 3 ? withPipeline : noPipeline;
+      },
+      pendingRuns: async () => ({ ok: true as const, runs: [] }),
+      settleWindowSec: 45,
+      settlePollSec: 5,
+    };
+  }
+
+  beforeEach(() => {
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests/3', mrJson('running'));
+  });
+
+  test('a window that spends the whole budget leaves the loop nothing: pending at once', async () => {
+    const result = await prWaitCiGitlab(
+      { number: 3, poll_interval_sec: 5, timeout_sec: 600, max_wait_sec: 10 },
+      settleThenPipeline(),
+    );
+    if (!('ok' in result) || !result.ok) throw new Error(`expected ok, got ${JSON.stringify(result)}`);
+    const data = result.data as { final_state?: string; resume?: boolean; waited_sec?: number };
+    expect(data.final_state).toBe('pending');
+    expect(data.resume).toBe(true);
+    expect(data.waited_sec).toBe(0);
+  });
+
+  test('timeout_sec equal to max_wait_sec stays timed_out after the window', async () => {
+    const result = await prWaitCiGitlab(
+      { number: 3, poll_interval_sec: 5, timeout_sec: 10, max_wait_sec: 10 },
+      settleThenPipeline(),
+    );
+    if (!('ok' in result) || !result.ok) throw new Error(`expected ok, got ${JSON.stringify(result)}`);
+    const data = result.data as { final_state?: string; resume?: boolean };
+    expect(data.final_state).toBe('timed_out');
+    expect(data.resume).toBeUndefined();
+  });
+
+  test('a tighter max_wait_sec stays pending when the window clamps both to 0', async () => {
+    const result = await prWaitCiGitlab(
+      { number: 3, poll_interval_sec: 5, timeout_sec: 10, max_wait_sec: 5 },
+      settleThenPipeline(),
+    );
+    if (!('ok' in result) || !result.ok) throw new Error(`expected ok, got ${JSON.stringify(result)}`);
+    const data = result.data as { final_state?: string; resume?: boolean };
+    expect(data.final_state).toBe('pending');
+    expect(data.resume).toBe(true);
+  });
+});

@@ -377,7 +377,7 @@ export interface PrWaitCiArgs {
   /**
    * How long to keep re-probing an empty rollup / absent pipeline before
    * concluding the repo has no checks for this ref (#508). Not a CI timeout —
-   * once one check registers, `timeout_sec` governs from there. `0` disables
+   * `timeout_sec` is charged from the first probe, window included. `0` disables
    * the window and restores #416's t=0 behaviour; only tests should do that.
    */
   settle_window_sec?: number;
@@ -387,9 +387,16 @@ export interface PrWaitCiArgs {
    * a push, so without it GitLab checks the MR head against the branch tip.
    */
   expected_sha?: string;
+  /**
+   * This call's wall-clock budget, settle window included (#587). Running out
+   * before CI finishes returns `final_state: 'pending'` with `resume: true`,
+   * so the call always returns before the MCP client's 1800 s idle timeout.
+   */
+  max_wait_sec?: number;
 }
 
-export type PrWaitCiFinalState = 'passed' | 'failed' | 'timed_out';
+/** `pending` is resumable, never terminal and never a pass (#587). */
+export type PrWaitCiFinalState = 'passed' | 'failed' | 'timed_out' | 'pending';
 
 export interface PrWaitCiChecks {
   total: number;
@@ -415,6 +422,8 @@ export interface PrWaitCiPolledResponse {
    * current head (#588). Absent on GitHub, whose rollup is the head commit's.
    */
   graded_pipeline?: { id: number; sha: string; ref: string };
+  /** Only with `final_state: 'pending'`: call again with the same args to keep waiting. */
+  resume?: true;
 }
 
 /**

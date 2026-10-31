@@ -32,6 +32,8 @@ import {
 import { ciListRunsGitlab } from './ci-list-runs-gitlab.js';
 import {
   defaultDeps,
+  expireAs,
+  remainingWaitSec,
   runPollLoop,
   type ChecksSnapshot,
   type PollArgs,
@@ -297,10 +299,15 @@ export async function prWaitCiGitlab(
       // A pipeline appeared during the window — fall through to the poll loop.
     }
 
+    // #587: the settle window spends the per-call budget and timeout alike.
+    const spentMs = deps.now() - probeStart;
+    const maxWaitSec = remainingWaitSec(args.max_wait_sec, spentMs);
     const pollArgs: PollArgs = {
       number: args.number,
       poll_interval_sec: args.poll_interval_sec,
-      timeout_sec: args.timeout_sec,
+      timeout_sec: remainingWaitSec(args.timeout_sec, spentMs),
+      ...(maxWaitSec !== undefined ? { max_wait_sec: maxWaitSec } : {}),
+      expire_as: expireAs(args.max_wait_sec, args.timeout_sec),
       repo: args.repo,
     };
     // One memoised parents lookup for the whole wait (#588).

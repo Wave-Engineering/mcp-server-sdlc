@@ -22,6 +22,8 @@ import { execSync } from 'child_process';
 import { shellEscape } from '../shared/shell-escape.js';
 import {
   defaultDeps,
+  expireAs,
+  remainingWaitSec,
   runPollLoop,
   type ChecksSnapshot,
   type Deps,
@@ -245,7 +247,8 @@ export function mergeableState(probe: PrProbeResponse): string {
  * within seconds of PR creation; the window only has to outlast that gap.
  *
  * It is NOT a CI timeout — once a single check registers we fall through to the
- * normal polling loop and `timeout_sec` governs from there.
+ * normal polling loop. `timeout_sec` is charged from the first probe, so the
+ * window's seconds count against it (#587).
  */
 export const SETTLE_WINDOW_SEC = 45;
 export const SETTLE_POLL_SEC = 5;
@@ -430,10 +433,17 @@ export async function prWaitCiGithub(
       // which is the whole point: this PR now gets a real passed/failed verdict.
     }
 
+    // #587: the settle window spends the same per-call budget the loop does,
+    // and the same per-call timeout. Charging both keeps pending-vs-timed_out
+    // a function of the caller's own max_wait_sec < timeout_sec, not of timing.
+    const spentMs = deps.now() - probeStart;
+    const maxWaitSec = remainingWaitSec(args.max_wait_sec, spentMs);
     const pollArgs: PollArgs = {
       number: args.number,
       poll_interval_sec: args.poll_interval_sec,
-      timeout_sec: args.timeout_sec,
+      timeout_sec: remainingWaitSec(args.timeout_sec, spentMs),
+      ...(maxWaitSec !== undefined ? { max_wait_sec: maxWaitSec } : {}),
+      expire_as: expireAs(args.max_wait_sec, args.timeout_sec),
       repo: args.repo,
     };
     const result = await runPollLoop(
