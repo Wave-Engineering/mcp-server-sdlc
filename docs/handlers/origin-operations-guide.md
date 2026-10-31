@@ -669,7 +669,8 @@ export const prStatusResponse = z.object({
 
 export const prWaitCiResponse = z.object({
   number: z.number().int().positive(),
-  final_state: z.enum(['passed', 'failed', 'timed_out']),
+  // `pending` is resumable, never terminal and never a pass (#587).
+  final_state: z.enum(['passed', 'failed', 'timed_out', 'pending']),
   checks: z.object({
     total: z.number().int().nonnegative(),
     passed: z.number().int().nonnegative(),
@@ -679,6 +680,12 @@ export const prWaitCiResponse = z.object({
   }),
   waited_sec: z.number().int().nonnegative(),
   url: z.string().url(),
+  // GitLab only: the pipeline final_state was graded from (#588).
+  graded_pipeline: z
+    .object({ id: z.number().int(), sha: z.string(), ref: z.string() })
+    .optional(),
+  // Only with final_state 'pending': call again with the same args (#587).
+  resume: z.literal(true).optional(),
 });
 
 // ---- 4.4 pr_merge ---------------------------------------------------------
