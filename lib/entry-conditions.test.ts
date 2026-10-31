@@ -208,6 +208,9 @@ describe('parseEcStateComments', () => {
       '- [ec-state EC-1] met when vendor API v3 is GA',
       '[ec-state EC-1] met — once security signs off',
       '[ec-state EC-1] met — <link to release>',
+      '[ec-state EC-1] met — <release URL>',
+      '[ec-state EC-1] met — <vX.Y.Z>',
+      '[ec-state EC-1] met — <PR #N>',
     ]) {
       const r = parseEcStateComments([
         c('[ec-state EC-1] unmet', '2026-10-01T00:00:00Z'),
@@ -223,6 +226,11 @@ describe('parseEcStateComments', () => {
       '[ec-state EC-1] met — https://git.sr.ht/~user/repo/refs/v3',
       '[ec-state EC-1] met — <https://github.com/o/r/releases/tag/v3>',
       '[ec-state EC-1] met — p99 < 200ms, errors > 0 over 7 days',
+      '[ec-state EC-1] met — p99 <= 200ms, success >= 99.9% over 7d',
+      '[ec-state EC-1] met — p99 <200ms, uptime >99.9%',
+      '[ec-state EC-1] met — staging <-> prod parity confirmed',
+      '[ec-state EC-1] met — signed off by <alice@corp.example>',
+      '[ec-state EC-1] met — <mailto:alice@corp.example>',
       '[ec-state EC-1] met shipped in v2.3',
       '[ec-state EC-1] met',
     ]) {
