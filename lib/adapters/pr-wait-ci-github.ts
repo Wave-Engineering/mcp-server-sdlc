@@ -22,6 +22,7 @@ import { execSync } from 'child_process';
 import { shellEscape } from '../shared/shell-escape.js';
 import {
   defaultDeps,
+  expireAs,
   remainingWaitSec,
   runPollLoop,
   type ChecksSnapshot,
@@ -246,7 +247,8 @@ export function mergeableState(probe: PrProbeResponse): string {
  * within seconds of PR creation; the window only has to outlast that gap.
  *
  * It is NOT a CI timeout — once a single check registers we fall through to the
- * normal polling loop and `timeout_sec` governs from there.
+ * normal polling loop. `timeout_sec` is charged from the first probe, so the
+ * window's seconds count against it (#587).
  */
 export const SETTLE_WINDOW_SEC = 45;
 export const SETTLE_POLL_SEC = 5;
@@ -441,6 +443,7 @@ export async function prWaitCiGithub(
       poll_interval_sec: args.poll_interval_sec,
       timeout_sec: remainingWaitSec(args.timeout_sec, spentMs),
       ...(maxWaitSec !== undefined ? { max_wait_sec: maxWaitSec } : {}),
+      expire_as: expireAs(args.max_wait_sec, args.timeout_sec),
       repo: args.repo,
     };
     const result = await runPollLoop(

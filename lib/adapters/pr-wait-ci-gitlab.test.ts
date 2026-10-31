@@ -747,4 +747,15 @@ describe('prWaitCiGitlab — per-call budget (#587)', () => {
     expect(data.final_state).toBe('timed_out');
     expect(data.resume).toBeUndefined();
   });
+
+  test('a tighter max_wait_sec stays pending when the window clamps both to 0', async () => {
+    const result = await prWaitCiGitlab(
+      { number: 3, poll_interval_sec: 5, timeout_sec: 10, max_wait_sec: 5 },
+      settleThenPipeline(),
+    );
+    if (!('ok' in result) || !result.ok) throw new Error(`expected ok, got ${JSON.stringify(result)}`);
+    const data = result.data as { final_state?: string; resume?: boolean };
+    expect(data.final_state).toBe('pending');
+    expect(data.resume).toBe(true);
+  });
 });

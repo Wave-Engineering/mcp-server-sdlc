@@ -32,6 +32,7 @@ import {
 import { ciListRunsGitlab } from './ci-list-runs-gitlab.js';
 import {
   defaultDeps,
+  expireAs,
   remainingWaitSec,
   runPollLoop,
   type ChecksSnapshot,
@@ -306,6 +307,7 @@ export async function prWaitCiGitlab(
       poll_interval_sec: args.poll_interval_sec,
       timeout_sec: remainingWaitSec(args.timeout_sec, spentMs),
       ...(maxWaitSec !== undefined ? { max_wait_sec: maxWaitSec } : {}),
+      expire_as: expireAs(args.max_wait_sec, args.timeout_sec),
       repo: args.repo,
     };
     // One memoised parents lookup for the whole wait (#588).

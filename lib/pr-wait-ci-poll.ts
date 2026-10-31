@@ -88,7 +88,19 @@ export interface PollArgs {
    * instead of a terminal state. Absent: `timeout_sec` alone bounds the call.
    */
   max_wait_sec?: number;
+  /**
+   * What running out means, fixed from the caller's ORIGINAL values (#587). An
+   * adapter that spends time before the loop passes clamped remainders, and two
+   * values both clamped to 0 can no longer tell `pending` from `timed_out`.
+   * Absent: derived from this call's own `max_wait_sec < timeout_sec`.
+   */
+  expire_as?: 'pending' | 'timed_out';
   repo?: string;
+}
+
+/** `pending` when the caller's per-call budget is the tighter bound (#587). */
+export function expireAs(maxWaitSec: number | undefined, timeoutSec: number): 'pending' | 'timed_out' {
+  return maxWaitSec !== undefined && maxWaitSec < timeoutSec ? 'pending' : 'timed_out';
 }
 
 export interface PollResult {
@@ -187,7 +199,7 @@ export async function runPollLoop(args: PollArgs, deps: Deps): Promise<PollResul
   // resumable `pending`; only the caller's own `timeout_sec` yields `timed_out`.
   const budgetMs = args.max_wait_sec !== undefined ? args.max_wait_sec * 1000 : Infinity;
   const deadlineMs = Math.min(timeoutMs, budgetMs);
-  const expired: FinalState = budgetMs < timeoutMs ? 'pending' : 'timed_out';
+  const expired: FinalState = args.expire_as ?? (budgetMs < timeoutMs ? 'pending' : 'timed_out');
   const start = deps.nowFn();
 
   let lastSnap: ChecksSnapshot = {

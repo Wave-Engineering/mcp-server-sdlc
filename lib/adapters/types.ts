@@ -377,7 +377,7 @@ export interface PrWaitCiArgs {
   /**
    * How long to keep re-probing an empty rollup / absent pipeline before
    * concluding the repo has no checks for this ref (#508). Not a CI timeout —
-   * once one check registers, `timeout_sec` governs from there. `0` disables
+   * `timeout_sec` is charged from the first probe, window included. `0` disables
    * the window and restores #416's t=0 behaviour; only tests should do that.
    */
   settle_window_sec?: number;
