@@ -82,6 +82,56 @@ describe('parseEcStateComments', () => {
     expect(r.malformed).toHaveLength(2);
   });
 
+  test('ec_unreadable_id_reholds — an unreadable later line does not let an earlier met stand', () => {
+    const r = parseEcStateComments([
+      c('[ec-state EC-1] met\n[ec-state EC-2] met', '2026-10-01T00:00:00Z'),
+      c('[ec-state EC-x1] reclosed', '2026-10-02T00:00:00Z'),
+    ]);
+    expect(r.latest['EC-1'].status).toBe('unmet');
+    expect(r.latest['EC-2'].status).toBe('unmet');
+    expect(r.malformed).toHaveLength(1);
+    expect(r.malformed[0].reason).toContain('no EC id');
+  });
+
+  test('positive control — a well-formed met after an unreadable line is met', () => {
+    const r = parseEcStateComments([
+      c('[ec-state EC-1] met', '2026-10-01T00:00:00Z'),
+      c('[ec-state EC-x1] reclosed', '2026-10-02T00:00:00Z'),
+      c('[ec-state EC-1] met', '2026-10-03T00:00:00Z'),
+    ]);
+    expect(r.latest['EC-1'].status).toBe('met');
+  });
+
+  test('ec_id_typos_parse — EC1, EC 1 and a space before the bracket all read as EC-1', () => {
+    for (const id of ['EC1', 'EC 1', 'EC-1 ', 'ec1']) {
+      const r = parseEcStateComments([
+        c('[ec-state EC-1] met', '2026-10-01T00:00:00Z'),
+        c(`[ec-state ${id}] reclosed`, '2026-10-02T00:00:00Z'),
+      ]);
+      expect(r.latest['EC-1'].status).toBe('reclosed');
+      expect(r.malformed).toEqual([]);
+    }
+  });
+
+  test('ec_markdown_wrapped — a bulleted or bold state line is read', () => {
+    for (const body of ['- [ec-state EC-1] reclosed', '* [ec-state EC-1] reclosed', '**[ec-state EC-1] reclosed**', '- **[ec-state EC-1] reclosed**']) {
+      const r = parseEcStateComments([
+        c('[ec-state EC-1] met', '2026-10-01T00:00:00Z'),
+        c(body, '2026-10-02T00:00:00Z'),
+      ]);
+      expect(r.latest['EC-1'].status).toBe('reclosed');
+    }
+  });
+
+  test('positive control — a quoted state line is not a state update', () => {
+    const r = parseEcStateComments([
+      c('[ec-state EC-1] met', '2026-10-01T00:00:00Z'),
+      c('> [ec-state EC-1] reclosed', '2026-10-02T00:00:00Z'),
+    ]);
+    expect(r.latest['EC-1'].status).toBe('met');
+    expect(r.malformed).toEqual([]);
+  });
+
   test('ordinary prose mentioning ec-state is ignored', () => {
     const r = parseEcStateComments([c('we will post an ec-state line later', '2026-10-01T00:00:00Z')]);
     expect(r.latest).toEqual({});

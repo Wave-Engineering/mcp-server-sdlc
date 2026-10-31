@@ -84,14 +84,20 @@ export interface EcParseResult {
 }
 
 // `[ec-state EC-3] met <evidence>`. The id is case-insensitive and normalized
-// to `EC-<n>`; the status token is everything up to the first space.
-const EC_LINE = /^\[ec-state\s+(ec-\d+)\]\s*(\S*)\s*(.*)$/i;
+// to `EC-<n>`; `EC3`, `EC 3` and `EC-3 ` read as `EC-3` too, since a typo'd id
+// that fails to parse is a garbled update. The status token is everything up
+// to the first space.
+const EC_LINE = /^\[ec-state\s+ec\s*-?\s*(\d+)\s*\]\s*(\S*)\s*(.*)$/i;
 const EC_PREFIX = /^\[ec-state\b/i;
+// Markdown an author may wrap a state line in: a list marker, then bold. A
+// `>` quote is deliberately NOT stripped: quoting a state line is not posting it.
+const MD_LEAD = /^(?:[-*+]\s+)?(?:\*\*|__)?/;
+const MD_TRAIL = /(?:\*\*|__)\s*$/;
 // Leading punctuation authors put between the status and the evidence.
 const EVIDENCE_LEAD = /^[\s—–:|-]+/;
 
-function normalizeEcId(raw: string): string {
-  return `EC-${raw.slice(3)}`;
+function normalizeEcId(digits: string): string {
+  return `EC-${digits}`;
 }
 
 function isEcStatus(s: string): s is EcStatus {
@@ -107,8 +113,10 @@ function isEcStatus(s: string): s is EcStatus {
  * A line whose EC id parses but whose status does not is reported in
  * `malformed` AND records that EC as `unmet`. It is not skipped: skipping it
  * would let a stale earlier `met` stand behind a garbled update. A line that
- * starts `[ec-state` but has no readable EC id is reported and otherwise
- * ignored, since there is no EC to attach it to.
+ * starts `[ec-state` but has no readable EC id is reported, and since it could
+ * be about any EC, every EC `met` before it reads as `unmet` until a later
+ * well-formed line says otherwise. Ignoring it would let an earlier `met` stand
+ * behind an unreadable `reclosed`.
  *
  * A comment that is not `trusted` contributes nothing: each of its
  * `[ec-state` lines is reported in `untrusted` and skipped. Skipping (not
@@ -133,7 +141,7 @@ export function parseEcStateComments(comments: EcComment[]): EcParseResult {
 
   for (const comment of ordered) {
     for (const rawLine of (comment.body ?? '').split(/\r?\n/)) {
-      const line = rawLine.trim();
+      const line = rawLine.trim().replace(MD_LEAD, '').replace(MD_TRAIL, '').trim();
       if (!EC_PREFIX.test(line)) continue;
       if (comment.trusted !== true) {
         untrusted.push({
@@ -150,8 +158,13 @@ export function parseEcStateComments(comments: EcComment[]): EcParseResult {
           line,
           created_at: comment.created_at,
           url: comment.url,
-          reason: 'no EC id: expected `[ec-state EC-<n>] met|unmet|reclosed`',
+          reason: 'no EC id: expected `[ec-state EC-<n>] met|unmet|reclosed`; every EC met before it reads as unmet',
         });
+        for (const [id, rec] of Object.entries(latest)) {
+          if (rec.status === 'met') {
+            latest[id] = { status: 'unmet', evidence: comment.url ?? line, updated_at: comment.created_at };
+          }
+        }
         continue;
       }
       const id = normalizeEcId(m[1]);
