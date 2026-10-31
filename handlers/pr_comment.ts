@@ -15,7 +15,8 @@ const inputSchema = z.object({
   repo: repoOptionalSchema,
   // On GitLab, issues and MRs have separate number namespaces. Default 'mr'
   // for backwards compat; callers targeting issues must pass 'issue'. On
-  // GitHub this is ignored (issues and PRs share a number space).
+  // GitHub issues and PRs share a number space: 'issue' runs `gh issue
+  // comment`, and a number that is not a PR falls back to it (#617).
   target: z.enum(['issue', 'mr']).optional(),
 });
 
@@ -26,7 +27,7 @@ function envelope(payload: unknown) {
 const prCommentHandler: HandlerDef = {
   name: 'pr_comment',
   description:
-    'Post a top-level comment on a PR/MR or issue. On GitLab, pass target:"issue" to comment on issue #N (default targets MR !N). On GitHub, target is ignored.',
+    'Post a top-level comment on a PR/MR or issue. On GitLab, pass target:"issue" to comment on issue #N (default targets MR !N). On GitHub, target:"issue" comments on the issue, and a number that is not a PR falls back to the issue.',
   inputSchema,
   async execute(rawArgs: unknown) {
     let args;

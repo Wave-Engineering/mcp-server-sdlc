@@ -163,3 +163,86 @@ describe('prCommentGithub — subprocess boundary', () => {
     expect(ghCall).toContain('Wave-Engineering/mcp-server-sdlc');
   });
 });
+
+// #617: `gh pr comment` cannot resolve an issue number, so issue comments
+// (e.g. /devspec's [ledger] entries on the Plan issue) need `gh issue comment`.
+describe('prCommentGithub — issue numbers (#617)', () => {
+  function notAPr(): never {
+    const err = new Error('gh failed') as ThrowableError;
+    err.stderr =
+      "GraphQL: Could not resolve to a PullRequest with the number of 3. (repository.pullRequest)";
+    err.status = 1;
+    throw err;
+  }
+
+  test("target:'issue' runs gh issue comment and never gh pr comment", async () => {
+    onExec('gh issue comment', 'https://github.com/org/repo/issues/3#issuecomment-4004\n');
+
+    const result = await prCommentGithub({ number: 3, body: 'ledger', target: 'issue' });
+    expectOk(result);
+    expect(result.data.comment_id).toBe(4004);
+    expect(result.data.url).toBe('https://github.com/org/repo/issues/3#issuecomment-4004');
+
+    const calls = execCalls().map(unquote);
+    expect(calls.some((c) => c.includes('gh issue comment 3'))).toBe(true);
+    expect(calls.some((c) => c.includes('gh pr comment'))).toBe(false);
+  });
+
+  test('a not-a-PR failure retries once as gh issue comment', async () => {
+    onExec('gh pr comment', notAPr);
+    onExec('gh issue comment', 'https://github.com/org/repo/issues/3#issuecomment-5005\n');
+
+    const result = await prCommentGithub({ number: 3, body: 'ledger' });
+    expectOk(result);
+    expect(result.data.comment_id).toBe(5005);
+    expect(result.data.number).toBe(3);
+
+    const calls = execCalls().map(unquote);
+    expect(calls.filter((c) => c.includes('gh pr comment 3')).length).toBe(1);
+    expect(calls.filter((c) => c.includes('gh issue comment 3')).length).toBe(1);
+  });
+
+  test('any other gh pr comment failure does not retry', async () => {
+    onExec('gh pr comment', () => {
+      const err = new Error('HTTP 401') as ThrowableError;
+      err.stderr = 'HTTP 401: Bad credentials';
+      err.status = 1;
+      throw err;
+    });
+    onExec('gh issue comment', 'https://github.com/org/repo/issues/3#issuecomment-6006\n');
+
+    const result = await prCommentGithub({ number: 3, body: 'x' });
+    expectErr(result);
+    expect(result.code).toBe('gh_pr_comment_failed');
+    expect(execCalls().map(unquote).some((c) => c.includes('gh issue comment'))).toBe(false);
+  });
+
+  test('a failed fallback reports gh_issue_comment_failed', async () => {
+    onExec('gh pr comment', notAPr);
+    onExec('gh issue comment', () => {
+      const err = new Error('gh failed') as ThrowableError;
+      err.stderr = 'GraphQL: Could not resolve to an issue or pull request with the number of 99999.';
+      err.status = 1;
+      throw err;
+    });
+
+    const result = await prCommentGithub({ number: 99999, body: 'x' });
+    expectErr(result);
+    expect(result.code).toBe('gh_issue_comment_failed');
+    expect(result.error).toContain('gh issue comment failed');
+    expect(result.error).toContain('99999');
+  });
+
+  test('--repo is forwarded on the issue path', async () => {
+    onExec('gh pr comment', notAPr);
+    onExec(
+      'gh issue comment',
+      'https://github.com/Wave-Engineering/mcp-server-sdlc/issues/3#issuecomment-7007\n',
+    );
+
+    await prCommentGithub({ number: 3, body: 'x', repo: 'Wave-Engineering/mcp-server-sdlc' });
+
+    const issueCall = unquote(findCall('gh issue comment'));
+    expect(issueCall).toContain('--repo Wave-Engineering/mcp-server-sdlc');
+  });
+});
