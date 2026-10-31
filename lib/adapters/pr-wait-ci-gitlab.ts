@@ -23,8 +23,10 @@ import { gitlabApiMr, gitlabRepoOpts, type GitlabMr } from '../gitlab-api.js';
 import {
   apiParentsOf,
   bindHeadPipeline,
+  headFreshness,
   mrHeadSha,
   mrPipeline,
+  type HeadFreshness,
   type ParentsOf,
 } from '../gitlab-head-pipeline.js';
 import { ciListRunsGitlab } from './ci-list-runs-gitlab.js';
@@ -73,18 +75,21 @@ function parseSlugOpts(slug: string | undefined): { owner?: string; repo?: strin
  * (`bindHeadPipeline`). Right after a push `head_pipeline` can still be the
  * previous head's — already terminal — so an unbound pipeline reads as
  * pending, whatever its status, and the wait holds until the head's pipeline
- * is attached. A bound pipeline is named in `graded`.
+ * is attached. A bound pipeline is named in `graded`. The MR record itself lags
+ * a push, so its head must also match `freshness` (expected_sha, else the
+ * source branch tip) before anything binds.
  */
 export function snapshotGitlab(
   number: number,
   repo?: string,
   parentsOf: ParentsOf = apiParentsOf(gitlabRepoOpts(repo)),
+  freshness: HeadFreshness = headFreshness(undefined, gitlabRepoOpts(repo)),
 ): ChecksSnapshot {
   const mr = gitlabApiMr(number, parseSlugOpts(repo));
   const url = mr.web_url ?? '';
   const pipeline = mrPipeline(mr);
   if (pipeline !== null) {
-    const binding = bindHeadPipeline(mr, parentsOf);
+    const binding = bindHeadPipeline(mr, parentsOf, freshness);
     if (!binding.bound) {
       return { total: 1, passed: 0, failed: 0, pending: 1, summary: binding.reason, url };
     }
@@ -300,9 +305,10 @@ export async function prWaitCiGitlab(
     };
     // One memoised parents lookup for the whole wait (#588).
     const parentsOf = apiParentsOf(gitlabRepoOpts(args.repo));
+    const freshness = headFreshness(args.expected_sha, gitlabRepoOpts(args.repo));
     const result = await runPollLoop(
       pollArgs,
-      defaultDeps((n, repo) => snapshotGitlab(n, repo, parentsOf)),
+      defaultDeps((n, repo) => snapshotGitlab(n, repo, parentsOf, freshness)),
     );
     const { ok: _ok, ...data } = result;
     void _ok;

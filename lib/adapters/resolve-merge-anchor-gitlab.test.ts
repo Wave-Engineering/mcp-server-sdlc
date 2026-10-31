@@ -30,12 +30,20 @@ function expectErr(r: AdapterResult<MergeAnchor>): asserts r is {
   }
 }
 
+const HEAD = 'a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1';
+
+// The source branch tip the MR head is checked against (#588). Registered first,
+// so it wins over the broad `glab api` rules below; `undefined` = unreadable.
+let tip: string | undefined = HEAD;
+
 beforeEach(() => {
   resetExecMock();
+  tip = HEAD;
+  onExec('/repository/branches/', () =>
+    JSON.stringify({ name: 'feature/x', commit: tip === undefined ? null : { id: tip } }),
+  );
   onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
 });
-
-const HEAD = 'a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1';
 
 describe('resolveMergeAnchorGitlab — subprocess boundary (#476)', () => {
   test('reads head_pipeline.id from the MR', async () => {
@@ -113,8 +121,13 @@ describe('resolveMergeAnchorGitlab — head_pipeline must be bound to the head (
   const parentsOf = (sha: string) =>
     ({ [MERGE_OLD]: [BASE, OLD], [MERGE_NEW]: [BASE, NEW] })[sha];
 
+  // The push has landed: the branch is at NEW, whatever the MR record says.
+  beforeEach(() => {
+    tip = NEW;
+  });
+
   function mr(pipeline: Record<string, unknown>) {
-    return JSON.stringify({ iid: 108, sha: NEW, head_pipeline: pipeline });
+    return JSON.stringify({ iid: 108, sha: NEW, source_branch: 'feature/x', head_pipeline: pipeline });
   }
 
   test('RED: push then an immediate wait — the old head merge pipeline is refused, named', async () => {
@@ -168,14 +181,22 @@ describe('resolveMergeAnchorGitlab — head_pipeline must be bound to the head (
   const stale = JSON.stringify({ iid: 108, sha: NEW, head_pipeline: { id: 500, status: 'success', sha: MERGE_OLD, ref: REF } });
 
   /** Each anchor read returns the next MR state, then repeats the last. */
-  async function gate(mrStates: string[], runs: object[], timeoutSec = 60) {
+  async function gate(mrStates: string[], runs: object[], timeoutSec = 60, expectedSha?: string) {
     const { waitForRun } = await import('../ci-wait-run-poll.ts');
     let i = 0;
     onExec('glab api', () => mrStates[Math.min(i++, mrStates.length - 1)]);
     let t = 1_700_000_000_000;
     const start = t;
     const r = await waitForRun(
-      { ref: REF, platform: 'gitlab', require_merge_result: true, pr_number: 108, repo: 'org/repo', timeout_sec: timeoutSec },
+      {
+        ref: REF,
+        platform: 'gitlab',
+        require_merge_result: true,
+        pr_number: 108,
+        repo: 'org/repo',
+        timeout_sec: timeoutSec,
+        ...(expectedSha !== undefined ? { expected_sha: expectedSha } : {}),
+      },
       {
         adapter: {
           ciListRuns: async () => ({ ok: true as const, data: runs as never }),
@@ -216,7 +237,9 @@ describe('resolveMergeAnchorGitlab — head_pipeline must be bound to the head (
   });
 
   test('GREEN (gate): the same pipeline passes when it IS the current head pipeline', async () => {
-    // Same run list, but the MR head is the commit that pipeline merged: bound.
+    // Same run list, but the MR head is the commit that pipeline merged, and the
+    // branch is still there: bound.
+    tip = OLD;
     const current = JSON.stringify({ iid: 108, sha: OLD, head_pipeline: { id: 500, status: 'success', sha: MERGE_OLD, ref: REF } });
     const { r, waitedSec } = await gate([current], [oldGreen]);
     expect(r.ok).toBe(true);
@@ -231,5 +254,103 @@ describe('resolveMergeAnchorGitlab — head_pipeline must be bound to the head (
     const r = await resolveMergeAnchorGitlab({ number: 108, repo: 'org/repo' }, parentsOf);
     expectErr(r);
     expect(r.code).toBe('head_pipeline_not_bound');
+  });
+
+  // The MR RECORD lags a push too. Until GitLab refreshes it, it says sha=OLD and
+  // names OLD's merge-results pipeline, whose parents [BASE, OLD] bind to it.
+  const staleRecord = JSON.stringify({
+    iid: 108,
+    sha: OLD,
+    source_branch: 'feature/x',
+    head_pipeline: { id: 500, status: 'success', sha: MERGE_OLD, ref: REF },
+  });
+  const boundNewFailed = JSON.stringify({
+    iid: 108,
+    sha: NEW,
+    source_branch: 'feature/x',
+    head_pipeline: { id: 600, status: 'failed', sha: MERGE_NEW, ref: REF },
+  });
+
+  test('RED: a stale MR record behind the branch tip is refused, named', async () => {
+    onExec('glab api', staleRecord);
+    const r = await resolveMergeAnchorGitlab({ number: 108, repo: 'org/repo' }, parentsOf);
+    expectErr(r);
+    expect(r.code).toBe('head_pipeline_not_bound');
+    expect(r.error).toContain('not been refreshed to the branch tip');
+  });
+
+  test('RED: a stale MR record is refused against expected_sha, without reading the branch', async () => {
+    onExec('glab api', staleRecord);
+    const r = await resolveMergeAnchorGitlab({ number: 108, repo: 'org/repo', expected_sha: NEW }, parentsOf);
+    expectErr(r);
+    expect(r.code).toBe('head_pipeline_not_bound');
+    expect(r.error).toContain('not expected_sha');
+    expect(execCalls().some((c) => c.includes('/repository/branches/'))).toBe(false);
+  });
+
+  test('FAIL CLOSED: an unreadable branch tip is refused', async () => {
+    tip = undefined;
+    onExec('glab api', mr({ id: 600, status: 'success', sha: MERGE_NEW, ref: REF }));
+    const r = await resolveMergeAnchorGitlab({ number: 108, repo: 'org/repo' }, parentsOf);
+    expectErr(r);
+    expect(r.code).toBe('head_pipeline_not_bound');
+    expect(r.error).toContain('could not read the tip');
+  });
+
+  for (const expected of [undefined, NEW]) {
+    const label = expected === undefined ? 'branch tip' : 'expected_sha';
+    test(`RED (gate, ${label}): a stale MR record HOLDS past OLD's green and grades the new head run`, async () => {
+      const { r, waitedSec } = await gate(
+        [staleRecord, staleRecord, boundNewFailed],
+        [oldGreen, mergeRun(600, MERGE_NEW, 'failed')],
+        60,
+        expected,
+      );
+      expect(r.final_status).toBe('failure');
+      expect(r.run_id).toBe(600);
+      expect(waitedSec).toBeGreaterThan(0);
+    });
+
+    test(`RED (gate, ${label}): a stale MR record that never refreshes fails closed`, async () => {
+      const { r, waitedSec } = await gate([staleRecord], [oldGreen], 60, expected);
+      expect(r.ok).toBe(false);
+      expect(r.final_status).toBe('not_merge_result');
+      expect(waitedSec).toBeGreaterThanOrEqual(60);
+    });
+  }
+
+  test('GUARD (gate): an expected_sha that is not the head never passes, even when bound and green', async () => {
+    const boundNewGreen = JSON.stringify({
+      iid: 108,
+      sha: NEW,
+      source_branch: 'feature/x',
+      head_pipeline: { id: 600, status: 'success', sha: MERGE_NEW, ref: REF },
+    });
+    const { r } = await gate([boundNewGreen], [mergeRun(600, MERGE_NEW, 'success')], 60, OLD);
+    expect(r.ok).toBe(false);
+    expect(r.final_status).toBe('not_merge_result');
+  });
+
+  test('GUARD (gate): ci_wait_run holds an anchor on another head even if the adapter ignores expected_sha', async () => {
+    const { waitForRun } = await import('../ci-wait-run-poll.ts');
+    let t = 1_700_000_000_000;
+    const r = await waitForRun(
+      { ref: REF, platform: 'gitlab', require_merge_result: true, pr_number: 108, timeout_sec: 60, expected_sha: NEW },
+      {
+        adapter: {
+          ciListRuns: async () => ({ ok: true as const, data: [oldGreen] as never }),
+          resolveBranchSha: async () => ({ ok: true as const, data: null }),
+          // An adapter that drops expected_sha and anchors on the stale head.
+          resolveMergeAnchor: async () => ({ ok: true as const, data: { head_pipeline_id: 500, head_sha: OLD } }),
+        },
+        sleep: async (ms: number) => {
+          t += ms;
+        },
+        now: () => t,
+      },
+    );
+    expect(r.ok).toBe(false);
+    expect(r.final_status).toBe('not_merge_result');
+    if (!r.ok) expect(r.error).toContain('not expected_sha');
   });
 });

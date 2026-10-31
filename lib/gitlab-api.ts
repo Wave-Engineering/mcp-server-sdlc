@@ -110,6 +110,8 @@ export interface GitlabMr {
     start_sha?: string | null;
   } | null;
   merge_commit_sha?: string | null;
+  /** The project `source_branch` lives in: a fork's, for a cross-project MR. */
+  source_project_id?: number;
   created_at?: string;
   updated_at?: string;
 }
@@ -341,6 +343,34 @@ export function gitlabApiCommit(
   const path = projectPath(opts);
   const raw = execGlab(['glab', 'api', `projects/${path}/repository/commits/${sha}`]);
   return JSON.parse(raw) as GitlabCommit;
+}
+
+/** The fields of a repository branch we read. */
+export interface GitlabBranch {
+  name: string;
+  commit?: { id?: string } | null;
+}
+
+/**
+ * Fetch a branch, for its tip commit. The MR record lags a push until GitLab
+ * refreshes it, so the branch tip is the independent check of the MR's head
+ * (#588). `projectId` is the MR's `source_project_id` — a fork MR's source
+ * branch is not in the target project; absent, the `opts` project is read.
+ *
+ * Endpoint: `GET /projects/:id/repository/branches/:branch`
+ */
+export function gitlabApiBranch(
+  branch: string,
+  projectId: number | undefined,
+  opts?: { owner?: string; repo?: string },
+): GitlabBranch {
+  const path = projectId !== undefined ? String(projectId) : projectPath(opts);
+  const raw = execGlab([
+    'glab',
+    'api',
+    `projects/${path}/repository/branches/${encodeURIComponent(branch)}`,
+  ]);
+  return JSON.parse(raw) as GitlabBranch;
 }
 
 /** One file entry from `GET /projects/:id/merge_requests/:iid/diffs`. */

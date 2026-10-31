@@ -137,6 +137,38 @@ describe('snapshotGithub — argv shape (#220 regression)', () => {
   });
 });
 
+// #588: the PR record lags a push, and its rollup belongs to whatever head it
+// names. With expected_sha the rollup grades only once that head is the PR's.
+describe('snapshotGithub — expected_sha (#588)', () => {
+  const OLD = 'b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0';
+  const NEW = 'c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1';
+  const green = [{ __typename: 'CheckRun', status: 'COMPLETED', conclusion: 'SUCCESS', name: 'ci' }];
+
+  test('RED: a green rollup on a PR still at the OLD head reads as pending', () => {
+    onExec('gh pr view', JSON.stringify({ statusCheckRollup: green, url: 'u', headRefOid: OLD }));
+    const snap = snapshotGithub(5, undefined, NEW);
+    expect(snap).toMatchObject({ total: 1, passed: 0, failed: 0, pending: 1 });
+    expect(snap.summary).toContain('not expected_sha');
+    expect(execCalls()[0]).toContain('headRefOid');
+  });
+
+  test('GREEN: the rollup grades once the PR reports expected_sha', () => {
+    onExec('gh pr view', JSON.stringify({ statusCheckRollup: green, url: 'u', headRefOid: NEW }));
+    expect(snapshotGithub(5, undefined, NEW.toUpperCase())).toMatchObject({ total: 1, passed: 1 });
+  });
+
+  test('FAIL CLOSED: no headRefOid in the response is pending', () => {
+    onExec('gh pr view', JSON.stringify({ statusCheckRollup: green, url: 'u' }));
+    expect(snapshotGithub(5, undefined, NEW).pending).toBe(1);
+  });
+
+  test('without expected_sha the argv is unchanged', () => {
+    onExec('gh pr view', JSON.stringify({ statusCheckRollup: green, url: 'u' }));
+    snapshotGithub(5);
+    expect(execCalls()[0]).not.toContain('headRefOid');
+  });
+});
+
 // --- #409: shell-injection containment in the --repo flag ------------------
 //
 // `repoFlag` concatenates `repo` into the command string that `exec()` hands to

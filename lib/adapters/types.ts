@@ -381,6 +381,12 @@ export interface PrWaitCiArgs {
    * the window and restores #416's t=0 behaviour; only tests should do that.
    */
   settle_window_sec?: number;
+  /**
+   * The head the caller pushed (#588). Checks are graded only once the PR/MR
+   * reports this head; until then they read as pending. The PR/MR record lags
+   * a push, so without it GitLab checks the MR head against the branch tip.
+   */
+  expected_sha?: string;
 }
 
 export type PrWaitCiFinalState = 'passed' | 'failed' | 'timed_out';
@@ -531,6 +537,8 @@ export interface ResolveMergeAnchorArgs {
   /** PR (GitHub) / MR iid (GitLab). */
   number: number;
   repo?: string;
+  /** GitLab: bind the head pipeline to this head instead of the branch tip (#588). */
+  expected_sha?: string;
 }
 
 /**

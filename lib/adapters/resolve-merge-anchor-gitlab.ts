@@ -11,7 +11,13 @@
  */
 
 import { gitlabApiMr } from '../gitlab-api.js';
-import { apiParentsOf, bindHeadPipeline, type ParentsOf } from '../gitlab-head-pipeline.js';
+import {
+  apiParentsOf,
+  bindHeadPipeline,
+  headFreshness,
+  type HeadFreshness,
+  type ParentsOf,
+} from '../gitlab-head-pipeline.js';
 import type {
   AdapterResult,
   MergeAnchor,
@@ -37,6 +43,7 @@ function parseSlugOpts(
 export async function resolveMergeAnchorGitlab(
   args: ResolveMergeAnchorArgs,
   parentsOf?: ParentsOf,
+  freshness?: HeadFreshness,
 ): Promise<AdapterResult<MergeAnchor>> {
   if (!Number.isInteger(args.number) || args.number <= 0) {
     return {
@@ -70,7 +77,13 @@ export async function resolveMergeAnchorGitlab(
     // can still name the PREVIOUS head's pipeline, and anchoring on it lets that
     // head's green merge-result run pass the gate. Refuse unless it is bound to
     // the current head; ci_wait_run holds on this code and re-resolves (#588).
-    const binding = bindHeadPipeline(mr, parentsOf ?? apiParentsOf(opts));
+    // The MR record lags a push as well, so its head is checked against
+    // expected_sha, else the source branch tip, before anything binds.
+    const binding = bindHeadPipeline(
+      mr,
+      parentsOf ?? apiParentsOf(opts),
+      freshness ?? headFreshness(args.expected_sha, opts),
+    );
     if (!binding.bound) {
       return {
         ok: false,

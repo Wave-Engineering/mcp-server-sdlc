@@ -16,9 +16,21 @@
  *
  * Anything else is unbound — including a merge-train pipeline, a missing head
  * SHA, and a commit lookup that failed. Unbound never grades.
+ *
+ * The MR's own head is not proof either: the MR record lags a push until GitLab
+ * refreshes it, and in that window it still names the previous head AND that
+ * head's pipeline, which then bind to each other. So the head is checked
+ * against something outside the MR record first (`HeadFreshness`): the caller's
+ * `expected_sha` when it passed one, else the source branch's tip. A head that
+ * differs from it, or a tip that cannot be read, is unbound.
  */
 
-import { gitlabApiCommit, type GitlabMr, type GitlabPipeline } from './gitlab-api.js';
+import {
+  gitlabApiBranch,
+  gitlabApiCommit,
+  type GitlabMr,
+  type GitlabPipeline,
+} from './gitlab-api.js';
 
 /** Canonical source-branch head; `diff_refs.head_sha` wins over the top-level `sha`. */
 export function mrHeadSha(mr: GitlabMr): string {
@@ -37,11 +49,35 @@ export type HeadBinding =
 /** Parent SHAs of a commit, or `undefined` when the lookup failed. */
 export type ParentsOf = (sha: string) => string[] | undefined;
 
+/** The source branch's tip commit, or `undefined` when it could not be read. */
+export type BranchTipOf = (mr: GitlabMr) => string | undefined;
+
+/** The independent statement of the head the MR record must agree with. */
+export type HeadFreshness = { expectedSha: string } | { branchTipOf: BranchTipOf };
+
 function short(sha: string): string {
   return sha.slice(0, 8);
 }
 
-export function bindHeadPipeline(mr: GitlabMr, parentsOf: ParentsOf): HeadBinding {
+/** Why `head` is not yet the head to grade, or `null` when it is. */
+function staleHeadReason(mr: GitlabMr, head: string, freshness: HeadFreshness): string | null {
+  if ('expectedSha' in freshness) {
+    if (head.toLowerCase() === freshness.expectedSha.toLowerCase()) return null;
+    return `the MR head is ${short(head)}, not expected_sha ${short(freshness.expectedSha)}: the MR has not caught up with the push yet`;
+  }
+  const tip = freshness.branchTipOf(mr);
+  if (tip === undefined || tip === '') {
+    return `could not read the tip of source branch '${mr.source_branch}' to confirm the MR head ${short(head)} is current`;
+  }
+  if (tip.toLowerCase() === head.toLowerCase()) return null;
+  return `the MR head is ${short(head)} but source branch '${mr.source_branch}' is at ${short(tip)}: the MR has not been refreshed to the branch tip yet`;
+}
+
+export function bindHeadPipeline(
+  mr: GitlabMr,
+  parentsOf: ParentsOf,
+  freshness: HeadFreshness,
+): HeadBinding {
   const p = mrPipeline(mr);
   if (p === null) return { bound: false, reason: 'the MR has no head_pipeline' };
 
@@ -52,6 +88,9 @@ export function bindHeadPipeline(mr: GitlabMr, parentsOf: ParentsOf): HeadBindin
       reason: `the MR reports no head SHA, so pipeline ${p.id} cannot be bound to it`,
     };
   }
+
+  const stale = staleHeadReason(mr, head, freshness);
+  if (stale !== null) return { bound: false, reason: stale };
 
   const psha = p.sha ?? '';
   if (psha !== '' && psha.toLowerCase() === head.toLowerCase()) {
@@ -97,4 +136,27 @@ export function apiParentsOf(opts?: { owner?: string; repo?: string }): ParentsO
       return undefined;
     }
   };
+}
+
+/**
+ * `BranchTipOf` backed by the GitLab API. Deliberately NOT memoised: the tip is
+ * the thing that moves, and a cached one would bind a stale head again.
+ */
+export function apiBranchTipOf(opts?: { owner?: string; repo?: string }): BranchTipOf {
+  return (mr) => {
+    try {
+      const id = gitlabApiBranch(mr.source_branch, mr.source_project_id, opts).commit?.id;
+      return typeof id === 'string' ? id : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+}
+
+/** The caller's `expected_sha` when given, else the live branch tip. */
+export function headFreshness(
+  expectedSha: string | undefined,
+  opts?: { owner?: string; repo?: string },
+): HeadFreshness {
+  return expectedSha !== undefined ? { expectedSha } : { branchTipOf: apiBranchTipOf(opts) };
 }

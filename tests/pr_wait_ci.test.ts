@@ -321,6 +321,9 @@ describe('pr_wait_ci handler', () => {
     setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote'))
         return 'https://gitlab.com/org/repo.git\n';
+      // #588: the MR head is checked against the source branch tip.
+      if (cmd.includes('glab api projects/org%2Frepo/repository/branches/feature%2Ftest'))
+        return JSON.stringify({ name: 'feature/test', commit: { id: 'a1a1a1a1' } });
       if (cmd.includes('glab api projects/org%2Frepo/merge_requests/3'))
         return JSON.stringify({
           iid: 3,
@@ -388,6 +391,9 @@ describe('pr_wait_ci handler', () => {
     setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote'))
         return 'https://gitlab.com/cwd-org/cwd-repo.git\n';
+      // #588: the tip read goes to the same explicit project, not the cwd's.
+      if (cmd.includes('glab api projects/target-org%2Ftarget-repo/repository/branches/feature%2Ftest'))
+        return JSON.stringify({ name: 'feature/test', commit: { id: 'a1a1a1a1' } });
       if (cmd.includes('glab api projects/target-org%2Ftarget-repo/merge_requests/3'))
         return JSON.stringify({
           iid: 3,
