@@ -22,6 +22,7 @@ import { execSync } from 'child_process';
 import { shellEscape } from '../shared/shell-escape.js';
 import {
   defaultDeps,
+  remainingWaitSec,
   runPollLoop,
   type ChecksSnapshot,
   type Deps,
@@ -430,10 +431,13 @@ export async function prWaitCiGithub(
       // which is the whole point: this PR now gets a real passed/failed verdict.
     }
 
+    // #587: the settle window spends the same per-call budget the loop does.
+    const maxWaitSec = remainingWaitSec(args.max_wait_sec, deps.now() - probeStart);
     const pollArgs: PollArgs = {
       number: args.number,
       poll_interval_sec: args.poll_interval_sec,
       timeout_sec: args.timeout_sec,
+      ...(maxWaitSec !== undefined ? { max_wait_sec: maxWaitSec } : {}),
       repo: args.repo,
     };
     const result = await runPollLoop(

@@ -32,6 +32,7 @@ import {
 import { ciListRunsGitlab } from './ci-list-runs-gitlab.js';
 import {
   defaultDeps,
+  remainingWaitSec,
   runPollLoop,
   type ChecksSnapshot,
   type PollArgs,
@@ -297,10 +298,12 @@ export async function prWaitCiGitlab(
       // A pipeline appeared during the window — fall through to the poll loop.
     }
 
+    const maxWaitSec = remainingWaitSec(args.max_wait_sec, deps.now() - probeStart);
     const pollArgs: PollArgs = {
       number: args.number,
       poll_interval_sec: args.poll_interval_sec,
       timeout_sec: args.timeout_sec,
+      ...(maxWaitSec !== undefined ? { max_wait_sec: maxWaitSec } : {}),
       repo: args.repo,
     };
     // One memoised parents lookup for the whole wait (#588).
