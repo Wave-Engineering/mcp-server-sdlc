@@ -87,16 +87,21 @@ export interface EcParseResult {
 // to `EC-<n>`; `EC3`, `EC 3` and `EC-3 ` read as `EC-3` too, since a typo'd id
 // that fails to parse is a garbled update. The status token is everything up
 // to the first space.
-const EC_LINE = /^\[ec-state\s+ec\s*-?\s*(\d+)\s*\]\s*(\S*)\s*(.*)$/i;
+const EC_LINE = /^\[ec-state\s+ec\s*-?\s*<?\s*(\d+)\s*>?\s*\]\s*(\S*)\s*(.*)$/i;
 const EC_PREFIX = /^\[ec-state\b/i;
 // The format itself, as hold messages and docs quote it (`EC-<n>`, `EC-n`):
-// reported, never read as a state update about any EC.
-const EC_TEMPLATE = /^\[ec-state\s+ec\s*-?\s*(?:<[^>\]]*>|n)\s*\]/i;
+// reported, never read as a state update about any EC. A bracketed slot with a
+// digit in it (`EC-<3>`) is a filled-in id, not the template.
+const EC_TEMPLATE = /^\[ec-state\s+ec\s*-?\s*(?:<[^>\]\d]*>|n)\s*\]/i;
+// An id as a plan or a story may spell it: `EC-1`, `EC-01`, `ec1`, `EC <1>`.
+const EC_ID = /^ec\s*-?\s*<?\s*(\d+)\s*>?$/i;
 // Markdown an author may wrap a state line in: a list marker (bulleted or
 // numbered), then emphasis or a code span. Only wrapper characters may come
 // before `[ec-state`, so a sentence that mentions a state line is not one. A
 // `>` quote is deliberately NOT stripped: quoting a state line is not posting it.
 const MD_LEAD = /^(?:\d+[.)]\s+|[-*+]\s+)?[*_`]*/;
+// A line that opens or closes a fenced code block.
+const FENCE = /^(```|~~~)/;
 const MD_TRAIL = /[*_`]+\s*$/;
 // Emphasis or a code span closing right after the status word: `**[ec-state EC-1] met** — <url>`.
 const STATUS_WRAP = /[*_`]/g;
@@ -106,6 +111,16 @@ const EVIDENCE_LEAD = /^[\s—–:|*_`-]+/;
 function normalizeEcId(digits: string): string {
   // `EC-01` is `EC-1`: ids are matched exactly, so a padded id would miss its EC.
   return `EC-${digits.replace(/^0+(?=\d)/, '')}`;
+}
+
+/**
+ * The canonical `EC-<n>` form of an EC id as a plan or story spells it, so a
+ * declared `EC-01` and a posted `[ec-state EC-1]` meet. An id with no number
+ * in it is returned unchanged, and so matches only itself.
+ */
+export function canonicalEcId(raw: string): string {
+  const m = EC_ID.exec(raw.trim());
+  return m ? normalizeEcId(m[1]) : raw;
 }
 
 function isEcStatus(s: string): s is EcStatus {
@@ -148,8 +163,18 @@ export function parseEcStateComments(comments: EcComment[]): EcParseResult {
   const untrusted: UntrustedEcLine[] = [];
 
   for (const comment of ordered) {
+    let inFence = false;
     for (const rawLine of (comment.body ?? '').split(/\r?\n/)) {
-      const line = rawLine.trim().replace(MD_LEAD, '').replace(MD_TRAIL, '').trim();
+      const bare = rawLine.trim();
+      if (FENCE.test(bare)) {
+        inFence = !inFence;
+        continue;
+      }
+      // A line in a code span or a fenced block is quoted: it may be an
+      // instruction ("post `[ec-state EC-1] met` when it ships"), so it may
+      // tighten a gate but never release one.
+      const quoted = inFence || bare.replace(/^(?:\d+[.)]\s+|[-*+]\s+)?[*_]*/, '').startsWith('`');
+      const line = bare.replace(MD_LEAD, '').replace(MD_TRAIL, '').trim();
       if (!EC_PREFIX.test(line)) continue;
       if (comment.trusted !== true) {
         untrusted.push({
@@ -197,6 +222,15 @@ export function parseEcStateComments(comments: EcComment[]): EcParseResult {
         latest[id] = { status: 'unmet', evidence, updated_at: comment.created_at };
         continue;
       }
+      if (quoted && token === 'met') {
+        malformed.push({
+          line,
+          created_at: comment.created_at,
+          url: comment.url,
+          reason: `quoted met for ${id} not applied; post it bare, outside a code span or block`,
+        });
+        continue;
+      }
       latest[id] = { status: token, evidence, updated_at: comment.created_at };
     }
   }
@@ -234,7 +268,7 @@ export function syncEntryConditions(
 
   for (const [id, prev] of Object.entries(declared ?? {})) {
     const gates: EcGate = prev.gates === 'delivery' ? 'delivery' : 'start';
-    const rec = parsed.latest[id];
+    const rec = parsed.latest[canonicalEcId(id)];
     const next: EntryCondition = rec
       ? { status: rec.status, gates, evidence: rec.evidence, updated_at: rec.updated_at }
       : { status: 'unmet', gates, evidence: '', updated_at: prev.updated_at ?? '' };
@@ -244,7 +278,8 @@ export function syncEntryConditions(
     out[id] = next;
   }
 
-  const undeclared = Object.keys(parsed.latest).filter((id) => !(id in (declared ?? {})));
+  const declaredCanon = new Set(Object.keys(declared ?? {}).map(canonicalEcId));
+  const undeclared = Object.keys(parsed.latest).filter((id) => !declaredCanon.has(id));
   return {
     entry_conditions: out,
     changed,
@@ -341,6 +376,13 @@ export function evaluateWaveGate(
   const start = new Map<string, EcHold>();
   const delivery = new Map<string, EcHold>();
   const deps: DepHold[] = [];
+  // Story `ec` entries and declared keys may spell an id differently (`EC-01`, `EC-1`).
+  const conds = new Map<string, EntryCondition>();
+  for (const [key, cond] of Object.entries(entryConditions ?? {})) {
+    // Two keys for one id (`EC-1` and `EC-01`): a not-met one wins, so neither can open the gate alone.
+    const prev = conds.get(canonicalEcId(key));
+    if (prev === undefined || prev.status === 'met') conds.set(canonicalEcId(key), cond);
+  }
 
   for (const issue of issues) {
     const ids = ecList(issue.ec);
@@ -350,7 +392,7 @@ export function evaluateWaveGate(
       start.set(MALFORMED_EC, hold);
     }
     for (const id of ids ?? []) {
-      const cond = entryConditions?.[id];
+      const cond = conds.get(canonicalEcId(id));
       const status = cond === undefined ? 'undeclared' : String(cond.status ?? 'unmet');
       if (status === 'met') continue;
       // An undeclared EC has no known gate, so it takes the stricter one.

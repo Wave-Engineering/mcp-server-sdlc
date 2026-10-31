@@ -169,6 +169,43 @@ describe('parseEcStateComments', () => {
     expect(r.latest['EC-1'].status).toBe('unmet');
   });
 
+  test('ec_quoted_met_not_applied — a met in a code span or a fenced block does not release', () => {
+    for (const body of [
+      'When it ships, post:\n\n`[ec-state EC-1] met — <link to release>`',
+      'When it ships, post:\n```\n[ec-state EC-1] met\n```',
+    ]) {
+      const r = parseEcStateComments([
+        c('[ec-state EC-1] unmet', '2026-10-01T00:00:00Z'),
+        c(body, '2026-10-02T00:00:00Z'),
+      ]);
+      expect(r.latest['EC-1'].status).toBe('unmet');
+      expect(r.malformed).toHaveLength(1);
+      expect(r.malformed[0].reason).toContain('quoted met');
+    }
+  });
+
+  test('positive control — a quoted reclosed still holds, and a bare met after a fence releases', () => {
+    const r = parseEcStateComments([
+      c('[ec-state EC-1] met', '2026-10-01T00:00:00Z'),
+      c('```\n[ec-state EC-1] reclosed\n```', '2026-10-02T00:00:00Z'),
+    ]);
+    expect(r.latest['EC-1'].status).toBe('reclosed');
+    const r2 = parseEcStateComments([
+      c('[ec-state EC-1] unmet', '2026-10-01T00:00:00Z'),
+      c('```\nexample\n```\n[ec-state EC-1] met', '2026-10-02T00:00:00Z'),
+    ]);
+    expect(r2.latest['EC-1'].status).toBe('met');
+  });
+
+  test('ec_filled_template_slot — EC-<3> is EC-3, not the template', () => {
+    const r = parseEcStateComments([
+      c('[ec-state EC-3] met', '2026-10-01T00:00:00Z'),
+      c('[ec-state EC-<3>] reclosed', '2026-10-02T00:00:00Z'),
+    ]);
+    expect(r.latest['EC-3'].status).toBe('reclosed');
+    expect(r.malformed).toEqual([]);
+  });
+
   test('positive control — a quoted state line is not a state update', () => {
     const r = parseEcStateComments([
       c('[ec-state EC-1] met', '2026-10-01T00:00:00Z'),
@@ -285,6 +322,32 @@ describe('isCrossPlanRef', () => {
     expect(isCrossPlanRef('group/sub/project#4')).toBe(false);
     expect(isCrossPlanRef(4)).toBe(false);
     expect(isCrossPlanRef('w2')).toBe(false);
+  });
+});
+
+describe('EC id spellings', () => {
+  test('ec_padded_declared_id — a declared EC-01 takes a posted EC-1', () => {
+    const parsed = parseEcStateComments([c('[ec-state EC-1] met', '2026-10-01T00:00:00Z')]);
+    const r = syncEntryConditions({ 'EC-01': { status: 'unmet', gates: 'start' } }, parsed);
+    expect(r.entry_conditions['EC-01'].status).toBe('met');
+    expect(r.no_comment).toEqual([]);
+    expect(r.undeclared_in_comments).toEqual([]);
+  });
+
+  test('ec_padded_story_id — a story naming EC-01 is gated by a declared EC-1', () => {
+    expect(evaluateWaveGate({ 'EC-1': { status: 'unmet', gates: 'start' } }, [{ number: 10, ec: ['EC-01'] }]).held).toBe(true);
+    // Positive control: the same EC met releases it.
+    expect(evaluateWaveGate({ 'EC-1': { status: 'met', gates: 'start' } }, [{ number: 10, ec: ['EC-01'] }]).held).toBe(false);
+  });
+
+  test('two declared spellings of one id: a not-met one holds whichever order they come in', () => {
+    const both = (a: string, b: string) =>
+      evaluateWaveGate(
+        { [a]: { status: 'met', gates: 'start' }, [b]: { status: 'unmet', gates: 'start' } },
+        [{ number: 10, ec: ['EC-1'] }],
+      ).held;
+    expect(both('EC-1', 'EC-01')).toBe(true);
+    expect(both('EC-01', 'EC-1')).toBe(true);
   });
 });
 
