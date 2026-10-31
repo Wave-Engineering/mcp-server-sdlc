@@ -42,6 +42,14 @@ export interface ChecksSnapshot {
   pending: number;
   summary: string;
   url: string;
+  /** The pipeline this snapshot graded, when the platform names one (GitLab, #588). */
+  graded?: GradedPipeline;
+}
+
+export interface GradedPipeline {
+  id: number;
+  sha: string;
+  ref: string;
 }
 
 export interface PollArgs {
@@ -58,6 +66,31 @@ export interface PollResult {
   checks: { total: number; passed: number; failed: number; pending: number; summary: string };
   waited_sec: number;
   url: string;
+  /** The pipeline behind `final_state`, so a caller can check it (#588). */
+  graded_pipeline?: GradedPipeline;
+}
+
+function pollResult(
+  number: number,
+  finalState: FinalState,
+  snap: ChecksSnapshot,
+  waitedSec: number,
+): PollResult {
+  return {
+    ok: true,
+    number,
+    final_state: finalState,
+    checks: {
+      total: snap.total,
+      passed: snap.passed,
+      failed: snap.failed,
+      pending: snap.pending,
+      summary: snap.summary,
+    },
+    waited_sec: waitedSec,
+    url: snap.url,
+    ...(snap.graded !== undefined ? { graded_pipeline: snap.graded } : {}),
+  };
 }
 
 // Injection seam for tests — swap sleep + snapshot without touching real time/net.
@@ -139,37 +172,16 @@ export async function runPollLoop(args: PollArgs, deps: Deps): Promise<PollResul
 
     const decision = decide(lastSnap);
     if (decision) {
-      return {
-        ok: true,
-        number: args.number,
-        final_state: decision,
-        checks: {
-          total: lastSnap.total,
-          passed: lastSnap.passed,
-          failed: lastSnap.failed,
-          pending: lastSnap.pending,
-          summary: lastSnap.summary,
-        },
-        waited_sec: elapsedSec,
-        url: lastSnap.url,
-      };
+      return pollResult(args.number, decision, lastSnap, elapsedSec);
     }
 
     if (deps.nowFn() - start >= timeoutMs) {
-      return {
-        ok: true,
-        number: args.number,
-        final_state: 'timed_out',
-        checks: {
-          total: lastSnap.total,
-          passed: lastSnap.passed,
-          failed: lastSnap.failed,
-          pending: lastSnap.pending,
-          summary: lastSnap.summary,
-        },
-        waited_sec: Math.floor((deps.nowFn() - start) / 1000),
-        url: lastSnap.url,
-      };
+      return pollResult(
+        args.number,
+        'timed_out',
+        lastSnap,
+        Math.floor((deps.nowFn() - start) / 1000),
+      );
     }
 
     await deps.sleepFn(intervalMs);
@@ -179,21 +191,7 @@ export async function runPollLoop(args: PollArgs, deps: Deps): Promise<PollResul
       lastSnap = await deps.snapshotFn(args.number, args.repo);
       const finalElapsed = Math.floor((deps.nowFn() - start) / 1000);
       logCycle(args.number, finalElapsed, lastSnap);
-      const postDecision = decide(lastSnap);
-      return {
-        ok: true,
-        number: args.number,
-        final_state: postDecision ?? 'timed_out',
-        checks: {
-          total: lastSnap.total,
-          passed: lastSnap.passed,
-          failed: lastSnap.failed,
-          pending: lastSnap.pending,
-          summary: lastSnap.summary,
-        },
-        waited_sec: finalElapsed,
-        url: lastSnap.url,
-      };
+      return pollResult(args.number, decide(lastSnap) ?? 'timed_out', lastSnap, finalElapsed);
     }
   }
 }

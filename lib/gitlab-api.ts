@@ -322,6 +322,27 @@ export function gitlabApiMr(
   return JSON.parse(raw) as GitlabMr;
 }
 
+/** The fields of a repository commit we read. */
+export interface GitlabCommit {
+  id: string;
+  parent_ids: string[];
+}
+
+/**
+ * Fetch a single commit by SHA. Resolves the ephemeral merge commit a
+ * merged-results pipeline runs on, whose parents bind it to the MR head (#588).
+ *
+ * Endpoint: `GET /projects/:id/repository/commits/:sha`
+ */
+export function gitlabApiCommit(
+  sha: string,
+  opts?: { owner?: string; repo?: string },
+): GitlabCommit {
+  const path = projectPath(opts);
+  const raw = execGlab(['glab', 'api', `projects/${path}/repository/commits/${sha}`]);
+  return JSON.parse(raw) as GitlabCommit;
+}
+
 /** One file entry from `GET /projects/:id/merge_requests/:iid/diffs`. */
 export interface GitlabMrDiff {
   old_path?: string;

@@ -11,6 +11,7 @@
  */
 
 import { gitlabApiMr } from '../gitlab-api.js';
+import { apiParentsOf, bindHeadPipeline, type ParentsOf } from '../gitlab-head-pipeline.js';
 import type {
   AdapterResult,
   MergeAnchor,
@@ -35,6 +36,7 @@ function parseSlugOpts(
 
 export async function resolveMergeAnchorGitlab(
   args: ResolveMergeAnchorArgs,
+  parentsOf?: ParentsOf,
 ): Promise<AdapterResult<MergeAnchor>> {
   if (!Number.isInteger(args.number) || args.number <= 0) {
     return {
@@ -45,7 +47,8 @@ export async function resolveMergeAnchorGitlab(
   }
 
   try {
-    const mr = gitlabApiMr(args.number, parseSlugOpts(args.repo));
+    const opts = parseSlugOpts(args.repo);
+    const mr = gitlabApiMr(args.number, opts);
     const id = mr.head_pipeline?.id ?? mr.pipeline?.id;
 
     if (typeof id !== 'number') {
@@ -63,7 +66,22 @@ export async function resolveMergeAnchorGitlab(
       };
     }
 
-    return { ok: true, data: { head_pipeline_id: id } };
+    // #588: `head_pipeline` is not proof by itself. Right after a push GitLab
+    // can still name the PREVIOUS head's pipeline, and anchoring on it lets that
+    // head's green merge-result run pass the gate. Refuse unless it is bound to
+    // the current head; a caller re-waits once the head's pipeline is attached.
+    const binding = bindHeadPipeline(mr, parentsOf ?? apiParentsOf(opts));
+    if (!binding.bound) {
+      return {
+        ok: false,
+        code: 'head_pipeline_not_bound',
+        error: `MR !${args.number}: ${binding.reason}. Cannot anchor a merge-result run to the commit under test.`,
+      };
+    }
+
+    // `head_sha` too, so the pre-grade re-check (anchorsEqual) also sees a head
+    // that moved while the pipeline id stayed put.
+    return { ok: true, data: { head_pipeline_id: id, head_sha: binding.head_sha } };
   } catch (err) {
     return {
       ok: false,

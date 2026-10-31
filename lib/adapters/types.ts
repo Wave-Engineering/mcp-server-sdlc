@@ -404,6 +404,11 @@ export interface PrWaitCiPolledResponse {
   checks: PrWaitCiChecks;
   waited_sec: number;
   url: string;
+  /**
+   * GitLab: the pipeline `final_state` was graded from, bound to the MR's
+   * current head (#588). Absent on GitHub, whose rollup is the head commit's.
+   */
+  graded_pipeline?: { id: number; sha: string; ref: string };
 }
 
 /**
@@ -545,7 +550,10 @@ export interface ResolveMergeAnchorArgs {
  * Absence of an anchor must HOLD, never pass. Freshness has to be PROVEN.
  */
 export interface MergeAnchor {
-  /** GitHub: the PR head SHA a merge-result run must report. */
+  /**
+   * GitHub: the PR head SHA a merge-result run must report. GitLab: the MR head
+   * that `head_pipeline_id` is bound to (#588), compared only by the re-check.
+   */
   head_sha?: string;
   /** GitLab: the id of the pipeline GitLab considers current for this MR. */
   head_pipeline_id?: number;

@@ -35,22 +35,29 @@ beforeEach(() => {
   onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
 });
 
+const HEAD = 'a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1';
+
 describe('resolveMergeAnchorGitlab — subprocess boundary (#476)', () => {
   test('reads head_pipeline.id from the MR', async () => {
     onExec(
       'glab api',
-      JSON.stringify({ iid: 108, head_pipeline: { id: 500, status: 'success' } }),
+      JSON.stringify({
+        iid: 108,
+        sha: HEAD,
+        head_pipeline: { id: 500, status: 'success', sha: HEAD, ref: 'feature/x' },
+      }),
     );
 
     const r = await resolveMergeAnchorGitlab({ number: 108, repo: 'org/repo' });
     if (!('ok' in r) || !r.ok) throw new Error(`expected ok, got ${JSON.stringify(r)}`);
 
     expect(r.data.head_pipeline_id).toBe(500);
-    expect(r.data.head_sha).toBeUndefined(); // GitHub-only field
+    // #588: the head the pipeline is bound to, for the pre-grade re-check.
+    expect(r.data.head_sha).toBe(HEAD);
   });
 
   test('falls back to `pipeline` when `head_pipeline` is absent', async () => {
-    onExec('glab api', JSON.stringify({ iid: 108, pipeline: { id: 501 } }));
+    onExec('glab api', JSON.stringify({ iid: 108, sha: HEAD, pipeline: { id: 501, sha: HEAD, ref: 'feature/x' } }));
     const r = await resolveMergeAnchorGitlab({ number: 108, repo: 'org/repo' });
     if (!('ok' in r) || !r.ok) throw new Error('expected ok');
     expect(r.data.head_pipeline_id).toBe(501);
@@ -78,7 +85,7 @@ describe('resolveMergeAnchorGitlab — subprocess boundary (#476)', () => {
     // GitLab supports arbitrarily-nested groups. A 2-way split on '/' would
     // resolve `example-group/internal` instead of the real project — and route.ts
     // sends exactly these deep slugs to the GitLab adapter (#290).
-    onExec('glab api', JSON.stringify({ iid: 4, head_pipeline: { id: 77 } }));
+    onExec('glab api', JSON.stringify({ iid: 4, sha: HEAD, head_pipeline: { id: 77, sha: HEAD, ref: 'feature/x' } }));
 
     const r = await resolveMergeAnchorGitlab({
       number: 4,
@@ -90,5 +97,110 @@ describe('resolveMergeAnchorGitlab — subprocess boundary (#476)', () => {
     const call = execCalls().join(' ');
     // The full path, URL-encoded — not the truncated `example-group/internal`.
     expect(call).toContain('example-group%2Finternal%2Ftools%2Fwaldorf');
+  });
+});
+
+// #588: right after a push GitLab can still name the PREVIOUS head's merge-result
+// pipeline as `head_pipeline`. Anchoring on it lets that head's green run pass
+// ci_wait_run(require_merge_result). The anchor must refuse until it is bound.
+describe('resolveMergeAnchorGitlab — head_pipeline must be bound to the head (#588)', () => {
+  const OLD = 'b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0';
+  const NEW = 'c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1';
+  const BASE = 'd2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2';
+  const MERGE_OLD = 'e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3';
+  const MERGE_NEW = 'f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4';
+  const REF = 'refs/merge-requests/108/merge';
+  const parentsOf = (sha: string) =>
+    ({ [MERGE_OLD]: [BASE, OLD], [MERGE_NEW]: [BASE, NEW] })[sha];
+
+  function mr(pipeline: Record<string, unknown>) {
+    return JSON.stringify({ iid: 108, sha: NEW, head_pipeline: pipeline });
+  }
+
+  test('RED: push then an immediate wait — the old head merge pipeline is refused, named', async () => {
+    onExec('glab api', mr({ id: 500, status: 'success', sha: MERGE_OLD, ref: REF }));
+    const r = await resolveMergeAnchorGitlab({ number: 108, repo: 'org/repo' }, parentsOf);
+    expectErr(r);
+    expect(r.code).toBe('head_pipeline_not_bound');
+    expect(r.error).toContain('head_pipeline 500');
+    expect(r.error).toContain('not attached yet');
+  });
+
+  test('GREEN: once the head merge pipeline is attached, it is the anchor', async () => {
+    onExec('glab api', mr({ id: 600, status: 'running', sha: MERGE_NEW, ref: REF }));
+    const r = await resolveMergeAnchorGitlab({ number: 108, repo: 'org/repo' }, parentsOf);
+    if (!('ok' in r) || !r.ok) throw new Error(`expected ok, got ${JSON.stringify(r)}`);
+    expect(r.data).toEqual({ head_pipeline_id: 600, head_sha: NEW });
+  });
+
+  test('a branch pipeline on the previous head is refused too', async () => {
+    onExec('glab api', mr({ id: 501, status: 'success', sha: OLD, ref: 'feature/x' }));
+    const r = await resolveMergeAnchorGitlab({ number: 108, repo: 'org/repo' }, parentsOf);
+    expectErr(r);
+    expect(r.code).toBe('head_pipeline_not_bound');
+  });
+
+  test('FAIL CLOSED: an unreadable merge commit is refused', async () => {
+    onExec('glab api', mr({ id: 600, status: 'success', sha: MERGE_NEW, ref: REF }));
+    const r = await resolveMergeAnchorGitlab({ number: 108, repo: 'org/repo' }, () => undefined);
+    expectErr(r);
+    expect(r.code).toBe('head_pipeline_not_bound');
+    expect(r.error).toContain('could not read merge commit');
+  });
+
+  // The gate itself: ci_wait_run(require_merge_result) with the REAL GitLab anchor.
+  // The run list already holds the previous head's GREEN merge-result pipeline.
+  async function gate(head: string, pipeline: Record<string, unknown>) {
+    const { waitForRun } = await import('../ci-wait-run-poll.ts');
+    onExec('glab api', JSON.stringify({ iid: 108, sha: head, head_pipeline: pipeline }));
+    let t = 1_700_000_000_000;
+    const oldGreen = {
+      run_id: 500,
+      workflow_name: 'merge_request_event',
+      status: 'success',
+      conclusion: 'success',
+      url: 'https://gitlab.com/org/repo/-/pipelines/500',
+      head_sha: MERGE_OLD,
+      head_branch: REF,
+      created_at: '2026-10-31T10:00:00Z',
+      event: 'merge_request_event',
+    };
+    return waitForRun(
+      { ref: REF, platform: 'gitlab', require_merge_result: true, pr_number: 108, repo: 'org/repo', timeout_sec: 60 },
+      {
+        adapter: {
+          ciListRuns: async () => ({ ok: true as const, data: [oldGreen] }),
+          resolveBranchSha: async () => ({ ok: true as const, data: null }),
+          resolveMergeAnchor: (a) => resolveMergeAnchorGitlab(a, parentsOf),
+        },
+        sleep: async (ms: number) => {
+          t += ms;
+        },
+        now: () => t,
+      },
+    );
+  }
+
+  test('RED (gate): ci_wait_run right after a push does not grade the old green pipeline', async () => {
+    // MR head moved to NEW; head_pipeline is still OLD's merge pipeline.
+    const r = await gate(NEW, { id: 500, status: 'success', sha: MERGE_OLD, ref: REF });
+    expect(r.ok).toBe(false);
+    expect(r.final_status).toBe('not_merge_result');
+    if (!r.ok) expect(r.error).toContain('not attached yet');
+  });
+
+  test('GREEN (gate): the same pipeline passes when it IS the current head pipeline', async () => {
+    // Same run list, but the MR head is the commit that pipeline merged: bound.
+    const r = await gate(OLD, { id: 500, status: 'success', sha: MERGE_OLD, ref: REF });
+    expect(r.ok).toBe(true);
+    expect(r.final_status).toBe('success');
+    expect(r.run_id).toBe(500);
+  });
+
+  test('FAIL CLOSED: an MR with no head SHA is refused', async () => {
+    onExec('glab api', JSON.stringify({ iid: 108, head_pipeline: { id: 500, sha: OLD, ref: REF } }));
+    const r = await resolveMergeAnchorGitlab({ number: 108, repo: 'org/repo' }, parentsOf);
+    expectErr(r);
+    expect(r.code).toBe('head_pipeline_not_bound');
   });
 });

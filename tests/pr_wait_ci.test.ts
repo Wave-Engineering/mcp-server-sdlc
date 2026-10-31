@@ -325,7 +325,8 @@ describe('pr_wait_ci handler', () => {
         return JSON.stringify({
           iid: 3,
           web_url: 'https://gitlab.com/org/repo/-/merge_requests/3',
-          head_pipeline: { status: 'success' },
+          sha: 'a1a1a1a1',
+          head_pipeline: { id: 11, status: 'success', sha: 'a1a1a1a1', ref: 'feature/test' },
           title: 'Test MR',
           description: '',
           state: 'opened',
@@ -345,6 +346,8 @@ describe('pr_wait_ci handler', () => {
     expect(data.ok).toBe(true);
     expect(data.final_state).toBe('passed');
     expect(data.url).toBe('https://gitlab.com/org/repo/-/merge_requests/3');
+    // #588: the envelope names the pipeline it graded.
+    expect(data.graded_pipeline).toEqual({ id: 11, sha: 'a1a1a1a1', ref: 'feature/test' });
   });
 
   // --- cross-repo routing ---
@@ -389,7 +392,8 @@ describe('pr_wait_ci handler', () => {
         return JSON.stringify({
           iid: 3,
           web_url: 'https://gitlab.com/target-org/target-repo/-/merge_requests/3',
-          head_pipeline: { status: 'success' },
+          sha: 'a1a1a1a1',
+          head_pipeline: { id: 11, status: 'success', sha: 'a1a1a1a1', ref: 'feature/test' },
           title: 'Test MR',
           description: '',
           state: 'opened',

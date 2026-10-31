@@ -24,13 +24,17 @@ beforeEach(() => {
   resetExecMock();
 });
 
+// The MR's current head. A fixture pipeline on this sha is bound to it (#588).
+const HEAD = 'a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1';
+
 function mrJson(status: string | undefined, web_url: string = 'https://gitlab.com/org/repo/-/merge_requests/3') {
   const obj: Record<string, unknown> = {
     iid: 3,
     state: 'opened',
     web_url,
+    sha: HEAD,
   };
-  if (status !== undefined) obj.head_pipeline = { status };
+  if (status !== undefined) obj.head_pipeline = { id: 11, status, sha: HEAD, ref: 'feature/x' };
   return JSON.stringify(obj);
 }
 
@@ -59,6 +63,7 @@ describe('snapshotGitlab — pipeline-status normalization table', () => {
       pending: 0,
       summary: 'pipeline success',
       url: 'https://gitlab.com/org/repo/-/merge_requests/3',
+      graded: { id: 11, sha: HEAD, ref: 'feature/x' },
     });
   });
 
@@ -115,8 +120,9 @@ describe('snapshotGitlab — pipeline-status normalization table', () => {
         iid: 3,
         state: 'opened',
         web_url: 'https://gitlab.com/org/repo/-/merge_requests/3',
-        head_pipeline: { status: 'success' },
-        pipeline: { status: 'failed' },
+        sha: HEAD,
+        head_pipeline: { id: 11, status: 'success', sha: HEAD, ref: 'feature/x' },
+        pipeline: { id: 12, status: 'failed', sha: HEAD, ref: 'feature/x' },
       }),
     );
     // Note: the migration preserves the pre-existing handler precedence —
@@ -364,5 +370,171 @@ describe('prWaitCiGitlab — full poll path', () => {
     }
     expect(result.code).toBe('unexpected_error');
     expect(result.error).toContain('glab');
+  });
+});
+
+// #588: right after a push, GitLab can leave `head_pipeline` on the PREVIOUS
+// head's pipeline — already terminal — for a few seconds. Grading it passed the
+// merge gate on a commit CI never saw.
+describe('#588 — only a pipeline bound to the current head is graded', () => {
+  const OLD = 'b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0';
+  const NEW = 'c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1';
+  const BASE = 'd2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2';
+  const MERGE_OLD = 'e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3';
+  const MERGE_NEW = 'f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4';
+  const MERGE_REF = 'refs/merge-requests/3/merge';
+  const PARENTS: Record<string, string[]> = {
+    [MERGE_OLD]: [BASE, OLD],
+    [MERGE_NEW]: [BASE, NEW],
+  };
+  const parentsOf = (sha: string) => PARENTS[sha];
+
+  function mr(head: string, pipeline: Record<string, unknown> | null) {
+    return JSON.stringify({
+      iid: 3,
+      state: 'opened',
+      web_url: 'https://gitlab.com/org/repo/-/merge_requests/3',
+      sha: head,
+      ...(pipeline !== null ? { head_pipeline: pipeline } : {}),
+    });
+  }
+
+  /** The MR fetch returns each fixture in turn, then repeats the last. */
+  function mrSequence(...bodies: string[]) {
+    let i = 0;
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec('glab api projects/org%2Frepo/merge_requests/3', () => bodies[Math.min(i++, bodies.length - 1)]);
+  }
+
+  /** Drive the real poll loop over snapshotGitlab with a fake clock. */
+  async function poll(timeoutSec = 600) {
+    const { runPollLoop } = await import('../pr-wait-ci-poll.ts');
+    let t = 0;
+    return runPollLoop(
+      { number: 3, poll_interval_sec: 5, timeout_sec: timeoutSec },
+      {
+        snapshotFn: (n, repo) => snapshotGitlab(n, repo, parentsOf),
+        sleepFn: async (ms) => {
+          t += ms;
+        },
+        nowFn: () => t,
+      },
+    );
+  }
+
+  test("RED: a terminal pipeline for the PREVIOUS head reads as pending, not passed", () => {
+    mrSequence(mr(NEW, { id: 10, status: 'success', sha: OLD, ref: 'feature/x' }));
+    const snap = snapshotGitlab(3, undefined, parentsOf);
+    expect(snap.pending).toBe(1);
+    expect(snap.passed).toBe(0);
+    expect(snap.graded).toBeUndefined();
+    expect(snap.summary).toContain('head_pipeline 10');
+    expect(snap.summary).toContain('not attached yet');
+  });
+
+  test('push then an immediate wait: holds past the old pass, grades the new head pipeline', async () => {
+    mrSequence(
+      mr(NEW, { id: 10, status: 'success', sha: OLD, ref: 'feature/x' }),
+      mr(NEW, { id: 10, status: 'success', sha: OLD, ref: 'feature/x' }),
+      mr(NEW, { id: 20, status: 'running', sha: NEW, ref: 'feature/x' }),
+      mr(NEW, { id: 20, status: 'failed', sha: NEW, ref: 'feature/x' }),
+    );
+    const r = await poll();
+    // The old head's green pipeline must not decide the wait; the new one does.
+    expect(r.final_state).toBe('failed');
+    expect(r.graded_pipeline).toEqual({ id: 20, sha: NEW, ref: 'feature/x' });
+    expect(r.waited_sec).toBe(15);
+  });
+
+  test('a head pipeline that never attaches times out, never passes', async () => {
+    mrSequence(mr(NEW, { id: 10, status: 'success', sha: OLD, ref: 'feature/x' }));
+    const r = await poll(30);
+    expect(r.final_state).toBe('timed_out');
+    expect(r.graded_pipeline).toBeUndefined();
+  });
+
+  test('merged-results: the PREVIOUS head merge pipeline reads as pending', () => {
+    mrSequence(mr(NEW, { id: 10, status: 'success', sha: MERGE_OLD, ref: MERGE_REF }));
+    const snap = snapshotGitlab(3, undefined, parentsOf);
+    expect(snap.pending).toBe(1);
+    expect(snap.passed).toBe(0);
+  });
+
+  test('merged-results: push then wait grades the merge pipeline whose 2nd parent is the head', async () => {
+    mrSequence(
+      mr(NEW, { id: 10, status: 'success', sha: MERGE_OLD, ref: MERGE_REF }),
+      mr(NEW, { id: 21, status: 'success', sha: MERGE_NEW, ref: MERGE_REF }),
+    );
+    const r = await poll();
+    expect(r.final_state).toBe('passed');
+    expect(r.graded_pipeline).toEqual({ id: 21, sha: MERGE_NEW, ref: MERGE_REF });
+    expect(r.waited_sec).toBe(5);
+  });
+
+  test('merged-results: the head as FIRST parent does not bind', () => {
+    mrSequence(mr(NEW, { id: 21, status: 'success', sha: MERGE_NEW, ref: MERGE_REF }));
+    const snap = snapshotGitlab(3, undefined, () => [NEW, BASE]);
+    expect(snap.pending).toBe(1);
+  });
+
+  test('merged-results: a failed merge-commit lookup reads as pending', () => {
+    mrSequence(mr(NEW, { id: 21, status: 'success', sha: MERGE_NEW, ref: MERGE_REF }));
+    const snap = snapshotGitlab(3, undefined, () => undefined);
+    expect(snap.pending).toBe(1);
+    expect(snap.summary).toContain('could not read merge commit');
+  });
+
+  test('a non-merge ref is never bound by parents (e.g. a merge train)', () => {
+    mrSequence(mr(NEW, { id: 22, status: 'success', sha: MERGE_NEW, ref: 'refs/merge-requests/3/train' }));
+    const snap = snapshotGitlab(3, undefined, parentsOf);
+    expect(snap.pending).toBe(1);
+  });
+
+  test('no head SHA on the MR fails closed: pending, never passed', () => {
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec(
+      'glab api projects/org%2Frepo/merge_requests/3',
+      JSON.stringify({ iid: 3, state: 'opened', web_url: 'u', head_pipeline: { id: 10, status: 'success', sha: OLD, ref: 'f' } }),
+    );
+    const snap = snapshotGitlab(3, undefined, parentsOf);
+    expect(snap.pending).toBe(1);
+    expect(snap.summary).toContain('no head SHA');
+  });
+
+  test('diff_refs.head_sha wins over the top-level sha', () => {
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec(
+      'glab api projects/org%2Frepo/merge_requests/3',
+      JSON.stringify({
+        iid: 3,
+        state: 'opened',
+        web_url: 'u',
+        sha: OLD,
+        diff_refs: { head_sha: NEW },
+        head_pipeline: { id: 10, status: 'success', sha: OLD, ref: 'f' },
+      }),
+    );
+    expect(snapshotGitlab(3, undefined, parentsOf).pending).toBe(1);
+  });
+
+  test('GREEN: a head pipeline already finished returns at once (no regression)', async () => {
+    mrSequence(mr(NEW, { id: 20, status: 'success', sha: NEW, ref: 'feature/x' }));
+    const r = await poll();
+    expect(r.final_state).toBe('passed');
+    expect(r.waited_sec).toBe(0);
+    expect(r.graded_pipeline).toEqual({ id: 20, sha: NEW, ref: 'feature/x' });
+  });
+
+  test('apiParentsOf reads each merge commit once per wait', async () => {
+    const { apiParentsOf } = await import('../gitlab-head-pipeline.ts');
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec(
+      'glab api projects/org%2Frepo/repository/commits/' + MERGE_NEW,
+      JSON.stringify({ id: MERGE_NEW, parent_ids: [BASE, NEW] }),
+    );
+    const lookup = apiParentsOf();
+    expect(lookup(MERGE_NEW)).toEqual([BASE, NEW]);
+    expect(lookup(MERGE_NEW)).toEqual([BASE, NEW]);
+    expect(execCalls().filter((c) => c.includes('repository/commits/')).length).toBe(1);
   });
 });
