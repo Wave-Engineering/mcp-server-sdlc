@@ -298,11 +298,13 @@ export async function prWaitCiGitlab(
       // A pipeline appeared during the window — fall through to the poll loop.
     }
 
-    const maxWaitSec = remainingWaitSec(args.max_wait_sec, deps.now() - probeStart);
+    // #587: the settle window spends the per-call budget and timeout alike.
+    const spentMs = deps.now() - probeStart;
+    const maxWaitSec = remainingWaitSec(args.max_wait_sec, spentMs);
     const pollArgs: PollArgs = {
       number: args.number,
       poll_interval_sec: args.poll_interval_sec,
-      timeout_sec: args.timeout_sec,
+      timeout_sec: remainingWaitSec(args.timeout_sec, spentMs),
       ...(maxWaitSec !== undefined ? { max_wait_sec: maxWaitSec } : {}),
       repo: args.repo,
     };

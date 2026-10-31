@@ -14,7 +14,7 @@ Tools below are listed in alphabetic order. To add a tool: drop a file in `handl
 |-------|------|---------|-------------|
 | `number` | number | (required) | PR (GitHub) or MR (GitLab) iid. |
 | `poll_interval_sec` | number | `30` | Seconds between snapshots. Hard floor `5`. |
-| `timeout_sec` | number | `1800` | Maximum wall-clock wait **for this call**. When it binds first, the result is the terminal `timed_out`. |
+| `timeout_sec` | number | `1800` | Maximum wall-clock wait **for this call**, settle window included. When it binds first (at or below `max_wait_sec`), the result is the terminal `timed_out`. |
 | `max_wait_sec` | number | `1500` | This call's budget, settle window included (#587). Ceiling `1700`; values above it, or below `1`, are rejected. When it binds first, the result is the resumable `pending`. |
 | `expected_sha` | string | (none) | 40-hex head the caller pushed (#588). Checks grade only once the PR/MR reports this head; until then they read as pending. Recommended for every merge gate: the PR/MR record lags a push. |
 | `repo` | string | (cwd remote) | `owner/repo` slug for cross-repo dispatch. GitLab nested groups (`group/subgroup/repo`) are accepted. |
@@ -59,11 +59,10 @@ returns `final_state: "pending"` with `resume: true` and the current counts.
   last one at the deadline, returns `failed` at once.
 - **`timeout_sec` is per call**, so with the defaults (`1500` under `1800`) a
   call ends `pending`, not `timed_out`. A caller that wants an overall deadline
-  keeps it itself, across calls. To get a terminal `timed_out` from one call,
-  set `timeout_sec` below `max_wait_sec` by more than the settle window
-  (`settle_window_sec`, default 45 s). The first probe and any settle window
-  are taken out of the budget before the poll loop starts, so near-equal
-  values can end either way, depending on how long those took.
+  keeps it itself, across calls. Set `timeout_sec` at or below `max_wait_sec`
+  to get a terminal `timed_out` from one call. The first probe and any settle
+  window count against both, so which one binds depends only on the two
+  values, never on how long the probe took.
 - Sleeps are clamped to the time left, so a long `poll_interval_sec` cannot
   carry the call past its budget. The settle window is not cut short by the
   budget (that would weaken a `no_checks_configured` verdict), but its time is

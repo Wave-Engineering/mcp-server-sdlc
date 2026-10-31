@@ -431,12 +431,15 @@ export async function prWaitCiGithub(
       // which is the whole point: this PR now gets a real passed/failed verdict.
     }
 
-    // #587: the settle window spends the same per-call budget the loop does.
-    const maxWaitSec = remainingWaitSec(args.max_wait_sec, deps.now() - probeStart);
+    // #587: the settle window spends the same per-call budget the loop does,
+    // and the same per-call timeout. Charging both keeps pending-vs-timed_out
+    // a function of the caller's own max_wait_sec < timeout_sec, not of timing.
+    const spentMs = deps.now() - probeStart;
+    const maxWaitSec = remainingWaitSec(args.max_wait_sec, spentMs);
     const pollArgs: PollArgs = {
       number: args.number,
       poll_interval_sec: args.poll_interval_sec,
-      timeout_sec: args.timeout_sec,
+      timeout_sec: remainingWaitSec(args.timeout_sec, spentMs),
       ...(maxWaitSec !== undefined ? { max_wait_sec: maxWaitSec } : {}),
       repo: args.repo,
     };

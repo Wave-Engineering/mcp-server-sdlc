@@ -49,12 +49,16 @@ export const MAX_WAIT_DEFAULT_SEC = 1500;
 export const MAX_WAIT_CEILING_SEC = 1700;
 
 /**
- * What is left of a call's `max_wait_sec` once the adapter has spent `spentMs`
- * on its settle window, so the budget bounds the whole call, not just the loop.
+ * What is left of a call's `max_wait_sec` (or `timeout_sec`) once the adapter
+ * has spent `spentMs` on its first probe and settle window, so each bounds the
+ * whole call, not just the loop. Both are charged the same `spentMs`, so which
+ * one binds first is decided by the caller's own values alone.
  */
-export function remainingWaitSec(maxWaitSec: number | undefined, spentMs: number): number | undefined {
-  if (maxWaitSec === undefined) return undefined;
-  return Math.max(0, maxWaitSec - Math.floor(spentMs / 1000));
+export function remainingWaitSec(sec: number, spentMs: number): number;
+export function remainingWaitSec(sec: number | undefined, spentMs: number): number | undefined;
+export function remainingWaitSec(sec: number | undefined, spentMs: number): number | undefined {
+  if (sec === undefined) return undefined;
+  return Math.max(0, sec - Math.floor(spentMs / 1000));
 }
 
 export interface ChecksSnapshot {
