@@ -3,7 +3,8 @@
  *
  * Argv:
  *   gh api repos/<owner>/<repo>/issues/<n>/comments --paginate
- *     --jq '.[] | {body, created_at, url: .html_url} | @json'
+ *     --jq '.[] | {body, created_at, url: .html_url, author: .user.login,
+ *              association: .author_association} | @json'
  *
  * `--paginate` walks every page, so the list is complete. `--jq` turns each
  * page's array into one JSON string per line: without it, `--paginate` prints
@@ -12,6 +13,12 @@
  *
  * With no `repo`, the path uses gh's `{owner}/{repo}` placeholders, which gh
  * fills in from the current checkout.
+ *
+ * `trusted` comes from `author_association`: OWNER, MEMBER (of the owning
+ * org) and COLLABORATOR are trusted; CONTRIBUTOR, NONE and the rest are not.
+ * On a public repo any account can comment, so this is what stops a drive-by
+ * `[ec-state EC-1] met` from releasing a gate. MEMBER is org membership, not a
+ * per-repo permission check; it is the strictest signal this one call carries.
  */
 
 import { execSync } from 'child_process';
@@ -24,7 +31,9 @@ import type {
 } from './types.js';
 
 const GITHUB_REPO_SLUG = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
-const JQ = '.[] | {body, created_at, url: .html_url} | @json';
+const JQ =
+  '.[] | {body, created_at, url: .html_url, author: .user.login, association: .author_association} | @json';
+const TRUSTED_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
 
 function projectDir(): string {
   return process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
@@ -48,7 +57,13 @@ function parseLines(stdout: string): IssueComment[] {
   const comments: IssueComment[] = [];
   for (const line of stdout.split('\n')) {
     if (line.trim() === '') continue;
-    const raw = JSON.parse(line) as { body?: unknown; created_at?: unknown; url?: unknown };
+    const raw = JSON.parse(line) as {
+      body?: unknown;
+      created_at?: unknown;
+      url?: unknown;
+      author?: unknown;
+      association?: unknown;
+    };
     if (typeof raw.created_at !== 'string') {
       throw new Error(`gh returned a comment with no created_at: ${line.slice(0, 200)}`);
     }
@@ -56,6 +71,8 @@ function parseLines(stdout: string): IssueComment[] {
       body: typeof raw.body === 'string' ? raw.body : '',
       created_at: raw.created_at,
       ...(typeof raw.url === 'string' ? { url: raw.url } : {}),
+      ...(typeof raw.author === 'string' ? { author: raw.author } : {}),
+      trusted: typeof raw.association === 'string' && TRUSTED_ASSOCIATIONS.has(raw.association),
     });
   }
   return comments;

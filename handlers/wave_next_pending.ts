@@ -132,8 +132,9 @@ const waveNextPendingHandler: HandlerDef = {
   name: 'wave_next_pending',
   description:
     "Return the next pending wave's metadata, or null if no pending waves. Fails closed on entry conditions: " +
-    'if any story in that wave names a `start` EC that is not `met` (or undeclared), or a cross-plan `<plan>#<n>` ' +
-    'dependency, it returns ok:false with code `wave_held` naming each hold. A `delivery` EC lets the wave start ' +
+    'if any story in that wave names a `start` EC that is not `met` (or undeclared), has an unreadable `ec` or ' +
+    '`depends_on`, or names a cross-plan `<plan>#<n>` dependency, it returns ok:false with code `wave_held` and ' +
+    '`held: {wave, held_by, depends_on}` naming each hold. A `delivery` EC lets the wave start ' +
     'and is reported in `delivery_held_by`.',
   inputSchema,
   async execute(rawArgs: unknown) {
@@ -178,9 +179,11 @@ const waveNextPendingHandler: HandlerDef = {
               ok: false,
               code: 'wave_held',
               error: describeHolds(next.id, next.gate),
+              // `held_by` is the shape wave-status writes into state.json for an
+              // EC hold (cc-workflow#1393), so `wave_show` and this tool agree.
               held: {
                 wave: next.id,
-                entry_conditions: next.gate.start,
+                held_by: next.gate.start,
                 depends_on: next.gate.depends_on,
               },
             }

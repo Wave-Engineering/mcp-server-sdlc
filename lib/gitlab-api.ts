@@ -378,6 +378,45 @@ export interface GitlabNote {
   body: string;
   created_at: string;
   system?: boolean;
+  author?: { id?: number; username?: string };
+}
+
+export interface GitlabMember {
+  id: number;
+  username: string;
+  access_level: number;
+}
+
+/** GitLab's Developer role: the lowest access level that can push. */
+export const GITLAB_DEVELOPER_ACCESS = 30;
+const MEMBERS_PER_PAGE = 100;
+const MEMBERS_MAX_PAGES = 50;
+
+/**
+ * List a project's members, inherited ones included.
+ *
+ * Endpoint: `GET /projects/:id/members/all`
+ *
+ * Refuses to return a truncated list: the entry-condition sync trusts only
+ * members, so a missing page would silently distrust real members (#613).
+ */
+export function gitlabApiProjectMembersAll(opts?: { owner?: string; repo?: string }): GitlabMember[] {
+  const path = projectPath(opts);
+  const endpoint = `projects/${path}/members/all`;
+  const all: GitlabMember[] = [];
+  for (let page = 1; page <= MEMBERS_MAX_PAGES; page++) {
+    const raw = execGlab([
+      'glab', 'api', endpoint,
+      '-X', 'GET',
+      '-f', `per_page=${String(MEMBERS_PER_PAGE)}`, '-f', `page=${String(page)}`,
+    ]);
+    const batch = parseList<GitlabMember>(raw, endpoint);
+    all.push(...batch);
+    if (batch.length < MEMBERS_PER_PAGE) return all;
+  }
+  throw new Error(
+    `project has more than ${String(MEMBERS_PER_PAGE * MEMBERS_MAX_PAGES)} members; refusing to return a truncated list`,
+  );
 }
 
 const ISSUE_NOTES_PER_PAGE = 100;

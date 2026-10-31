@@ -33,7 +33,7 @@ describe('issueCommentsGithub — subprocess boundary', () => {
     await issueCommentsGithub({ number: 42, repo: 'org/repo' });
     const call = unquote(execCalls().find((c) => c.includes('/comments')) ?? '');
     expect(call).toBe(
-      'gh api repos/org/repo/issues/42/comments --paginate --jq .[] | {body, created_at, url: .html_url} | @json',
+      'gh api repos/org/repo/issues/42/comments --paginate --jq .[] | {body, created_at, url: .html_url, author: .user.login, association: .author_association} | @json',
     );
   });
 
@@ -46,8 +46,8 @@ describe('issueCommentsGithub — subprocess boundary', () => {
 
   test('parses every line across pages, keeps url', async () => {
     on('/comments', [
-      line({ body: '[ec-state EC-1] met', created_at: '2026-10-01T00:00:00Z', url: 'https://c/1' }),
-      line({ body: 'second page', created_at: '2026-10-02T00:00:00Z', url: 'https://c/2' }),
+      line({ body: '[ec-state EC-1] met', created_at: '2026-10-01T00:00:00Z', url: 'https://c/1', author: 'bj', association: 'OWNER' }),
+      line({ body: 'second page', created_at: '2026-10-02T00:00:00Z', url: 'https://c/2', author: 'rando', association: 'NONE' }),
       '',
     ].join('\n'));
     const r = await issueCommentsGithub({ number: 42, repo: 'org/repo' });
@@ -56,8 +56,8 @@ describe('issueCommentsGithub — subprocess boundary', () => {
       data: {
         number: 42,
         comments: [
-          { body: '[ec-state EC-1] met', created_at: '2026-10-01T00:00:00Z', url: 'https://c/1' },
-          { body: 'second page', created_at: '2026-10-02T00:00:00Z', url: 'https://c/2' },
+          { body: '[ec-state EC-1] met', created_at: '2026-10-01T00:00:00Z', url: 'https://c/1', author: 'bj', trusted: true },
+          { body: 'second page', created_at: '2026-10-02T00:00:00Z', url: 'https://c/2', author: 'rando', trusted: false },
         ],
       },
     });
@@ -91,5 +91,20 @@ describe('issueCommentsGithub — subprocess boundary', () => {
     on('/comments', line({ body: 'x' }));
     const r = await issueCommentsGithub({ number: 42, repo: 'org/repo' });
     expect(r).toMatchObject({ ok: false, code: 'gh_issue_comments_failed' });
+  });
+
+  test('ec_untrusted_ignored — only OWNER, MEMBER and COLLABORATOR are trusted', async () => {
+    const assocs = ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR', 'FIRST_TIME_CONTRIBUTOR', 'NONE', 'MANNEQUIN'];
+    on('/comments', assocs.map((a, i) => line({ body: a, created_at: `2026-10-0${String(i + 1)}T00:00:00Z`, association: a })).join('\n'));
+    const r = await issueCommentsGithub({ number: 42, repo: 'org/repo' });
+    if (!('ok' in r) || !r.ok) throw new Error(JSON.stringify(r));
+    expect(r.data.comments.map((c) => c.trusted)).toEqual([true, true, true, false, false, false, false]);
+  });
+
+  test('a comment with no author_association is untrusted', async () => {
+    on('/comments', line({ body: 'x', created_at: '2026-10-01T00:00:00Z' }));
+    const r = await issueCommentsGithub({ number: 42, repo: 'org/repo' });
+    if (!('ok' in r) || !r.ok) throw new Error(JSON.stringify(r));
+    expect(r.data.comments[0].trusted).toBe(false);
   });
 });

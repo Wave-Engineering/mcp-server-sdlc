@@ -38,12 +38,15 @@ async function setupPlan(plan: object): Promise<string> {
   return text;
 }
 
-// One `gh api … --jq '… | @json'` output line per comment.
-function ghLines(comments: Array<{ body: string; created_at: string; url?: string }>): string {
-  return comments.map((c) => JSON.stringify(c)).join('\n') + '\n';
+type GhComment = { body: string; created_at: string; url?: string; author?: string; association?: string };
+
+// One `gh api … --jq '… | @json'` output line per comment. Comments default to
+// a trusted author; pass `association` to override.
+function ghLines(comments: GhComment[]): string {
+  return comments.map((c) => JSON.stringify({ association: 'OWNER', ...c })).join('\n') + '\n';
 }
 
-function onGithubComments(comments: Array<{ body: string; created_at: string; url?: string }>) {
+function onGithubComments(comments: GhComment[]) {
   onExec('git remote get-url origin', 'https://github.com/org/repo.git');
   onExec('/comments', ghLines(comments));
 }
@@ -132,6 +135,45 @@ describe('wave_ec_sync handler', () => {
     expect(parsed.plan_issue).toBe(77);
     const call = execCalls().find((c) => c.includes('/comments')) ?? '';
     expect(call.replace(/'/g, '')).toContain('repos/acme/plans/issues/77/comments');
+  });
+
+  test('ec_untrusted_ignored — a drive-by met is not written, and is reported', async () => {
+    await setupPlan(declaredPlan);
+    onGithubComments([
+      { body: '[ec-state EC-1] met — https://e/1', created_at: '2026-10-02T00:00:00Z', author: 'rando', association: 'NONE' },
+    ]);
+    const parsed = parseResult(await handler.execute({}));
+    expect(parsed.entry_conditions['EC-1'].status).toBe('unmet');
+    expect(parsed.untrusted).toEqual([
+      { line: '[ec-state EC-1] met — https://e/1', author: 'rando', created_at: '2026-10-02T00:00:00Z' },
+    ]);
+    expect((await Bun.file(planPath()).json()).entry_conditions['EC-1'].status).toBe('unmet');
+  });
+
+  test('ambiguous_plan_issue — plan_id and plan_issue disagree → refuse, plan untouched', async () => {
+    const before = await setupPlan({ ...declaredPlan, plan_id: 600, plan_issue: 'acme/plans#77' });
+    const parsed = parseResult(await handler.execute({}));
+    expect(parsed).toMatchObject({ ok: false, code: 'ambiguous_plan_issue' });
+    expect(execCalls().some((c) => c.includes('/comments'))).toBe(false);
+    expect(await Bun.file(planPath()).text()).toBe(before);
+  });
+
+  test('positive control — plan_id and plan_issue that agree read the ref\'s repo', async () => {
+    await setupPlan({ ...declaredPlan, plan_id: 77, plan_issue: 'acme/plans#77' });
+    onGithubComments([]);
+    const parsed = parseResult(await handler.execute({}));
+    expect(parsed.ok).toBe(true);
+    const call = execCalls().find((c) => c.includes('/comments')) ?? '';
+    expect(call.replace(/'/g, '')).toContain('repos/acme/plans/issues/77/comments');
+  });
+
+  test('an explicit plan_issue is read against the plan\'s own project, not the file ref\'s repo', async () => {
+    await setupPlan({ ...declaredPlan, plan_issue: 'acme/plans#77' });
+    onGithubComments([]);
+    const parsed = parseResult(await handler.execute({ plan_issue: 5 }));
+    expect(parsed.plan_issue).toBe(5);
+    const call = execCalls().find((c) => c.includes('/comments')) ?? '';
+    expect(call.replace(/'/g, '')).toContain('repos/org/repo/issues/5/comments');
   });
 
   test('dry_run reports without writing', async () => {

@@ -1009,6 +1009,14 @@ export interface IssueComment {
   created_at: string;
   /** Link to the comment, where the platform has one. */
   url?: string;
+  /** The author's login / username, where the platform reports one. */
+  author?: string;
+  /**
+   * True only when the adapter showed the author has write access to the repo
+   * (GitHub `author_association` OWNER/MEMBER/COLLABORATOR; GitLab project
+   * access level Developer or above). Consumers treat anything else as untrusted.
+   */
+  trusted: boolean;
 }
 
 export interface IssueCommentsResponse {

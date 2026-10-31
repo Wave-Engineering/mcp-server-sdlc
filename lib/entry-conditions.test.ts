@@ -3,6 +3,7 @@ import {
   describeHolds,
   evaluateWaveGate,
   isCrossPlanRef,
+  MALFORMED_EC,
   parseEcStateComments,
   syncEntryConditions,
   type EcComment,
@@ -12,7 +13,12 @@ import {
 // #613. Every refusal test is paired with a positive control: the same input
 // with the hold removed must NOT refuse, so a gate that always refuses fails.
 
-const c = (body: string, created_at: string, url?: string): EcComment => ({ body, created_at, url });
+const c = (body: string, created_at: string, url?: string): EcComment => ({
+  body,
+  created_at,
+  url,
+  trusted: true,
+});
 
 describe('parseEcStateComments', () => {
   test('ec_sync_latest_comment_wins — later comment overrides earlier, per EC', () => {
@@ -88,6 +94,43 @@ describe('parseEcStateComments', () => {
   });
 });
 
+describe('parseEcStateComments — comment trust', () => {
+  test('ec_untrusted_ignored — an untrusted met does not release, and is reported', () => {
+    const r = parseEcStateComments([
+      c('[ec-state EC-1] unmet', '2026-10-01T00:00:00Z'),
+      { body: '[ec-state EC-1] met', created_at: '2026-10-02T00:00:00Z', author: 'drive-by', trusted: false },
+    ]);
+    expect(r.latest['EC-1'].status).toBe('unmet');
+    expect(r.untrusted).toEqual([
+      { line: '[ec-state EC-1] met', author: 'drive-by', created_at: '2026-10-02T00:00:00Z', url: undefined },
+    ]);
+  });
+
+  test('an untrusted unmet or reclosed cannot hold a met EC either', () => {
+    const r = parseEcStateComments([
+      c('[ec-state EC-1] met', '2026-10-01T00:00:00Z'),
+      { body: '[ec-state EC-1] reclosed', created_at: '2026-10-02T00:00:00Z', trusted: false },
+    ]);
+    expect(r.latest['EC-1'].status).toBe('met');
+    expect(r.untrusted).toHaveLength(1);
+  });
+
+  test('a comment with no trust flag at all is untrusted', () => {
+    const r = parseEcStateComments([{ body: '[ec-state EC-1] met', created_at: '2026-10-02T00:00:00Z' }]);
+    expect(r.latest).toEqual({});
+    expect(r.untrusted[0].author).toBeNull();
+  });
+
+  test('positive control — the same met from a trusted author is applied', () => {
+    const r = parseEcStateComments([
+      c('[ec-state EC-1] unmet', '2026-10-01T00:00:00Z'),
+      c('[ec-state EC-1] met', '2026-10-02T00:00:00Z'),
+    ]);
+    expect(r.latest['EC-1'].status).toBe('met');
+    expect(r.untrusted).toEqual([]);
+  });
+});
+
 describe('syncEntryConditions', () => {
   const declared: EntryConditions = {
     'EC-1': { status: 'unmet', gates: 'start' },
@@ -95,7 +138,7 @@ describe('syncEntryConditions', () => {
   };
 
   test('declared EC with no comment is written unmet, and reported', () => {
-    const r = syncEntryConditions(declared, { latest: {}, malformed: [] });
+    const r = syncEntryConditions(declared, { latest: {}, malformed: [], untrusted: [] });
     expect(r.entry_conditions['EC-1'].status).toBe('unmet');
     // A stale stored `met` with no comment behind it does not survive a sync.
     expect(r.entry_conditions['EC-2'].status).toBe('unmet');
@@ -106,7 +149,7 @@ describe('syncEntryConditions', () => {
   test('keeps declared gates; an unknown gates value becomes start', () => {
     const r = syncEntryConditions(
       { 'EC-1': { gates: 'delivery' }, 'EC-2': { gates: 'whenever' } },
-      { latest: {}, malformed: [] },
+      { latest: {}, malformed: [], untrusted: [] },
     );
     expect(r.entry_conditions['EC-1'].gates).toBe('delivery');
     expect(r.entry_conditions['EC-2'].gates).toBe('start');
@@ -115,7 +158,7 @@ describe('syncEntryConditions', () => {
   test('ECs only seen in comments are reported, not invented', () => {
     const r = syncEntryConditions(declared, {
       latest: { 'EC-9': { status: 'met', evidence: '', updated_at: 't' } },
-      malformed: [],
+      malformed: [], untrusted: [],
     });
     expect(r.entry_conditions['EC-9']).toBeUndefined();
     expect(r.undeclared_in_comments).toEqual(['EC-9']);
@@ -124,7 +167,7 @@ describe('syncEntryConditions', () => {
   test('a comment state is written with its evidence and time', () => {
     const r = syncEntryConditions(declared, {
       latest: { 'EC-1': { status: 'met', evidence: 'https://e', updated_at: '2026-10-09T00:00:00Z' } },
-      malformed: [],
+      malformed: [], untrusted: [],
     });
     expect(r.entry_conditions['EC-1']).toEqual({
       status: 'met',
@@ -211,6 +254,48 @@ describe('evaluateWaveGate', () => {
   test('positive control — same-plan refs do not hold', () => {
     const g = evaluateWaveGate(undefined, [{ number: 10, depends_on: ['#3', 'o/r#4', 5] }]);
     expect(g.held).toBe(false);
+  });
+
+  test('ec_malformed_holds — an `ec` that is not an array of EC ids holds the wave', () => {
+    const decl = { 'EC-1': { status: 'unmet', gates: 'start' } };
+    for (const ec of ['EC-1', [1], [{ id: 'EC-1' }], ['EC-1', ''], {}]) {
+      const g = evaluateWaveGate(decl, [{ number: 10, ec }]);
+      expect(g.held).toBe(true);
+      expect(g.start).toEqual([{ ec: MALFORMED_EC, status: 'malformed', gates: 'start', issues: [10] }]);
+    }
+  });
+
+  test('positive control — an absent, null or empty `ec` names no EC and holds nothing', () => {
+    for (const ec of [undefined, null, []]) {
+      expect(evaluateWaveGate(undefined, [{ number: 10, ec }]).held).toBe(false);
+    }
+  });
+
+  test('a malformed `ec` holds even when the plan declares no ECs at all', () => {
+    const g = evaluateWaveGate(undefined, [{ number: 10, ec: 'EC-1' }, { number: 11, ec: 7 }]);
+    expect(g.start).toEqual([{ ec: MALFORMED_EC, status: 'malformed', gates: 'start', issues: [10, 11] }]);
+  });
+
+  test('dep_malformed_holds — a scalar `depends_on`, or an unreadable entry, holds', () => {
+    const scalar = evaluateWaveGate(undefined, [{ number: 10, depends_on: '612#4' }]);
+    expect(scalar.held).toBe(true);
+    expect(scalar.depends_on).toEqual([{ ref: '"612#4"', issue: 10, reason: 'malformed' }]);
+
+    const entries = evaluateWaveGate(undefined, [{ number: 11, depends_on: ['#3', { ref: '612#4' }, ''] }]);
+    expect(entries.held).toBe(true);
+    expect(entries.depends_on.map((d) => d.reason)).toEqual(['malformed', 'malformed']);
+  });
+
+  test('positive control — absent or null `depends_on` holds nothing', () => {
+    for (const depends_on of [undefined, null, []]) {
+      expect(evaluateWaveGate(undefined, [{ number: 10, depends_on }]).held).toBe(false);
+    }
+  });
+
+  test('describeHolds names a malformed `ec` and a malformed dep by issue', () => {
+    const msg = describeHolds('w1', evaluateWaveGate(undefined, [{ number: 10, ec: 'EC-1', depends_on: 5.5 }]));
+    expect(msg).toContain('#10: `ec` is not an array of EC ids');
+    expect(msg).toContain('#10 has an unreadable depends_on entry 5.5');
   });
 
   test('one EC on several stories is one hold naming every story', () => {

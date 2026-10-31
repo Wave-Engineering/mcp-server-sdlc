@@ -267,7 +267,7 @@ describe('wave_next_pending entry-condition gate (#613)', () => {
     expect(parsed.code).toBe('wave_held');
     expect(parsed.error).toContain('EC-1 is unmet (start) for #10');
     expect(parsed.held.wave).toBe('w1');
-    expect(parsed.held.entry_conditions).toEqual([
+    expect(parsed.held.held_by).toEqual([
       { ec: 'EC-1', status: 'unmet', gates: 'start', issues: [10] },
     ]);
     // Held, not skipped: the later pending w2 is not offered instead.
@@ -286,7 +286,7 @@ describe('wave_next_pending entry-condition gate (#613)', () => {
   test('ec_missing_reads_unmet — a story naming an undeclared EC is held', async () => {
     const parsed = await run(gatedPlan(undefined, [{ number: 10, ec: ['EC-4'] }]));
     expect(parsed.code).toBe('wave_held');
-    expect(parsed.held.entry_conditions[0]).toMatchObject({ ec: 'EC-4', status: 'undeclared' });
+    expect(parsed.held.held_by[0]).toMatchObject({ ec: 'EC-4', status: 'undeclared' });
   });
 
   test('ec_delivery_allows_start — wave returned, completion hold reported', async () => {
@@ -307,7 +307,7 @@ describe('wave_next_pending entry-condition gate (#613)', () => {
     const parsed = await run(plan, { waves: { w1: { status: 'held' }, w2: { status: 'pending' } } });
     expect(parsed.code).toBe('wave_held');
     expect(parsed.held.wave).toBe('w1');
-    expect(parsed.held.entry_conditions[0].status).toBe('reclosed');
+    expect(parsed.held.held_by[0].status).toBe('reclosed');
   });
 
   test('positive control — a held wave whose EC is now met is released', async () => {
@@ -332,6 +332,23 @@ describe('wave_next_pending entry-condition gate (#613)', () => {
     const parsed = await run(gatedPlan(undefined, [{ number: 10, depends_on: ['#9', 'o/r#8'] }]));
     expect(parsed.ok).toBe(true);
     expect(parsed.wave.id).toBe('w1');
+  });
+
+  test('ec_malformed_holds — a scalar `ec` holds the wave instead of naming nothing', async () => {
+    const parsed = await run(
+      gatedPlan({ 'EC-1': { status: 'unmet', gates: 'start' } }, [{ number: 10, ec: 'EC-1' }]),
+    );
+    expect(parsed.code).toBe('wave_held');
+    expect(parsed.held.held_by).toEqual([
+      { ec: '(malformed ec)', status: 'malformed', gates: 'start', issues: [10] },
+    ]);
+    expect(parsed.error).toContain('#10: `ec` is not an array of EC ids');
+  });
+
+  test('xplan_dep_malformed_holds — a scalar `depends_on` cross-plan ref holds the wave', async () => {
+    const parsed = await run(gatedPlan(undefined, [{ number: 10, depends_on: '612#4' }]));
+    expect(parsed.code).toBe('wave_held');
+    expect(parsed.held.depends_on).toEqual([{ ref: '"612#4"', issue: 10, reason: 'malformed' }]);
   });
 
   test('legacy_plan_unchanged — no ECs gives exactly the pre-#613 shape', async () => {

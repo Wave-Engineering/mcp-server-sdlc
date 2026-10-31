@@ -87,8 +87,9 @@ const waveEcSyncHandler: HandlerDef = {
   description:
     'Sync entry-condition (EC) state from the Plan issue\'s `[ec-state EC-n] met|unmet|reclosed` comments into ' +
     'phases-waves.json `entry_conditions`. The latest comment per EC wins; a declared EC with no comment or an ' +
-    'unparseable state is written `unmet`. Only declared ECs are written. The Plan issue defaults to the plan ' +
-    'file\'s `plan_id` / `plan_issue`. Cross-platform (gh + glab).',
+    'unparseable state is written `unmet`. Only declared ECs are written. Lines from authors without write ' +
+    'access are ignored and listed in `untrusted`. The Plan issue defaults to the plan file\'s `plan_id` / ' +
+    '`plan_issue`; if both are set and disagree it refuses with `ambiguous_plan_issue`. Cross-platform (gh + glab).',
   inputSchema,
   async execute(rawArgs: unknown) {
     let args;
@@ -110,8 +111,28 @@ const waveEcSyncHandler: HandlerDef = {
       return envelope({ ok: false, code: 'plan_unreadable', error: err instanceof Error ? err.message : String(err) });
     }
 
+    // The number and the repo are resolved as a pair, from one source, so a
+    // number from one place is never read against a repo from another. An
+    // explicit `plan_issue` names an issue in `repo` or the plan's own project;
+    // the file's `plan_issue` ref carries its own repo.
     const fromRef = parsePlanIssueRef(plan.plan_issue);
-    const number = args.plan_issue ?? plan.plan_id ?? fromRef?.number;
+    const ownRepo = plan.project ?? plan.repo;
+    let number: number | undefined;
+    let repo: string | undefined;
+    if (args.plan_issue !== undefined) {
+      number = args.plan_issue;
+      repo = args.repo ?? ownRepo;
+    } else {
+      if (plan.plan_id !== undefined && fromRef !== null && fromRef.number !== plan.plan_id) {
+        return envelope({
+          ok: false,
+          code: 'ambiguous_plan_issue',
+          error: `phases-waves.json names two Plan issues: plan_id ${String(plan.plan_id)} and plan_issue ${JSON.stringify(plan.plan_issue)}; pass \`plan_issue\` to choose`,
+        });
+      }
+      number = plan.plan_id ?? fromRef?.number;
+      repo = args.repo ?? fromRef?.repo ?? ownRepo;
+    }
     if (number === undefined) {
       return envelope({
         ok: false,
@@ -119,7 +140,6 @@ const waveEcSyncHandler: HandlerDef = {
         error: 'no Plan issue: pass `plan_issue`, or set `plan_id` / `plan_issue` in phases-waves.json',
       });
     }
-    const repo = args.repo ?? fromRef?.repo ?? plan.project ?? plan.repo;
 
     const result = await getAdapter({ repo }).issueComments({ number, repo });
     if ('platform_unsupported' in result) {
@@ -160,6 +180,7 @@ const waveEcSyncHandler: HandlerDef = {
       undeclared_in_comments: report.undeclared_in_comments,
       undeclared_in_plan: undeclaredReferences(plan),
       malformed: parsed.malformed,
+      untrusted: parsed.untrusted,
     });
   },
 };

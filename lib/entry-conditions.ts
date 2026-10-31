@@ -44,6 +44,14 @@ export interface EcComment {
   body: string;
   created_at: string;
   url?: string;
+  author?: string;
+  /**
+   * True when the adapter proved the author can write to the repo. Anything
+   * else (false, or absent) is untrusted: its `[ec-state]` lines are reported
+   * and never applied, so a drive-by comment on a public Plan issue cannot
+   * release a gate, nor hold one.
+   */
+  trusted?: boolean;
 }
 
 /** The latest parsed state for one EC. */
@@ -61,9 +69,18 @@ export interface MalformedEcLine {
   reason: string;
 }
 
+/** An `[ec-state …]` line from an author who could not be shown to have write access. */
+export interface UntrustedEcLine {
+  line: string;
+  author: string | null;
+  created_at: string;
+  url?: string;
+}
+
 export interface EcParseResult {
   latest: Record<string, EcStateRecord>;
   malformed: MalformedEcLine[];
+  untrusted: UntrustedEcLine[];
 }
 
 // `[ec-state EC-3] met <evidence>`. The id is case-insensitive and normalized
@@ -92,6 +109,11 @@ function isEcStatus(s: string): s is EcStatus {
  * would let a stale earlier `met` stand behind a garbled update. A line that
  * starts `[ec-state` but has no readable EC id is reported and otherwise
  * ignored, since there is no EC to attach it to.
+ *
+ * A comment that is not `trusted` contributes nothing: each of its
+ * `[ec-state` lines is reported in `untrusted` and skipped. Skipping (not
+ * reading as `unmet`) is deliberate: an untrusted `unmet` would let anyone
+ * hold a wave.
  */
 export function parseEcStateComments(comments: EcComment[]): EcParseResult {
   const ordered = comments
@@ -107,11 +129,21 @@ export function parseEcStateComments(comments: EcComment[]): EcParseResult {
 
   const latest: Record<string, EcStateRecord> = {};
   const malformed: MalformedEcLine[] = [];
+  const untrusted: UntrustedEcLine[] = [];
 
   for (const comment of ordered) {
     for (const rawLine of (comment.body ?? '').split(/\r?\n/)) {
       const line = rawLine.trim();
       if (!EC_PREFIX.test(line)) continue;
+      if (comment.trusted !== true) {
+        untrusted.push({
+          line,
+          author: comment.author ?? null,
+          created_at: comment.created_at,
+          url: comment.url,
+        });
+        continue;
+      }
       const m = EC_LINE.exec(line);
       if (!m) {
         malformed.push({
@@ -139,7 +171,7 @@ export function parseEcStateComments(comments: EcComment[]): EcParseResult {
     }
   }
 
-  return { latest, malformed };
+  return { latest, malformed, untrusted };
 }
 
 /** What `syncEntryConditions` changed, for the caller's report. */
@@ -222,12 +254,20 @@ export interface EcHold {
   issues: number[];
 }
 
-/** One cross-plan ref that holds a wave. */
+/** One `depends_on` entry that holds a wave. */
 export interface DepHold {
+  /** The ref, or the JSON of a value that is not a readable ref. */
   ref: string;
   issue: number;
-  reason: 'cross_plan_unresolved';
+  reason: 'cross_plan_unresolved' | 'malformed';
 }
+
+/**
+ * The `EcHold.ec` used for stories whose `ec` field is present but is not an
+ * array of non-empty strings. Its `status` is `malformed` and it always gates
+ * `start`: an `ec` the gate cannot read must never read as "names no EC".
+ */
+export const MALFORMED_EC = '(malformed ec)';
 
 export interface WaveGate {
   /** ECs that stop the wave from starting. */
@@ -240,9 +280,22 @@ export interface WaveGate {
   held: boolean;
 }
 
-function ecList(raw: unknown): string[] {
-  if (!Array.isArray(raw)) return [];
-  return raw.filter((e): e is string => typeof e === 'string' && e.length > 0);
+/**
+ * The EC ids a story names, or `null` when its `ec` is present but unreadable.
+ * Absent (`undefined` or `null`) and `[]` both mean "names no EC". A scalar, or
+ * an array holding anything but non-empty strings, is unreadable: filtering out
+ * the bad entries would quietly drop the gate they were meant to set.
+ */
+function ecList(raw: unknown): string[] | null {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) return null;
+  if (!raw.every((e) => typeof e === 'string' && e.length > 0)) return null;
+  return raw as string[];
+}
+
+/** A `depends_on` entry in a shape the wave tools already read. */
+function isReadableDep(ref: unknown): boolean {
+  return (typeof ref === 'string' && ref.trim().length > 0) || (typeof ref === 'number' && Number.isInteger(ref));
 }
 
 /**
@@ -260,7 +313,13 @@ export function evaluateWaveGate(
   const deps: DepHold[] = [];
 
   for (const issue of issues) {
-    for (const id of ecList(issue.ec)) {
+    const ids = ecList(issue.ec);
+    if (ids === null) {
+      const hold = start.get(MALFORMED_EC) ?? { ec: MALFORMED_EC, status: 'malformed', gates: 'start', issues: [] };
+      if (!hold.issues.includes(issue.number)) hold.issues.push(issue.number);
+      start.set(MALFORMED_EC, hold);
+    }
+    for (const id of ids ?? []) {
       const cond = entryConditions?.[id];
       const status = cond === undefined ? 'undeclared' : String(cond.status ?? 'unmet');
       if (status === 'met') continue;
@@ -271,9 +330,15 @@ export function evaluateWaveGate(
       if (!hold.issues.includes(issue.number)) hold.issues.push(issue.number);
       bucket.set(id, hold);
     }
-    if (Array.isArray(issue.depends_on)) {
-      for (const ref of issue.depends_on) {
-        if (isCrossPlanRef(ref)) {
+    const rawDeps = issue.depends_on;
+    if (rawDeps !== undefined && rawDeps !== null && !Array.isArray(rawDeps)) {
+      // A scalar (`"612#4"`) would otherwise skip the cross-plan check entirely.
+      deps.push({ ref: JSON.stringify(rawDeps), issue: issue.number, reason: 'malformed' });
+    } else if (Array.isArray(rawDeps)) {
+      for (const ref of rawDeps) {
+        if (!isReadableDep(ref)) {
+          deps.push({ ref: JSON.stringify(ref) ?? String(ref), issue: issue.number, reason: 'malformed' });
+        } else if (isCrossPlanRef(ref)) {
           deps.push({ ref: ref.trim(), issue: issue.number, reason: 'cross_plan_unresolved' });
         }
       }
@@ -292,12 +357,17 @@ export function evaluateWaveGate(
 
 /** A one-line reason naming every hold, for the refusal's `error`. */
 export function describeHolds(waveId: string, gate: WaveGate): string {
+  const refs = (ns: number[]) => ns.map((n) => `#${n}`).join(', ');
   const parts = [
-    ...gate.start.map(
-      (h) => `${h.ec} is ${h.status} (${h.gates}) for ${h.issues.map((n) => `#${n}`).join(', ')}`,
+    ...gate.start.map((h) =>
+      h.ec === MALFORMED_EC
+        ? `${refs(h.issues)}: \`ec\` is not an array of EC ids`
+        : `${h.ec} is ${h.status} (${h.gates}) for ${refs(h.issues)}`,
     ),
-    ...gate.depends_on.map(
-      (d) => `#${d.issue} depends on ${d.ref}, a cross-plan ref that cannot be resolved yet`,
+    ...gate.depends_on.map((d) =>
+      d.reason === 'malformed'
+        ? `#${d.issue} has an unreadable depends_on entry ${d.ref}`
+        : `#${d.issue} depends on ${d.ref}, a cross-plan ref that cannot be resolved yet`,
     ),
   ];
   return `wave ${waveId} is held: ${parts.join('; ')}`;
