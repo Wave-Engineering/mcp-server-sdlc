@@ -107,7 +107,9 @@ const EMPH_TRAIL = /[*_]+\s*$/;
 // Emphasis or a code span closing right after the status word: `**[ec-state EC-1] met** — <url>`.
 const STATUS_WRAP = /[*_`]/g;
 // Evidence that says the EC is not met yet: a condition, or a template placeholder.
-const MET_NOT_YET = /^(?:when|once|if|after|until|unless|as soon as)\b|<[^>]*>/i;
+// A placeholder opens straight into a word (`<link to release>`); a markdown
+// autolink (`<https://…>`) and a comparison in prose (`p99 < 200ms`) are not one.
+const MET_NOT_YET = /^(?:when|once|if|after|until|unless|as soon as)\b|<(?!\s|(?:https?|mailto):)[^<>\n]*>/i;
 // Leading punctuation authors put between the status and the evidence.
 const EVIDENCE_LEAD = /^[\s—–:|*_`-]+/;
 

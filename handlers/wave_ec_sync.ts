@@ -90,7 +90,8 @@ const waveEcSyncHandler: HandlerDef = {
     'Sync entry-condition (EC) state from the Plan issue\'s `[ec-state EC-n] met|unmet|reclosed` comments into ' +
     'phases-waves.json `entry_conditions`. The latest comment per EC wins; a declared EC with no comment or an ' +
     'unparseable state is written `unmet`. A `met` counts only when posted in a comment of its own, every line a ' +
-    'bare state line (no prose, code or quote); a `met` anywhere else is listed in `malformed` and not applied. ' +
+    'bare state line (no prose, code or quote); a `met` anywhere else, or whose evidence is a condition or ' +
+    'placeholder, is listed in `malformed` and not applied. ' +
     '`unmet` and `reclosed` count from any comment. Only declared ECs are written. Lines from authors without write ' +
     'access are ignored and listed in `untrusted`. The Plan issue defaults to the plan file\'s `plan_id` / ' +
     '`plan_issue`; if both are set and disagree it refuses with `ambiguous_plan_issue`. Cross-platform (gh + glab).',

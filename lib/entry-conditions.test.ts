@@ -219,7 +219,13 @@ describe('parseEcStateComments', () => {
   });
 
   test('positive control — factual evidence, a ~user URL included, releases', () => {
-    for (const body of ['[ec-state EC-1] met — https://git.sr.ht/~user/repo/refs/v3', '[ec-state EC-1] met shipped in v2.3', '[ec-state EC-1] met']) {
+    for (const body of [
+      '[ec-state EC-1] met — https://git.sr.ht/~user/repo/refs/v3',
+      '[ec-state EC-1] met — <https://github.com/o/r/releases/tag/v3>',
+      '[ec-state EC-1] met — p99 < 200ms, errors > 0 over 7 days',
+      '[ec-state EC-1] met shipped in v2.3',
+      '[ec-state EC-1] met',
+    ]) {
       const r = parseEcStateComments([
         c('[ec-state EC-1] unmet', '2026-10-01T00:00:00Z'),
         c(body, '2026-10-02T00:00:00Z'),
