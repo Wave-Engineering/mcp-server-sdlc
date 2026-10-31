@@ -133,10 +133,31 @@ export function classifyRollupItem(c: RollupItem): Bucket {
  * ships with Ubuntu 24.04 LTS. The `gh pr view --json statusCheckRollup`
  * form has shipped for years.
  */
-export function snapshotGithub(number: number, repo?: string): ChecksSnapshot {
-  const raw = exec(`gh pr view ${number} --json statusCheckRollup,url${repoFlag(repo)}`);
-  const view = JSON.parse(raw) as PrViewResponse;
+export function snapshotGithub(
+  number: number,
+  repo?: string,
+  expectedSha?: string,
+): ChecksSnapshot {
+  // `headRefOid` only when there is an expected_sha to hold it against (#588).
+  const fields = expectedSha !== undefined ? 'statusCheckRollup,url,headRefOid' : 'statusCheckRollup,url';
+  const raw = exec(`gh pr view ${number} --json ${fields}${repoFlag(repo)}`);
+  const view = JSON.parse(raw) as PrViewResponse & { headRefOid?: string };
   const checks = view.statusCheckRollup ?? [];
+
+  // The rollup belongs to whatever head the PR record names. Until that is the
+  // head the caller pushed, it grades nothing: pending, never passed or failed.
+  if (expectedSha !== undefined && (view.headRefOid ?? '').toLowerCase() !== expectedSha.toLowerCase()) {
+    return {
+      total: 1,
+      passed: 0,
+      failed: 0,
+      pending: 1,
+      summary:
+        `PR head is ${(view.headRefOid ?? '').slice(0, 8) || '(none)'}, not expected_sha ` +
+        `${expectedSha.slice(0, 8)}: the PR has not caught up with the push yet`,
+      url: view.url ?? '',
+    };
+  }
 
   let passed = 0;
   let failed = 0;
@@ -415,7 +436,10 @@ export async function prWaitCiGithub(
       timeout_sec: args.timeout_sec,
       repo: args.repo,
     };
-    const result = await runPollLoop(pollArgs, defaultDeps(snapshotGithub));
+    const result = await runPollLoop(
+      pollArgs,
+      defaultDeps((n, repo) => snapshotGithub(n, repo, args.expected_sha)),
+    );
     // Strip the `ok: true` discriminator — it lives at the AdapterResult layer,
     // not the inner data payload.
     const { ok: _ok, ...data } = result;

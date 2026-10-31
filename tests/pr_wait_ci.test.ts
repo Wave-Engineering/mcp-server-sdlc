@@ -321,11 +321,15 @@ describe('pr_wait_ci handler', () => {
     setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote'))
         return 'https://gitlab.com/org/repo.git\n';
+      // #588: the MR head is checked against the source branch tip.
+      if (cmd.includes('glab api projects/org%2Frepo/repository/branches/feature%2Ftest'))
+        return JSON.stringify({ name: 'feature/test', commit: { id: 'a1a1a1a1' } });
       if (cmd.includes('glab api projects/org%2Frepo/merge_requests/3'))
         return JSON.stringify({
           iid: 3,
           web_url: 'https://gitlab.com/org/repo/-/merge_requests/3',
-          head_pipeline: { status: 'success' },
+          sha: 'a1a1a1a1',
+          head_pipeline: { id: 11, status: 'success', sha: 'a1a1a1a1', ref: 'feature/test' },
           title: 'Test MR',
           description: '',
           state: 'opened',
@@ -345,6 +349,8 @@ describe('pr_wait_ci handler', () => {
     expect(data.ok).toBe(true);
     expect(data.final_state).toBe('passed');
     expect(data.url).toBe('https://gitlab.com/org/repo/-/merge_requests/3');
+    // #588: the envelope names the pipeline it graded.
+    expect(data.graded_pipeline).toEqual({ id: 11, sha: 'a1a1a1a1', ref: 'feature/test' });
   });
 
   // --- cross-repo routing ---
@@ -385,11 +391,15 @@ describe('pr_wait_ci handler', () => {
     setExecMock((cmd: string) => {
       if (cmd.startsWith('git remote'))
         return 'https://gitlab.com/cwd-org/cwd-repo.git\n';
+      // #588: the tip read goes to the same explicit project, not the cwd's.
+      if (cmd.includes('glab api projects/target-org%2Ftarget-repo/repository/branches/feature%2Ftest'))
+        return JSON.stringify({ name: 'feature/test', commit: { id: 'a1a1a1a1' } });
       if (cmd.includes('glab api projects/target-org%2Ftarget-repo/merge_requests/3'))
         return JSON.stringify({
           iid: 3,
           web_url: 'https://gitlab.com/target-org/target-repo/-/merge_requests/3',
-          head_pipeline: { status: 'success' },
+          sha: 'a1a1a1a1',
+          head_pipeline: { id: 11, status: 'success', sha: 'a1a1a1a1', ref: 'feature/test' },
           title: 'Test MR',
           description: '',
           state: 'opened',

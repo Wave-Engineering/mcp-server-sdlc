@@ -15,7 +15,19 @@ Tools below are listed in alphabetic order. To add a tool: drop a file in `handl
 | `number` | number | (required) | PR (GitHub) or MR (GitLab) iid. |
 | `poll_interval_sec` | number | `30` | Seconds between snapshots. Hard floor `5`. |
 | `timeout_sec` | number | `1800` | Maximum wall-clock wait. |
+| `expected_sha` | string | (none) | 40-hex head the caller pushed (#588). Checks grade only once the PR/MR reports this head; until then they read as pending. Recommended for every merge gate: the PR/MR record lags a push. |
 | `repo` | string | (cwd remote) | `owner/repo` slug for cross-repo dispatch. GitLab nested groups (`group/subgroup/repo`) are accepted. |
+
+**Freshness (#588).** A result is graded only from checks that belong to the current
+head. On GitLab, `head_pipeline` must be bound to the MR head (its `sha`, or for a
+merged-results pipeline the merge commit's second parent), and the MR head itself
+must match `expected_sha` — or, without it, the source branch's live tip (read from
+`source_project_id`, so fork MRs work). The MR record lags a push, and in that window
+it still names the previous head and that head's green pipeline. A **merged** MR skips
+the tip check: its record is final, and its source branch is often already deleted. Anything unbound,
+including an unreadable tip, reads as pending and never passes. On GitHub,
+`expected_sha` holds the rollup as pending until `headRefOid` matches. A graded
+GitLab result names its pipeline in `graded_pipeline`.
 
 **Returns — polling-loop path** (one or more checks configured on the head ref).
 

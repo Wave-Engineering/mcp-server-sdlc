@@ -27,6 +27,12 @@ const inputSchema = z
     // runs none. An empty rollup at t=0 is indistinguishable from a queued
     // check, which is how a PR with pending CI reported a definite verdict.
     settle_window_sec: z.number().int().min(0).optional(),
+    // #588: the head the caller pushed. The PR/MR record lags a push, so this is
+    // the only anchor outside it; checks grade only once the PR reports it.
+    expected_sha: z
+      .string()
+      .regex(/^[0-9a-f]{40}$/i, 'expected_sha must be a 40-char hex commit SHA')
+      .optional(),
     // GitLab nested groups need arbitrary `/` depth — see lib/schemas/repo.ts (#290).
     repo: repoOptionalSchema,
   })
@@ -70,7 +76,7 @@ export async function __runWithDeps(rawArgs: unknown, deps: Partial<Deps>) {
 const prWaitCiHandler: HandlerDef = {
   name: 'pr_wait_ci',
   description:
-    "Block until a PR/MR's check runs complete. Server-side polling with configurable interval (default 30s, min 5s) and timeout (default 1800s). Returns passed | failed | timed_out.",
+    "Block until a PR/MR's check runs complete. Server-side polling with configurable interval (default 30s, min 5s) and timeout (default 1800s). Returns passed | failed | timed_out. Pass `expected_sha` (the head you pushed): the PR/MR record lags a push, so checks grade only once it reports that head, and read as pending until then. Without it, GitLab checks the MR head against the source branch tip.",
   inputSchema,
   async execute(rawArgs: unknown) {
     let args: Input;

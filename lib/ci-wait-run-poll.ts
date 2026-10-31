@@ -630,6 +630,32 @@ export async function waitForRun(
   const startMs = deps.now();
   const elapsedSec = (): number => Math.floor((deps.now() - startMs) / 1000);
 
+  // #588: with `expected_sha`, the anchor must name THAT head. The PR/MR record
+  // lags a push, so an anchor on any other head is "not caught up yet" — held
+  // like an unbound pipeline, then failed closed — on every platform.
+  const resolveAnchor = async (number: number) => {
+    const res = await deps.adapter.resolveMergeAnchor({
+      number,
+      repo: args.repo,
+      ...(expectedSha !== undefined ? { expected_sha: expectedSha } : {}),
+    });
+    if (
+      expectedSha !== undefined &&
+      'ok' in res &&
+      res.ok &&
+      res.data.head_sha?.toLowerCase() !== expectedSha
+    ) {
+      return {
+        ok: false as const,
+        code: 'head_pipeline_not_bound',
+        error:
+          `#${number} reports head ${res.data.head_sha?.slice(0, 8) ?? '(none)'}, not expected_sha ` +
+          `${expectedSha.slice(0, 8)}: it has not caught up with the push yet`,
+      };
+    }
+    return res;
+  };
+
   try {
     // --- Phase 0: resolve the freshness anchor (require_merge_result only) ---
     // Fail CLOSED. If we cannot prove which run belongs to the current head, we
@@ -650,10 +676,22 @@ export async function waitForRun(
           platform: args.platform,
         };
       }
-      const res = await deps.adapter.resolveMergeAnchor({
-        number: args.pr_number,
-        repo: args.repo,
-      });
+      let res = await resolveAnchor(args.pr_number);
+      // #588: right after a push GitLab can still name the PREVIOUS head's
+      // pipeline, and the anchor refuses it as `head_pipeline_not_bound`. That is
+      // "the head's pipeline is not attached yet" — the same state Phase 1 waits
+      // out — so HOLD and re-resolve within the same window. Only a pipeline that
+      // never binds fails, and then closed. Every other refusal fails at once.
+      while (
+        'ok' in res &&
+        !res.ok &&
+        res.code === 'head_pipeline_not_bound' &&
+        elapsedSec() < noRunYetWindowSec
+      ) {
+        logPoll(args.ref, elapsedSec(), 'anchor(head_pipeline_not_bound)');
+        await deps.sleep(pollIntervalSec * 1000);
+        res = await resolveAnchor(args.pr_number);
+      }
       if ('platform_unsupported' in res || !res.ok) {
         const why = 'platform_unsupported' in res ? res.hint : res.error;
         return {
@@ -888,10 +926,7 @@ export async function waitForRun(
     // head, not what is about to be merged. That is the #476 bug re-entering
     // through the back door. Re-resolve and HOLD if it changed.
     if (args.require_merge_result && args.pr_number !== undefined) {
-      const recheck = await deps.adapter.resolveMergeAnchor({
-        number: args.pr_number,
-        repo: args.repo,
-      });
+      const recheck = await resolveAnchor(args.pr_number);
       if ('platform_unsupported' in recheck || !recheck.ok) {
         return {
           ok: false,

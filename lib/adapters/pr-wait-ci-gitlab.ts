@@ -19,7 +19,16 @@
  */
 
 import { execSync } from 'child_process';
-import { gitlabApiMr, type GitlabMr } from '../gitlab-api.js';
+import { gitlabApiMr, gitlabRepoOpts, type GitlabMr } from '../gitlab-api.js';
+import {
+  apiParentsOf,
+  bindHeadPipeline,
+  headFreshness,
+  mrHeadSha,
+  mrPipeline,
+  type HeadFreshness,
+  type ParentsOf,
+} from '../gitlab-head-pipeline.js';
 import { ciListRunsGitlab } from './ci-list-runs-gitlab.js';
 import {
   defaultDeps,
@@ -61,15 +70,31 @@ function parseSlugOpts(slug: string | undefined): { owner?: string; repo?: strin
  * `{total: 0, passed: 0, failed: 0, pending: 0}` — `decide()` will return
  * `null` (no decision possible) and the loop will eventually time out.
  * That matches the pre-migration behavior.
+ *
+ * #588: a pipeline is graded only when it is bound to the MR's current head
+ * (`bindHeadPipeline`). Right after a push `head_pipeline` can still be the
+ * previous head's — already terminal — so an unbound pipeline reads as
+ * pending, whatever its status, and the wait holds until the head's pipeline
+ * is attached. A bound pipeline is named in `graded`. The MR record itself lags
+ * a push, so its head must also match `freshness` (expected_sha, else the
+ * source branch tip) before anything binds.
  */
-export function snapshotGitlab(number: number, repo?: string): ChecksSnapshot {
+export function snapshotGitlab(
+  number: number,
+  repo?: string,
+  parentsOf: ParentsOf = apiParentsOf(gitlabRepoOpts(repo)),
+  freshness: HeadFreshness = headFreshness(undefined, gitlabRepoOpts(repo)),
+): ChecksSnapshot {
   const mr = gitlabApiMr(number, parseSlugOpts(repo));
-  const status = (
-    mr.head_pipeline?.status ??
-    mr.pipeline?.status ??
-    'unknown'
-  ).toLowerCase();
   const url = mr.web_url ?? '';
+  const pipeline = mrPipeline(mr);
+  if (pipeline !== null) {
+    const binding = bindHeadPipeline(mr, parentsOf, freshness);
+    if (!binding.bound) {
+      return { total: 1, passed: 0, failed: 0, pending: 1, summary: binding.reason, url };
+    }
+  }
+  const status = (pipeline?.status ?? 'unknown').toLowerCase();
 
   let passed = 0;
   let failed = 0;
@@ -99,6 +124,9 @@ export function snapshotGitlab(number: number, repo?: string): ChecksSnapshot {
     pending,
     summary: `pipeline ${status}`,
     url,
+    ...(pipeline !== null
+      ? { graded: { id: pipeline.id, sha: pipeline.sha, ref: pipeline.ref } }
+      : {}),
   };
 }
 
@@ -160,11 +188,6 @@ function isUnfinishedGitlab(status: string): boolean {
   const s = status.toLowerCase();
   return s === 'created' || s === 'waiting_for_resource' || s === 'preparing' ||
     s === 'pending' || s === 'running' || s === 'scheduled' || s === 'manual';
-}
-
-/** Canonical source-branch head; `diff_refs.head_sha` wins over the top-level `sha`. */
-function headShaOf(mr: GitlabMr): string {
-  return mr.diff_refs?.head_sha ?? mr.sha ?? '';
 }
 
 export function defaultSettleDepsGitlab(
@@ -246,7 +269,7 @@ export async function prWaitCiGitlab(
       }
 
       if (!hasPipelineNow(mr)) {
-        const headSha = headShaOf(mr);
+        const headSha = mrHeadSha(mr);
         const evidence = headSha === ''
           ? ({ ok: false } as const)
           : await deps.pendingRuns(headSha, args.repo);
@@ -280,7 +303,13 @@ export async function prWaitCiGitlab(
       timeout_sec: args.timeout_sec,
       repo: args.repo,
     };
-    const result = await runPollLoop(pollArgs, defaultDeps(snapshotGitlab));
+    // One memoised parents lookup for the whole wait (#588).
+    const parentsOf = apiParentsOf(gitlabRepoOpts(args.repo));
+    const freshness = headFreshness(args.expected_sha, gitlabRepoOpts(args.repo));
+    const result = await runPollLoop(
+      pollArgs,
+      defaultDeps((n, repo) => snapshotGitlab(n, repo, parentsOf, freshness)),
+    );
     const { ok: _ok, ...data } = result;
     void _ok;
     return { ok: true, data };
