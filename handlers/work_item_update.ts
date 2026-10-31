@@ -13,6 +13,7 @@
 import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { getAdapter } from '../lib/adapters/index.js';
+import { resolveIssueTarget } from '../lib/spec_parser.js';
 import { repoOptionalSchema } from '../lib/schemas/repo.js';
 
 const issueRefSchema = z
@@ -72,7 +73,11 @@ const workItemUpdateHandler: HandlerDef = {
       return envelope({ ok: false, error: err instanceof Error ? err.message : String(err) });
     }
 
-    const adapter = getAdapter({ repo: args.repo });
+    // Route by the project the write will land on. For a qualified ref that
+    // is the ref's own path, not `repo` and not cwd (#615).
+    const target = resolveIssueTarget(args.issue_ref, args.repo);
+    if (!target.ok) return envelope({ ok: false, error: target.error, code: target.code });
+    const adapter = getAdapter({ repo: target.repo });
     const result = await adapter.workItemUpdate(args);
 
     if ('platform_unsupported' in result) {

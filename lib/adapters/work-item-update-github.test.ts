@@ -123,6 +123,58 @@ describe('workItemUpdateGithub — subprocess boundary', () => {
     });
     expectOk(result);
     expect(result.data.number).toBe(123);
+    // The ref's project is the target. Asserting only the number is how #615
+    // shipped: the path was parsed and dropped, and the write hit cwd's repo.
+    expect(execCalls().map(unquote).find((c) => c.includes('gh issue edit'))).toContain('--repo org/repo');
+  });
+
+  test('qualified_ref_targets_its_project — pre-fetch and edit both target the ref\'s repo', async () => {
+    onExec('gh issue view', JSON.stringify({ number: 6, url: 'https://github.com/org/other/issues/6', body: '## AC\n\nold\n' }));
+    onExec('gh issue edit', 'https://github.com/org/other/issues/6\n');
+    const result = await workItemUpdateGithub({
+      issue_ref: 'org/other#6',
+      patch: { body_section: { heading: 'AC', content: 'new' } },
+    });
+    expectOk(result);
+    const calls = execCalls().map(unquote);
+    expect(calls.find((c) => c.includes('gh issue view'))).toContain('--repo org/other');
+    expect(calls.find((c) => c.includes('gh issue edit'))).toContain('--repo org/other');
+  });
+
+  test('qualified_ref_conflicting_repo_refuses — no subprocess runs', async () => {
+    const result = await workItemUpdateGithub({
+      issue_ref: 'org/other#6',
+      repo: 'org/repo',
+      patch: { title: 'x' },
+    });
+    expectErr(result);
+    expect(result.code).toBe('ambiguous_issue_ref');
+    expect(execCalls()).toEqual([]);
+  });
+
+  test('positive control — a repo equal to the ref\'s path writes there', async () => {
+    onExec('gh issue edit', 'https://github.com/org/other/issues/6\n');
+    const result = await workItemUpdateGithub({
+      issue_ref: 'org/other#6',
+      repo: 'org/other',
+      patch: { title: 'x' },
+    });
+    expectOk(result);
+    expect(unquote(execCalls()[0] ?? '')).toContain('--repo org/other');
+  });
+
+  test('positive control — a bare ref with no repo keeps cwd (no --repo)', async () => {
+    onExec('gh issue edit', 'https://github.com/org/repo/issues/6\n');
+    const result = await workItemUpdateGithub({ issue_ref: '#6', patch: { title: 'x' } });
+    expectOk(result);
+    expect(execCalls()[0]).not.toContain('--repo');
+  });
+
+  test('a nested-group ref on GitHub is an invalid slug, not a cwd write', async () => {
+    const result = await workItemUpdateGithub({ issue_ref: 'g/sub/p#6', patch: { title: 'x' } });
+    expectErr(result);
+    expect(result.code).toBe('invalid_repo_slug');
+    expect(execCalls()).toEqual([]);
   });
 
   test('rejects unparseable issue_ref', async () => {
