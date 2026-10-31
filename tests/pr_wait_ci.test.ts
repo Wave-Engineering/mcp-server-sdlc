@@ -778,3 +778,165 @@ describe('pr_wait_ci handler', () => {
     expect(typeof data.error).toBe('undefined');
   });
 });
+
+// --- #587: a bounded, resumable wait ----------------------------------------
+//
+// The MCP client aborts a tool call that is idle for 1800 s, and an aborted call
+// returns nothing at all. On slow CI the caller learned nothing and fell back to
+// hand-polling `gh pr checks`. Each call is now budgeted by `max_wait_sec`, and
+// running out of budget before CI finishes is a resumable `pending`, never a pass.
+
+describe('pr_wait_ci — resumable pending (#587)', () => {
+  test('CI that never completes returns pending at max_wait_sec, with counts', async () => {
+    const stuck = snap({ total: 2, passed: 1, pending: 1, summary: '1/2 passed, 1 pending' });
+    const { deps, sleepCalls } = makeDeps([stuck], 5);
+
+    const result = await runWithDeps(
+      { number: 42, poll_interval_sec: 5, timeout_sec: 600, max_wait_sec: 2 },
+      deps,
+    );
+
+    expect(result.final_state).toBe('pending');
+    expect(result.resume).toBe(true);
+    expect(result.waited_sec).toBe(2);
+    expect(result.checks).toMatchObject({ total: 2, passed: 1, failed: 0, pending: 1 });
+    expect(result.checks.summary).toBe('1/2 passed, 1 pending');
+    // The 5 s interval was clamped to the 2 s left in the budget.
+    expect(sleepCalls).toEqual([2_000]);
+  });
+
+  test('a second call resumes the wait: pending, then passed', async () => {
+    // One clock shared by both calls: CI finishes 3 s after the first call began.
+    let now = 0;
+    const deps = {
+      snapshotFn: () =>
+        now < 3_000
+          ? snap({ total: 1, pending: 1, summary: '0/1 passed, 1 pending' })
+          : snap({ total: 1, passed: 1, summary: '1/1 passed' }),
+      sleepFn: async (ms: number) => {
+        now += ms;
+      },
+      nowFn: () => now,
+    };
+    const args = { number: 7, poll_interval_sec: 5, timeout_sec: 600, max_wait_sec: 2 };
+
+    const first = await runWithDeps(args, deps);
+    expect(first.final_state).toBe('pending');
+    expect(first.resume).toBe(true);
+
+    const second = await runWithDeps(args, deps);
+    expect(second.final_state).toBe('passed');
+    expect(second.resume).toBeUndefined();
+    expect(second.checks.summary).toBe('1/1 passed');
+  });
+
+  test('failed checks return terminal failed immediately, never pending', async () => {
+    const { deps, sleepCalls } = makeDeps(
+      [snap({ total: 2, passed: 1, failed: 1, summary: '1/2 passed, 1 failed' })],
+      5,
+    );
+
+    const result = await runWithDeps(
+      { number: 9, poll_interval_sec: 5, timeout_sec: 600, max_wait_sec: 2 },
+      deps,
+    );
+
+    expect(result.final_state).toBe('failed');
+    expect(result.resume).toBeUndefined();
+    expect(sleepCalls).toEqual([]);
+  });
+
+  test('a verdict on the last snapshot at the deadline wins over pending', async () => {
+    const { deps } = makeDeps(
+      [
+        snap({ total: 1, pending: 1 }),
+        snap({ total: 1, failed: 1, summary: '0/1 passed, 1 failed' }),
+      ],
+      5,
+    );
+
+    const result = await runWithDeps(
+      { number: 9, poll_interval_sec: 5, timeout_sec: 600, max_wait_sec: 2 },
+      deps,
+    );
+
+    expect(result.final_state).toBe('failed');
+    expect(result.resume).toBeUndefined();
+  });
+
+  test('the default budget (1500 s) binds under the default timeout (1800 s)', async () => {
+    const { deps } = makeDeps([snap({ total: 1, pending: 1, summary: 'stuck' })], 30);
+
+    const result = await runWithDeps({ number: 1 }, deps);
+
+    expect(result.final_state).toBe('pending');
+    expect(result.resume).toBe(true);
+    expect(result.waited_sec).toBe(1500);
+  });
+
+  test('when timeout_sec binds first it is still a terminal timed_out', async () => {
+    const { deps } = makeDeps([snap({ total: 1, pending: 1 })], 5);
+
+    const result = await runWithDeps(
+      { number: 1, poll_interval_sec: 5, timeout_sec: 15, max_wait_sec: 15 },
+      deps,
+    );
+
+    expect(result.final_state).toBe('timed_out');
+    expect(result.resume).toBeUndefined();
+  });
+
+  test('sleeps never carry the call past its budget', async () => {
+    const { deps, sleepCalls } = makeDeps([snap({ total: 1, pending: 1 })], 30);
+
+    const result = await runWithDeps(
+      { number: 1, poll_interval_sec: 30, timeout_sec: 600, max_wait_sec: 40 },
+      deps,
+    );
+
+    expect(result.final_state).toBe('pending');
+    expect(sleepCalls).toEqual([30_000, 10_000]);
+    expect(result.waited_sec).toBe(40);
+  });
+
+  test('max_wait_sec above the 1700 s ceiling is rejected', async () => {
+    const data = parseResult(await handler.execute({ number: 1, max_wait_sec: 1701 }));
+    expect(data.ok).toBe(false);
+    expect(data.error as string).toContain('max_wait_sec');
+  });
+
+  test('max_wait_sec of zero is rejected', async () => {
+    const data = parseResult(await handler.execute({ number: 1, max_wait_sec: 0 }));
+    expect(data.ok).toBe(false);
+    expect(data.error as string).toContain('max_wait_sec');
+  });
+
+  test('max_wait_sec at the ceiling is accepted', async () => {
+    const { deps } = makeDeps([snap({ total: 1, passed: 1 })], 5);
+    const result = await runWithDeps({ number: 1, max_wait_sec: 1700 }, deps);
+    expect(result.final_state).toBe('passed');
+  });
+
+  test('execute — the wire envelope for pending is ok, resumable and not a pass', async () => {
+    // Real clock: a 1 s budget keeps this test to about one second.
+    setExecMock((cmd: string) => {
+      if (cmd.startsWith('git remote')) return 'https://github.com/org/repo.git\n';
+      if (cmd.startsWith('gh pr view'))
+        return JSON.stringify({
+          url: 'https://github.com/org/repo/pull/5',
+          statusCheckRollup: [{ __typename: 'CheckRun', name: 'build', status: 'IN_PROGRESS' }],
+        });
+      throw new Error(`unexpected exec: ${cmd}`);
+    });
+
+    const data = parseResult(
+      await handler.execute({ number: 5, poll_interval_sec: 5, timeout_sec: 600, max_wait_sec: 1 }),
+    );
+
+    expect(data.ok).toBe(true);
+    expect(data.final_state).toBe('pending');
+    expect(data.final_state).not.toBe('passed');
+    expect(data.resume).toBe(true);
+    expect(data.checks).toMatchObject({ total: 1, pending: 1, passed: 0 });
+  });
+});

@@ -619,6 +619,43 @@ describe('prWaitCiGithub — settle window (#508)', () => {
     expect(data.status).toBeUndefined();
     expect(clock.sleeps()).toBe(0);
   });
+
+  test('#587: the settle window spends the same per-call budget as the poll loop', async () => {
+    // The window burns 10 s of a 10 s budget before a check registers, so the
+    // poll loop gets nothing left: one snapshot, then a resumable pending.
+    onExec(
+      'gh pr view',
+      JSON.stringify({
+        url: 'https://github.com/org/repo/pull/42',
+        statusCheckRollup: [{ __typename: 'CheckRun', name: 'validate', status: 'IN_PROGRESS' }],
+      }),
+    );
+    const clock = fakeClock();
+    let probes = 0;
+    const result = await prWaitCiGithub(
+      { number: 42, poll_interval_sec: 5, timeout_sec: 600, max_wait_sec: 10 },
+      {
+        probe: () => {
+          probes += 1;
+          return probes >= 3
+            ? openMergeable({
+                statusCheckRollup: [{ __typename: 'CheckRun', name: 'validate', status: 'QUEUED' }],
+              })
+            : openMergeable();
+        },
+        pendingRuns: async () => ({ ok: true, runs: [] }),
+        now: clock.now,
+        sleep: clock.sleep,
+        settleWindowSec: 45,
+        settlePollSec: 5,
+      },
+    );
+    if (!('ok' in result) || !result.ok) throw new Error('expected ok');
+    const data = result.data as NoChecksData & { resume?: boolean; waited_sec?: number };
+    expect(data.final_state).toBe('pending');
+    expect(data.resume).toBe(true);
+    expect(data.waited_sec).toBe(0);
+  });
 });
 
 // --- #609: only a certified-empty run query may say "no CI here" -----------

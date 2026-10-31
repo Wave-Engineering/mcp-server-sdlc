@@ -9,6 +9,8 @@ import { z } from 'zod';
 import type { HandlerDef } from '../types.js';
 import { getAdapter } from '../lib/adapters/index.js';
 import {
+  MAX_WAIT_CEILING_SEC,
+  MAX_WAIT_DEFAULT_SEC,
   POLL_FLOOR_SEC,
   runPollLoop,
   type ChecksSnapshot,
@@ -33,6 +35,16 @@ const inputSchema = z
       .string()
       .regex(/^[0-9a-f]{40}$/i, 'expected_sha must be a 40-char hex commit SHA')
       .optional(),
+    // #587: one call's wall-clock budget, kept under the MCP client's 1800 s
+    // idle timeout. Running out before CI finishes returns a resumable
+    // `pending`; the ceiling stops a caller from asking past the timeout.
+    max_wait_sec: z
+      .number()
+      .int()
+      .positive()
+      .max(MAX_WAIT_CEILING_SEC)
+      .optional()
+      .default(MAX_WAIT_DEFAULT_SEC),
     // GitLab nested groups need arbitrary `/` depth — see lib/schemas/repo.ts (#290).
     repo: repoOptionalSchema,
   })
@@ -76,7 +88,7 @@ export async function __runWithDeps(rawArgs: unknown, deps: Partial<Deps>) {
 const prWaitCiHandler: HandlerDef = {
   name: 'pr_wait_ci',
   description:
-    "Block until a PR/MR's check runs complete. Server-side polling with configurable interval (default 30s, min 5s) and timeout (default 1800s). Returns passed | failed | timed_out. Pass `expected_sha` (the head you pushed): the PR/MR record lags a push, so checks grade only once it reports that head, and read as pending until then. Without it, GitLab checks the MR head against the source branch tip.",
+    "Wait for a PR/MR's check runs to complete. Server-side polling with configurable interval (default 30s, min 5s) and timeout (default 1800s). Each call is bounded by max_wait_sec (default 1500s, max 1700s) so it returns before the MCP idle timeout. Returns passed | failed | timed_out, or pending with resume: true when the per-call budget ran out first — pending is NOT a pass; call again with the same args to keep waiting. Pass `expected_sha` (the head you pushed): the PR/MR record lags a push, so checks grade only once it reports that head, and read as pending until then. Without it, GitLab checks the MR head against the source branch tip.",
   inputSchema,
   async execute(rawArgs: unknown) {
     let args: Input;
