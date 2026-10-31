@@ -28,7 +28,9 @@ const inputSchema = z
     // #508: how long to wait for checks to REGISTER before concluding a repo
     // runs none. An empty rollup at t=0 is indistinguishable from a queued
     // check, which is how a PR with pending CI reported a definite verdict.
-    settle_window_sec: z.number().int().min(0).optional(),
+    // #587: the window is not cut short by max_wait_sec, so it takes the same
+    // ceiling or a long one would still reach the client's idle timeout.
+    settle_window_sec: z.number().int().min(0).max(MAX_WAIT_CEILING_SEC).optional(),
     // #588: the head the caller pushed. The PR/MR record lags a push, so this is
     // the only anchor outside it; checks grade only once the PR reports it.
     expected_sha: z

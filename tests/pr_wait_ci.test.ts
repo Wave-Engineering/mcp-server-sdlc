@@ -911,6 +911,12 @@ describe('pr_wait_ci — resumable pending (#587)', () => {
     expect(data.error as string).toContain('max_wait_sec');
   });
 
+  test('settle_window_sec above the 1700 s ceiling is rejected', async () => {
+    const data = parseResult(await handler.execute({ number: 1, settle_window_sec: 1701 }));
+    expect(data.ok).toBe(false);
+    expect(data.error as string).toContain('settle_window_sec');
+  });
+
   test('max_wait_sec at the ceiling is accepted', async () => {
     const { deps } = makeDeps([snap({ total: 1, passed: 1 })], 5);
     const result = await runWithDeps({ number: 1, max_wait_sec: 1700 }, deps);

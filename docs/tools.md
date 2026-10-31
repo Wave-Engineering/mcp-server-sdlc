@@ -67,7 +67,9 @@ returns `final_state: "pending"` with `resume: true` and the current counts.
   carry the call past its budget. The settle window is not cut short by the
   budget (that would weaken a `no_checks_configured` verdict), but its time is
   taken out of what the poll loop gets. A call therefore lasts at most the
-  larger of `max_wait_sec` and the settle window.
+  larger of `max_wait_sec` and the settle window, plus one final snapshot
+  (and, for the window, its last poll sleep). `settle_window_sec` takes the
+  same 1700 s ceiling as `max_wait_sec`.
 
 **Returns — no checks** (#416, reworked by #508). When the head ref still has no
 registered checks after a **settle window**, the handler returns without entering
