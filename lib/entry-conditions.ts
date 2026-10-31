@@ -106,6 +106,8 @@ const EMPH_LEAD = /^(?:\d+[.)]\s+|[-*+]\s+)?[*_]*/;
 const EMPH_TRAIL = /[*_]+\s*$/;
 // Emphasis or a code span closing right after the status word: `**[ec-state EC-1] met** — <url>`.
 const STATUS_WRAP = /[*_`]/g;
+// Evidence that says the EC is not met yet: a condition, or a template placeholder.
+const MET_NOT_YET = /^(?:when|once|if|after|until|unless|as soon as)\b|<[^>]*>/i;
 // Leading punctuation authors put between the status and the evidence.
 const EVIDENCE_LEAD = /^[\s—–:|*_`-]+/;
 
@@ -130,7 +132,9 @@ function isStateComment(lines: string[]): boolean {
     nonBlank.every(
       (l) =>
         !/^(?:\t| {4})/.test(l) &&
-        !/[`~]/.test(l) &&
+        // A backtick (code span, fence) or `~~` (fence, strikethrough); a lone
+        // `~` is left alone, since evidence URLs carry it (`~user` paths).
+        !/`|~~/.test(l) &&
         EC_LINE.test(l.trim().replace(EMPH_LEAD, '').replace(EMPH_TRAIL, '').trim()),
     )
   );
@@ -243,6 +247,18 @@ export function parseEcStateComments(comments: EcComment[]): EcParseResult {
           created_at: comment.created_at,
           url: comment.url,
           reason: `met for ${id} not applied: a met counts only in a comment of bare state lines, with no prose, code or quote`,
+        });
+        continue;
+      }
+      // A plan author's list of what each EC means reads as state lines too:
+      // `[ec-state EC-1] met when the v3 API is GA`. Its "evidence" is a
+      // condition or a placeholder, not a fact, so it releases nothing.
+      if (token === 'met' && MET_NOT_YET.test(m[3].replace(EVIDENCE_LEAD, ''))) {
+        malformed.push({
+          line,
+          created_at: comment.created_at,
+          url: comment.url,
+          reason: `met for ${id} not applied: its evidence is a condition or a placeholder, not a fact`,
         });
         continue;
       }

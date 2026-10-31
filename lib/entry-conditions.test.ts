@@ -203,6 +203,31 @@ describe('parseEcStateComments', () => {
     }
   });
 
+  test('ec_met_conditional_or_placeholder — a met whose evidence is a condition or a placeholder does not release', () => {
+    for (const body of [
+      '- [ec-state EC-1] met when vendor API v3 is GA',
+      '[ec-state EC-1] met — once security signs off',
+      '[ec-state EC-1] met — <link to release>',
+    ]) {
+      const r = parseEcStateComments([
+        c('[ec-state EC-1] unmet', '2026-10-01T00:00:00Z'),
+        c(body, '2026-10-02T00:00:00Z'),
+      ]);
+      expect(r.latest['EC-1'].status).toBe('unmet');
+      expect(r.malformed[0].reason).toContain('condition or a placeholder');
+    }
+  });
+
+  test('positive control — factual evidence, a ~user URL included, releases', () => {
+    for (const body of ['[ec-state EC-1] met — https://git.sr.ht/~user/repo/refs/v3', '[ec-state EC-1] met shipped in v2.3', '[ec-state EC-1] met']) {
+      const r = parseEcStateComments([
+        c('[ec-state EC-1] unmet', '2026-10-01T00:00:00Z'),
+        c(body, '2026-10-02T00:00:00Z'),
+      ]);
+      expect(r.latest['EC-1'].status).toBe('met');
+    }
+  });
+
   test('a tightening line holds from any comment: prose, code span or fenced block', () => {
     for (const body of ['Broke again.\n[ec-state EC-1] reclosed', '`[ec-state EC-1] reclosed`', '```\n[ec-state EC-1] reclosed\n```', '```[ec-state EC-1] reclosed```']) {
       const r = parseEcStateComments([
