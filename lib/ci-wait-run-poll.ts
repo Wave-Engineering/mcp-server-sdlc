@@ -650,10 +650,28 @@ export async function waitForRun(
           platform: args.platform,
         };
       }
-      const res = await deps.adapter.resolveMergeAnchor({
+      let res = await deps.adapter.resolveMergeAnchor({
         number: args.pr_number,
         repo: args.repo,
       });
+      // #588: right after a push GitLab can still name the PREVIOUS head's
+      // pipeline, and the anchor refuses it as `head_pipeline_not_bound`. That is
+      // "the head's pipeline is not attached yet" — the same state Phase 1 waits
+      // out — so HOLD and re-resolve within the same window. Only a pipeline that
+      // never binds fails, and then closed. Every other refusal fails at once.
+      while (
+        'ok' in res &&
+        !res.ok &&
+        res.code === 'head_pipeline_not_bound' &&
+        elapsedSec() < noRunYetWindowSec
+      ) {
+        logPoll(args.ref, elapsedSec(), 'anchor(head_pipeline_not_bound)');
+        await deps.sleep(pollIntervalSec * 1000);
+        res = await deps.adapter.resolveMergeAnchor({
+          number: args.pr_number,
+          repo: args.repo,
+        });
+      }
       if ('platform_unsupported' in res || !res.ok) {
         const why = 'platform_unsupported' in res ? res.hint : res.error;
         return {

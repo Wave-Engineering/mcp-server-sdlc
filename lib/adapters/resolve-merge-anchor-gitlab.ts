@@ -69,7 +69,7 @@ export async function resolveMergeAnchorGitlab(
     // #588: `head_pipeline` is not proof by itself. Right after a push GitLab
     // can still name the PREVIOUS head's pipeline, and anchoring on it lets that
     // head's green merge-result run pass the gate. Refuse unless it is bound to
-    // the current head; a caller re-waits once the head's pipeline is attached.
+    // the current head; ci_wait_run holds on this code and re-resolves (#588).
     const binding = bindHeadPipeline(mr, parentsOf ?? apiParentsOf(opts));
     if (!binding.bound) {
       return {

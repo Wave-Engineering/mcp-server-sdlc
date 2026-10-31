@@ -150,26 +150,35 @@ describe('resolveMergeAnchorGitlab — head_pipeline must be bound to the head (
 
   // The gate itself: ci_wait_run(require_merge_result) with the REAL GitLab anchor.
   // The run list already holds the previous head's GREEN merge-result pipeline.
-  async function gate(head: string, pipeline: Record<string, unknown>) {
-    const { waitForRun } = await import('../ci-wait-run-poll.ts');
-    onExec('glab api', JSON.stringify({ iid: 108, sha: head, head_pipeline: pipeline }));
-    let t = 1_700_000_000_000;
-    const oldGreen = {
-      run_id: 500,
+  function mergeRun(id: number, sha: string, conclusion: 'success' | 'failed') {
+    return {
+      run_id: id,
       workflow_name: 'merge_request_event',
-      status: 'success',
-      conclusion: 'success',
-      url: 'https://gitlab.com/org/repo/-/pipelines/500',
-      head_sha: MERGE_OLD,
+      status: conclusion,
+      conclusion,
+      url: `https://gitlab.com/org/repo/-/pipelines/${id}`,
+      head_sha: sha,
       head_branch: REF,
       created_at: '2026-10-31T10:00:00Z',
       event: 'merge_request_event',
     };
-    return waitForRun(
-      { ref: REF, platform: 'gitlab', require_merge_result: true, pr_number: 108, repo: 'org/repo', timeout_sec: 60 },
+  }
+  // The previous head's GREEN merge-result pipeline, already in the run list.
+  const oldGreen = mergeRun(500, MERGE_OLD, 'success');
+  const stale = JSON.stringify({ iid: 108, sha: NEW, head_pipeline: { id: 500, status: 'success', sha: MERGE_OLD, ref: REF } });
+
+  /** Each anchor read returns the next MR state, then repeats the last. */
+  async function gate(mrStates: string[], runs: object[], timeoutSec = 60) {
+    const { waitForRun } = await import('../ci-wait-run-poll.ts');
+    let i = 0;
+    onExec('glab api', () => mrStates[Math.min(i++, mrStates.length - 1)]);
+    let t = 1_700_000_000_000;
+    const start = t;
+    const r = await waitForRun(
+      { ref: REF, platform: 'gitlab', require_merge_result: true, pr_number: 108, repo: 'org/repo', timeout_sec: timeoutSec },
       {
         adapter: {
-          ciListRuns: async () => ({ ok: true as const, data: [oldGreen] }),
+          ciListRuns: async () => ({ ok: true as const, data: runs as never }),
           resolveBranchSha: async () => ({ ok: true as const, data: null }),
           resolveMergeAnchor: (a) => resolveMergeAnchorGitlab(a, parentsOf),
         },
@@ -179,22 +188,42 @@ describe('resolveMergeAnchorGitlab — head_pipeline must be bound to the head (
         now: () => t,
       },
     );
+    return { r, waitedSec: (t - start) / 1000 };
   }
 
-  test('RED (gate): ci_wait_run right after a push does not grade the old green pipeline', async () => {
-    // MR head moved to NEW; head_pipeline is still OLD's merge pipeline.
-    const r = await gate(NEW, { id: 500, status: 'success', sha: MERGE_OLD, ref: REF });
+  test('RED (gate): push then an immediate wait HOLDS past the old green and grades the new head run', async () => {
+    // The head's merge pipeline attaches on the third read, and it FAILED. If the
+    // old green were graded, this would read success.
+    const bound = JSON.stringify({ iid: 108, sha: NEW, head_pipeline: { id: 600, status: 'failed', sha: MERGE_NEW, ref: REF } });
+    const { r, waitedSec } = await gate([stale, stale, bound], [oldGreen, mergeRun(600, MERGE_NEW, 'failed')]);
+    expect(r.final_status).toBe('failure');
+    expect(r.run_id).toBe(600);
+    expect(waitedSec).toBeGreaterThan(0);
+  });
+
+  test('RED (gate): a head pipeline that never attaches fails closed, naming why', async () => {
+    const { r, waitedSec } = await gate([stale], [oldGreen]);
     expect(r.ok).toBe(false);
     expect(r.final_status).toBe('not_merge_result');
     if (!r.ok) expect(r.error).toContain('not attached yet');
+    expect(waitedSec).toBeGreaterThanOrEqual(60);
+  });
+
+  test('a refusal other than not-bound still fails at once (no head_pipeline)', async () => {
+    const { r, waitedSec } = await gate([JSON.stringify({ iid: 108, sha: NEW })], [oldGreen]);
+    expect(r.final_status).toBe('not_merge_result');
+    expect(waitedSec).toBe(0);
   });
 
   test('GREEN (gate): the same pipeline passes when it IS the current head pipeline', async () => {
     // Same run list, but the MR head is the commit that pipeline merged: bound.
-    const r = await gate(OLD, { id: 500, status: 'success', sha: MERGE_OLD, ref: REF });
+    const current = JSON.stringify({ iid: 108, sha: OLD, head_pipeline: { id: 500, status: 'success', sha: MERGE_OLD, ref: REF } });
+    const { r, waitedSec } = await gate([current], [oldGreen]);
     expect(r.ok).toBe(true);
     expect(r.final_status).toBe('success');
     expect(r.run_id).toBe(500);
+    // Already green and bound: no hold.
+    expect(waitedSec).toBe(0);
   });
 
   test('FAIL CLOSED: an MR with no head SHA is refused', async () => {
