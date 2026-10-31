@@ -95,7 +95,11 @@ export function normalizePlanJson(planJson: string, repoSlug?: string): string {
           const issueNum = (story.issue as number) ?? (story.number as number);
           const storyRepo = (story.repo as string) ?? project;
           const ref = storyRepo ? `${storyRepo}#${issueNum}` : `#${issueNum}`;
-          return { number: issueNum, repo: storyRepo, ref, title: story.title, depends_on: story.depends_on };
+          // `ec` (#613) rides along: dropping it here would silently ungate the story.
+          return {
+            number: issueNum, repo: storyRepo, ref, title: story.title, depends_on: story.depends_on,
+            ...(story.ec !== undefined ? { ec: story.ec } : {}),
+          };
         });
         const result: Record<string, unknown> = { ...wave, id, issues };
         delete result.name;
