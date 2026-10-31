@@ -637,6 +637,51 @@ describe('#588 — only a pipeline bound to the current head is graded', () => {
     expect(snap.passed).toBe(0);
   });
 
+  test('a MERGED MR whose source branch is gone still grades its bound green (no tip read)', async () => {
+    resetExecMock();
+    onExec('/repository/branches/', () => {
+      throw new Error('404 Branch Not Found');
+    });
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec(
+      'glab api projects/org%2Frepo/merge_requests/3',
+      JSON.stringify({
+        ...JSON.parse(mr(NEW, { id: 20, status: 'success', sha: NEW, ref: 'feature/x' })),
+        state: 'merged',
+      }),
+    );
+    const r = await poll();
+    expect(r.final_state).toBe('passed');
+    expect(r.graded_pipeline).toEqual({ id: 20, sha: NEW, ref: 'feature/x' });
+    expect(execCalls().some((c) => c.includes('/repository/branches/'))).toBe(false);
+  });
+
+  test('a CLOSED (unmerged) MR whose source branch is gone still fails closed', () => {
+    tip = undefined;
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec(
+      'glab api projects/org%2Frepo/merge_requests/3',
+      JSON.stringify({
+        ...JSON.parse(mr(NEW, { id: 20, status: 'success', sha: NEW, ref: 'feature/x' })),
+        state: 'closed',
+      }),
+    );
+    expect(snapshotGitlab(3, undefined, parentsOf).pending).toBe(1);
+  });
+
+  test('a MERGED MR still honours expected_sha', async () => {
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    onExec(
+      'glab api projects/org%2Frepo/merge_requests/3',
+      JSON.stringify({
+        ...JSON.parse(mr(NEW, { id: 20, status: 'success', sha: NEW, ref: 'feature/x' })),
+        state: 'merged',
+      }),
+    );
+    const r = await poll(30, { expectedSha: OLD });
+    expect(r.final_state).toBe('timed_out');
+  });
+
   test("apiBranchTipOf reads a fork MR's branch from its source project, unmemoised", async () => {
     const { apiBranchTipOf } = await import('../gitlab-head-pipeline.ts');
     onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');

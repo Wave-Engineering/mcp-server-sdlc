@@ -65,6 +65,11 @@ function staleHeadReason(mr: GitlabMr, head: string, freshness: HeadFreshness): 
     if (head.toLowerCase() === freshness.expectedSha.toLowerCase()) return null;
     return `the MR head is ${short(head)}, not expected_sha ${short(freshness.expectedSha)}: the MR has not caught up with the push yet`;
   }
+  // A merged MR's record is final: no push can land on it, so it cannot lag
+  // one. Its source branch is often already gone (pr_merge removes it, and
+  // auto-merge fires the moment the pipeline goes green), so a tip read would
+  // fail a correct pass closed. Only `merged` is exempt; `closed` still checks.
+  if (mr.state === 'merged') return null;
   const tip = freshness.branchTipOf(mr);
   if (tip === undefined || tip === '') {
     return `could not read the tip of source branch '${mr.source_branch}' to confirm the MR head ${short(head)} is current`;

@@ -23,7 +23,8 @@ head. On GitLab, `head_pipeline` must be bound to the MR head (its `sha`, or for
 merged-results pipeline the merge commit's second parent), and the MR head itself
 must match `expected_sha` — or, without it, the source branch's live tip (read from
 `source_project_id`, so fork MRs work). The MR record lags a push, and in that window
-it still names the previous head and that head's green pipeline. Anything unbound,
+it still names the previous head and that head's green pipeline. A **merged** MR skips
+the tip check: its record is final, and its source branch is often already deleted. Anything unbound,
 including an unreadable tip, reads as pending and never passes. On GitHub,
 `expected_sha` holds the rollup as pending until `headRefOid` matches. A graded
 GitLab result names its pipeline in `graded_pipeline`.

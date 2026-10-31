@@ -319,6 +319,32 @@ describe('resolveMergeAnchorGitlab — head_pipeline must be bound to the head (
     });
   }
 
+  test('GREEN (gate): an MR that merges mid-wait, branch deleted, still passes the Phase 2.5 recheck', async () => {
+    // pr_merge removes the source branch, and auto-merge fires when the pipeline
+    // goes green: the recheck then reads a merged MR whose branch read 404s.
+    const open = JSON.stringify({
+      iid: 108,
+      sha: NEW,
+      state: 'opened',
+      source_branch: 'feature/x',
+      head_pipeline: { id: 600, status: 'success', sha: MERGE_NEW, ref: REF },
+    });
+    const merged = JSON.stringify({ ...JSON.parse(open), state: 'merged' });
+    // Phase 0 reads the branch while it exists; any later read 404s.
+    let branchReads = 0;
+    resetExecMock();
+    onExec('/repository/branches/', () => {
+      if (++branchReads === 1) return JSON.stringify({ name: 'feature/x', commit: { id: NEW } });
+      throw new Error('404 Branch Not Found');
+    });
+    onExec('git remote get-url origin', 'https://gitlab.com/org/repo.git');
+    const { r } = await gate([open, merged], [mergeRun(600, MERGE_NEW, 'success')]);
+    expect(r.ok).toBe(true);
+    expect(r.final_status).toBe('success');
+    // The recheck read the merged record and never needed the deleted branch.
+    expect(branchReads).toBe(1);
+  });
+
   test('GUARD (gate): an expected_sha that is not the head never passes, even when bound and green', async () => {
     const boundNewGreen = JSON.stringify({
       iid: 108,
