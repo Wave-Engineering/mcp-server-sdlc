@@ -373,6 +373,49 @@ export function gitlabApiMrDiffs(
   );
 }
 
+export interface GitlabNote {
+  id: number;
+  body: string;
+  created_at: string;
+  system?: boolean;
+}
+
+const ISSUE_NOTES_PER_PAGE = 100;
+const ISSUE_NOTES_MAX_PAGES = 50;
+
+/**
+ * List an issue's notes (comments), oldest first.
+ *
+ * Endpoint: `GET /projects/:id/issues/:issue_iid/notes`
+ *
+ * Pages the same way as `gitlabApiMrDiffs`, and for the same reason refuses to
+ * return a truncated list: the entry-condition sync reads the LATEST state per
+ * EC, so a missing last page could drop a `reclosed` and leave a stale `met`
+ * standing (#613). System notes are returned; callers filter them.
+ */
+export function gitlabApiIssueNotes(
+  iid: number,
+  opts?: { owner?: string; repo?: string },
+): GitlabNote[] {
+  const path = projectPath(opts);
+  const endpoint = `projects/${path}/issues/${String(iid)}/notes`;
+  const all: GitlabNote[] = [];
+  for (let page = 1; page <= ISSUE_NOTES_MAX_PAGES; page++) {
+    const raw = execGlab([
+      'glab', 'api', endpoint,
+      '-X', 'GET',
+      '-f', 'sort=asc', '-f', 'order_by=created_at',
+      '-f', `per_page=${String(ISSUE_NOTES_PER_PAGE)}`, '-f', `page=${String(page)}`,
+    ]);
+    const batch = parseList<GitlabNote>(raw, endpoint);
+    all.push(...batch);
+    if (batch.length < ISSUE_NOTES_PER_PAGE) return all;
+  }
+  throw new Error(
+    `issue #${String(iid)} has more than ${String(ISSUE_NOTES_PER_PAGE * ISSUE_NOTES_MAX_PAGES)} notes; refusing to return a truncated list`,
+  );
+}
+
 /**
  * List merge requests with filters. Returns an array of `GitlabMr`.
  *

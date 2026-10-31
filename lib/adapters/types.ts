@@ -994,6 +994,29 @@ export interface IssueClosureInfo {
 }
 
 /**
+ * Hybrid sub-call (#613). `issueComments` reads every human comment on an
+ * issue, oldest first, for `wave_ec_sync` to parse `[ec-state EC-n]` lines
+ * from. GitLab system notes are dropped. The list is complete or the call
+ * fails: a truncated list could miss the latest state of an entry condition.
+ */
+export interface IssueCommentsArgs {
+  number: number;
+  repo?: string;
+}
+
+export interface IssueComment {
+  body: string;
+  created_at: string;
+  /** Link to the comment, where the platform has one. */
+  url?: string;
+}
+
+export interface IssueCommentsResponse {
+  number: number;
+  comments: IssueComment[];
+}
+
+/**
  * Hybrid sub-call (Story 2.23, #317). `findExistingPr` is the `wave_finalize`
  * idempotency sub-call lifted from the handler-local `findExistingGithubPr`
  * / `findExistingGitlabMr` helpers. Returns the narrow `NormalizedPr` shape
@@ -1293,6 +1316,10 @@ export interface PlatformAdapter {
   fetchIssueClosure(
     args: FetchIssueClosureArgs,
   ): Promise<AdapterResult<IssueClosureInfo>>;
+  /** #613 — Plan-issue comments for the entry-condition sync. */
+  issueComments(
+    args: IssueCommentsArgs,
+  ): Promise<AdapterResult<IssueCommentsResponse>>;
   findMergedPrForBranchPrefix(
     args: FindMergedPrForBranchPrefixArgs,
   ): Promise<AdapterResult<{ url: string } | null>>;
@@ -1365,6 +1392,7 @@ export const PLATFORM_ADAPTER_METHODS = [
   'fetchPrState',
   'fetchPrForBranch',
   'fetchIssueClosure',
+  'issueComments',
   'findMergedPrForBranchPrefix',
   'ciListRuns',
   'resolveBranchSha',

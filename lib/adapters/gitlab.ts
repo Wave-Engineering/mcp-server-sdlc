@@ -25,6 +25,7 @@ import { branchCreateGitlab } from './branch-create-gitlab.js';
 import { fetchCiTrustSignalGitlab } from './fetch-ci-trust-signal-gitlab.js';
 import { fetchIssueGitlab } from './fetch-issue-gitlab.js';
 import { fetchIssueClosureGitlab } from './fetch-issue-closure-gitlab.js';
+import { issueCommentsGitlab } from './issue-comments-gitlab.js';
 import { fetchPrForBranchGitlab } from './fetch-pr-for-branch-gitlab.js';
 import { fetchPrStateGitlab } from './fetch-pr-state-gitlab.js';
 import { findExistingPrGitlab } from './find-existing-pr-gitlab.js';
@@ -84,6 +85,7 @@ export const gitlabAdapter: PlatformAdapter = {
   fetchPrState: fetchPrStateGitlab,
   fetchPrForBranch: fetchPrForBranchGitlab,
   fetchIssueClosure: fetchIssueClosureGitlab,
+  issueComments: issueCommentsGitlab,
   findMergedPrForBranchPrefix: findMergedPrForBranchPrefixGitlab,
   ciListRuns: ciListRunsGitlab,
   resolveBranchSha: resolveBranchShaGitlab,

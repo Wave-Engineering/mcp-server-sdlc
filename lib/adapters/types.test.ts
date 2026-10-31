@@ -128,6 +128,8 @@ describe('PlatformAdapter contract', () => {
     'remoteBranchSha',
     'prPrecheckInfo',
     'prReady',
+    // #613: Plan-issue comments for the entry-condition sync.
+    'issueComments',
   ]);
 
   test('still-stubbed methods return platform_unsupported', async () => {
