@@ -60,9 +60,10 @@ returns `final_state: "pending"` with `resume: true` and the current counts.
 - **`timeout_sec` is per call**, so with the defaults (`1500` under `1800`) a
   call ends `pending`, not `timed_out`. A caller that wants an overall deadline
   keeps it itself, across calls. To get a terminal `timed_out` from one call,
-  set `timeout_sec` clearly below `max_wait_sec`. The first probe and any
-  settle window are taken out of the budget before the poll loop starts, so
-  equal values end `pending`.
+  set `timeout_sec` below `max_wait_sec` by more than the settle window
+  (`settle_window_sec`, default 45 s). The first probe and any settle window
+  are taken out of the budget before the poll loop starts, so near-equal
+  values can end either way, depending on how long those took.
 - Sleeps are clamped to the time left, so a long `poll_interval_sec` cannot
   carry the call past its budget. The settle window is not cut short by the
   budget (that would weaken a `no_checks_configured` verdict), but its time is
