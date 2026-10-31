@@ -123,6 +123,52 @@ describe('parseEcStateComments', () => {
     }
   });
 
+  test('ec_markdown_wrapped — a numbered, code-span or italic state line is read', () => {
+    for (const body of ['1. [ec-state EC-1] reclosed', '2) [ec-state EC-1] reclosed', '`[ec-state EC-1] reclosed`', '*[ec-state EC-1] reclosed*', '_[ec-state EC-1] reclosed_']) {
+      const r = parseEcStateComments([
+        c('[ec-state EC-1] met', '2026-10-01T00:00:00Z'),
+        c(body, '2026-10-02T00:00:00Z'),
+      ]);
+      expect(r.latest['EC-1'].status).toBe('reclosed');
+    }
+  });
+
+  test('ec_padded_id — EC-01 is EC-1', () => {
+    const r = parseEcStateComments([
+      c('[ec-state EC-1] met', '2026-10-01T00:00:00Z'),
+      c('[ec-state EC-01] reclosed', '2026-10-02T00:00:00Z'),
+    ]);
+    expect(r.latest['EC-1'].status).toBe('reclosed');
+    expect(r.latest['EC-01']).toBeUndefined();
+  });
+
+  test('positive control — a bold status with evidence after it is met, not a garbled status', () => {
+    const r = parseEcStateComments([c('- **[ec-state EC-1] met** — https://e', '2026-10-01T00:00:00Z')]);
+    expect(r.latest['EC-1'].status).toBe('met');
+    expect(r.latest['EC-1'].evidence).toBe('https://e');
+    expect(r.malformed).toEqual([]);
+  });
+
+  test('a quoted format template is reported and holds nothing back', () => {
+    for (const body of ['[ec-state EC-<n>] met|unmet|reclosed', '- `[ec-state EC-n] met`']) {
+      const r = parseEcStateComments([
+        c('[ec-state EC-1] met', '2026-10-01T00:00:00Z'),
+        c(body, '2026-10-02T00:00:00Z'),
+      ]);
+      expect(r.latest['EC-1'].status).toBe('met');
+      expect(r.malformed).toHaveLength(1);
+      expect(r.malformed[0].reason).toContain('template');
+    }
+  });
+
+  test('positive control — a sentence that mentions a state line is not one', () => {
+    const r = parseEcStateComments([
+      c('[ec-state EC-1] unmet', '2026-10-01T00:00:00Z'),
+      c('Once it ships, post `[ec-state EC-1] met` here.', '2026-10-02T00:00:00Z'),
+    ]);
+    expect(r.latest['EC-1'].status).toBe('unmet');
+  });
+
   test('positive control — a quoted state line is not a state update', () => {
     const r = parseEcStateComments([
       c('[ec-state EC-1] met', '2026-10-01T00:00:00Z'),

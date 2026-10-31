@@ -89,15 +89,23 @@ export interface EcParseResult {
 // to the first space.
 const EC_LINE = /^\[ec-state\s+ec\s*-?\s*(\d+)\s*\]\s*(\S*)\s*(.*)$/i;
 const EC_PREFIX = /^\[ec-state\b/i;
-// Markdown an author may wrap a state line in: a list marker, then bold. A
+// The format itself, as hold messages and docs quote it (`EC-<n>`, `EC-n`):
+// reported, never read as a state update about any EC.
+const EC_TEMPLATE = /^\[ec-state\s+ec\s*-?\s*(?:<[^>\]]*>|n)\s*\]/i;
+// Markdown an author may wrap a state line in: a list marker (bulleted or
+// numbered), then emphasis or a code span. Only wrapper characters may come
+// before `[ec-state`, so a sentence that mentions a state line is not one. A
 // `>` quote is deliberately NOT stripped: quoting a state line is not posting it.
-const MD_LEAD = /^(?:[-*+]\s+)?(?:\*\*|__)?/;
-const MD_TRAIL = /(?:\*\*|__)\s*$/;
+const MD_LEAD = /^(?:\d+[.)]\s+|[-*+]\s+)?[*_`]*/;
+const MD_TRAIL = /[*_`]+\s*$/;
+// Emphasis or a code span closing right after the status word: `**[ec-state EC-1] met** — <url>`.
+const STATUS_WRAP = /[*_`]/g;
 // Leading punctuation authors put between the status and the evidence.
-const EVIDENCE_LEAD = /^[\s—–:|-]+/;
+const EVIDENCE_LEAD = /^[\s—–:|*_`-]+/;
 
 function normalizeEcId(digits: string): string {
-  return `EC-${digits}`;
+  // `EC-01` is `EC-1`: ids are matched exactly, so a padded id would miss its EC.
+  return `EC-${digits.replace(/^0+(?=\d)/, '')}`;
 }
 
 function isEcStatus(s: string): s is EcStatus {
@@ -152,6 +160,15 @@ export function parseEcStateComments(comments: EcComment[]): EcParseResult {
         });
         continue;
       }
+      if (EC_TEMPLATE.test(line)) {
+        malformed.push({
+          line,
+          created_at: comment.created_at,
+          url: comment.url,
+          reason: 'the format template, not a state update; ignored',
+        });
+        continue;
+      }
       const m = EC_LINE.exec(line);
       if (!m) {
         malformed.push({
@@ -168,7 +185,7 @@ export function parseEcStateComments(comments: EcComment[]): EcParseResult {
         continue;
       }
       const id = normalizeEcId(m[1]);
-      const token = m[2].toLowerCase();
+      const token = m[2].replace(STATUS_WRAP, '').toLowerCase();
       const evidence = m[3].replace(EVIDENCE_LEAD, '').trim() || comment.url || '';
       if (!isEcStatus(token)) {
         malformed.push({
