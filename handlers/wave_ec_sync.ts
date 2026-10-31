@@ -130,8 +130,15 @@ const waveEcSyncHandler: HandlerDef = {
           error: `phases-waves.json names two Plan issues: plan_id ${String(plan.plan_id)} and plan_issue ${JSON.stringify(plan.plan_issue)}; pass \`plan_issue\` to choose`,
         });
       }
+      if (args.repo !== undefined && fromRef?.repo !== undefined && args.repo !== fromRef.repo) {
+        return envelope({
+          ok: false,
+          code: 'ambiguous_plan_issue',
+          error: `\`repo\` ${JSON.stringify(args.repo)} disagrees with the plan file's plan_issue ${JSON.stringify(plan.plan_issue)}; pass \`plan_issue\` with \`repo\` to choose`,
+        });
+      }
       number = plan.plan_id ?? fromRef?.number;
-      repo = args.repo ?? fromRef?.repo ?? ownRepo;
+      repo = fromRef?.repo ?? args.repo ?? ownRepo;
     }
     if (number === undefined) {
       return envelope({

@@ -167,6 +167,22 @@ describe('wave_ec_sync handler', () => {
     expect(call.replace(/'/g, '')).toContain('repos/acme/plans/issues/77/comments');
   });
 
+  test('ambiguous_plan_issue — an explicit repo that disagrees with the file ref\'s repo → refuse', async () => {
+    await setupPlan({ ...declaredPlan, plan_id: undefined, plan_issue: 'acme/plans#77' });
+    const parsed = parseResult(await handler.execute({ repo: 'org/code' }));
+    expect(parsed).toMatchObject({ ok: false, code: 'ambiguous_plan_issue' });
+    expect(execCalls().some((c) => c.includes('/comments'))).toBe(false);
+  });
+
+  test('positive control — an explicit repo equal to the file ref\'s repo reads it', async () => {
+    await setupPlan({ ...declaredPlan, plan_id: undefined, plan_issue: 'acme/plans#77' });
+    onGithubComments([]);
+    const parsed = parseResult(await handler.execute({ repo: 'acme/plans' }));
+    expect(parsed.ok).toBe(true);
+    const call = execCalls().find((c) => c.includes('/comments')) ?? '';
+    expect(call.replace(/'/g, '')).toContain('repos/acme/plans/issues/77/comments');
+  });
+
   test('an explicit plan_issue is read against the plan\'s own project, not the file ref\'s repo', async () => {
     await setupPlan({ ...declaredPlan, plan_issue: 'acme/plans#77' });
     onGithubComments([]);
