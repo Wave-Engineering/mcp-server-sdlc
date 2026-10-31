@@ -169,32 +169,48 @@ describe('parseEcStateComments', () => {
     expect(r.latest['EC-1'].status).toBe('unmet');
   });
 
-  test('ec_quoted_met_not_applied — a met in a code span or a fenced block does not release', () => {
+  test('ec_met_only_from_a_state_comment — a met in any other comment does not release', () => {
     for (const body of [
+      // An instruction with the line in a code span.
       'When it ships, post:\n\n`[ec-state EC-1] met — <link to release>`',
+      // ...in a fenced block, a nested fence, or a mismatched one.
       'When it ships, post:\n```\n[ec-state EC-1] met\n```',
+      '````\n```\n[ec-state EC-1] met\n```\n````',
+      '~~~\n```\n[ec-state EC-1] met\n```\n~~~',
+      // ...a code span hard-wrapped open on the line before.
+      'When it ships, post `\n[ec-state EC-1] met — <link>`',
+      // ...an indented code block.
+      'Post this:\n\n    [ec-state EC-1] met',
+      // ...or a bare line under prose.
+      'EC-1 is done:\n[ec-state EC-1] met',
     ]) {
       const r = parseEcStateComments([
         c('[ec-state EC-1] unmet', '2026-10-01T00:00:00Z'),
         c(body, '2026-10-02T00:00:00Z'),
       ]);
       expect(r.latest['EC-1'].status).toBe('unmet');
-      expect(r.malformed).toHaveLength(1);
-      expect(r.malformed[0].reason).toContain('quoted met');
+      expect(r.malformed.map((m) => m.reason).join('\n')).toContain('a met counts only in a comment of bare state lines');
     }
   });
 
-  test('positive control — a quoted reclosed still holds, and a bare met after a fence releases', () => {
-    const r = parseEcStateComments([
-      c('[ec-state EC-1] met', '2026-10-01T00:00:00Z'),
-      c('```\n[ec-state EC-1] reclosed\n```', '2026-10-02T00:00:00Z'),
-    ]);
-    expect(r.latest['EC-1'].status).toBe('reclosed');
-    const r2 = parseEcStateComments([
-      c('[ec-state EC-1] unmet', '2026-10-01T00:00:00Z'),
-      c('```\nexample\n```\n[ec-state EC-1] met', '2026-10-02T00:00:00Z'),
-    ]);
-    expect(r2.latest['EC-1'].status).toBe('met');
+  test('positive control — a state comment releases, wrapped or not, several ECs at once', () => {
+    for (const body of ['[ec-state EC-1] met — https://e', '- [ec-state EC-1] met\n- [ec-state EC-2] met', '1. **[ec-state EC-1] met** — https://e\n\n2. [ec-state EC-2] met']) {
+      const r = parseEcStateComments([
+        c('[ec-state EC-1] unmet\n[ec-state EC-2] unmet', '2026-10-01T00:00:00Z'),
+        c(body, '2026-10-02T00:00:00Z'),
+      ]);
+      expect(r.latest['EC-1'].status).toBe('met');
+    }
+  });
+
+  test('a tightening line holds from any comment: prose, code span or fenced block', () => {
+    for (const body of ['Broke again.\n[ec-state EC-1] reclosed', '`[ec-state EC-1] reclosed`', '```\n[ec-state EC-1] reclosed\n```', '```[ec-state EC-1] reclosed```']) {
+      const r = parseEcStateComments([
+        c('[ec-state EC-1] met', '2026-10-01T00:00:00Z'),
+        c(body, '2026-10-02T00:00:00Z'),
+      ]);
+      expect(r.latest['EC-1'].status).toBe('reclosed');
+    }
   });
 
   test('ec_filled_template_slot — EC-<3> is EC-3, not the template', () => {
@@ -348,6 +364,20 @@ describe('EC id spellings', () => {
       ).held;
     expect(both('EC-1', 'EC-01')).toBe(true);
     expect(both('EC-01', 'EC-1')).toBe(true);
+  });
+
+  test('two declared spellings of one id: a start gate on either holds the start, whichever order', () => {
+    const gate = (first: [string, string], second: [string, string]) =>
+      evaluateWaveGate(
+        { [first[0]]: { status: 'unmet', gates: first[1] }, [second[0]]: { status: 'unmet', gates: second[1] } },
+        [{ number: 10, ec: ['EC-1'] }],
+      );
+    expect(gate(['EC-01', 'delivery'], ['EC-1', 'start']).held).toBe(true);
+    expect(gate(['EC-1', 'start'], ['EC-01', 'delivery']).held).toBe(true);
+    // Positive control: both delivery lets the wave start, with the completion hold reported.
+    const both = gate(['EC-01', 'delivery'], ['EC-1', 'delivery']);
+    expect(both.held).toBe(false);
+    expect(both.delivery).toHaveLength(1);
   });
 });
 

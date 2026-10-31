@@ -77,6 +77,17 @@ describe('wave_ec_sync handler', () => {
     expect(typeof handler.execute).toBe('function');
   });
 
+  test('undeclared_in_plan matches ids as the gate does: a story EC-01 is a declared EC-1', async () => {
+    await setupPlan({
+      ...declaredPlan,
+      phases: [{ waves: [{ id: 'w1', issues: [{ number: 10, ec: ['EC-01', 'EC-3'] }] }] }],
+    });
+    onGithubComments([]);
+    const parsed = parseResult(await handler.execute({ dry_run: true }));
+    expect(parsed.ok).toBe(true);
+    expect(parsed.undeclared_in_plan).toEqual([{ ec: 'EC-3', issues: [10] }]);
+  });
+
   test('writes the latest state per declared EC and reports the rest', async () => {
     await setupPlan(declaredPlan);
     onGithubComments([

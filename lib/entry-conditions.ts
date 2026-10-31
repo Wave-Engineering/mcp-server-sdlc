@@ -100,9 +100,10 @@ const EC_ID = /^ec\s*-?\s*<?\s*(\d+)\s*>?$/i;
 // before `[ec-state`, so a sentence that mentions a state line is not one. A
 // `>` quote is deliberately NOT stripped: quoting a state line is not posting it.
 const MD_LEAD = /^(?:\d+[.)]\s+|[-*+]\s+)?[*_`]*/;
-// A line that opens or closes a fenced code block.
-const FENCE = /^(```|~~~)/;
 const MD_TRAIL = /[*_`]+\s*$/;
+// The same wrappers less the code span, for the state-comment test below.
+const EMPH_LEAD = /^(?:\d+[.)]\s+|[-*+]\s+)?[*_]*/;
+const EMPH_TRAIL = /[*_]+\s*$/;
 // Emphasis or a code span closing right after the status word: `**[ec-state EC-1] met** — <url>`.
 const STATUS_WRAP = /[*_`]/g;
 // Leading punctuation authors put between the status and the evidence.
@@ -111,6 +112,28 @@ const EVIDENCE_LEAD = /^[\s—–:|*_`-]+/;
 function normalizeEcId(digits: string): string {
   // `EC-01` is `EC-1`: ids are matched exactly, so a padded id would miss its EC.
   return `EC-${digits.replace(/^0+(?=\d)/, '')}`;
+}
+
+/**
+ * A state comment is one whose every non-blank line is a bare state line: no
+ * prose, no code span or block, no quote, no indented block. Only a state
+ * comment can release a gate. Any other comment that carries a `met` line is
+ * more likely an instruction ("when it ships, post `[ec-state EC-1] met`")
+ * than a report, and markdown has too many ways to quote a line for a parser to
+ * tell them apart one wrapper at a time. Tightening lines need no such test: a
+ * misread `unmet` or `reclosed` can only hold a wave.
+ */
+function isStateComment(lines: string[]): boolean {
+  const nonBlank = lines.filter((l) => l.trim() !== '');
+  return (
+    nonBlank.length > 0 &&
+    nonBlank.every(
+      (l) =>
+        !/^(?:\t| {4})/.test(l) &&
+        !/[`~]/.test(l) &&
+        EC_LINE.test(l.trim().replace(EMPH_LEAD, '').replace(EMPH_TRAIL, '').trim()),
+    )
+  );
 }
 
 /**
@@ -163,18 +186,10 @@ export function parseEcStateComments(comments: EcComment[]): EcParseResult {
   const untrusted: UntrustedEcLine[] = [];
 
   for (const comment of ordered) {
-    let inFence = false;
-    for (const rawLine of (comment.body ?? '').split(/\r?\n/)) {
-      const bare = rawLine.trim();
-      if (FENCE.test(bare)) {
-        inFence = !inFence;
-        continue;
-      }
-      // A line in a code span or a fenced block is quoted: it may be an
-      // instruction ("post `[ec-state EC-1] met` when it ships"), so it may
-      // tighten a gate but never release one.
-      const quoted = inFence || bare.replace(/^(?:\d+[.)]\s+|[-*+]\s+)?[*_]*/, '').startsWith('`');
-      const line = bare.replace(MD_LEAD, '').replace(MD_TRAIL, '').trim();
+    const lines = (comment.body ?? '').split(/\r?\n/);
+    const stateComment = isStateComment(lines);
+    for (const rawLine of lines) {
+      const line = rawLine.trim().replace(MD_LEAD, '').replace(MD_TRAIL, '').trim();
       if (!EC_PREFIX.test(line)) continue;
       if (comment.trusted !== true) {
         untrusted.push({
@@ -222,12 +237,12 @@ export function parseEcStateComments(comments: EcComment[]): EcParseResult {
         latest[id] = { status: 'unmet', evidence, updated_at: comment.created_at };
         continue;
       }
-      if (quoted && token === 'met') {
+      if (token === 'met' && !stateComment) {
         malformed.push({
           line,
           created_at: comment.created_at,
           url: comment.url,
-          reason: `quoted met for ${id} not applied; post it bare, outside a code span or block`,
+          reason: `met for ${id} not applied: a met counts only in a comment of bare state lines, with no prose, code or quote`,
         });
         continue;
       }
@@ -379,9 +394,19 @@ export function evaluateWaveGate(
   // Story `ec` entries and declared keys may spell an id differently (`EC-01`, `EC-1`).
   const conds = new Map<string, EntryCondition>();
   for (const [key, cond] of Object.entries(entryConditions ?? {})) {
-    // Two keys for one id (`EC-1` and `EC-01`): a not-met one wins, so neither can open the gate alone.
-    const prev = conds.get(canonicalEcId(key));
-    if (prev === undefined || prev.status === 'met') conds.set(canonicalEcId(key), cond);
+    // Two keys for one id (`EC-1` and `EC-01`) merge to the stricter of each
+    // field, so neither key can open the gate, or soften it, alone.
+    const k = canonicalEcId(key);
+    const prev = conds.get(k);
+    if (prev === undefined) {
+      conds.set(k, cond);
+      continue;
+    }
+    conds.set(k, {
+      ...prev,
+      status: prev.status === 'met' && cond.status === 'met' ? 'met' : prev.status !== 'met' ? prev.status : cond.status,
+      gates: prev.gates === 'delivery' && cond.gates === 'delivery' ? 'delivery' : 'start',
+    });
   }
 
   for (const issue of issues) {

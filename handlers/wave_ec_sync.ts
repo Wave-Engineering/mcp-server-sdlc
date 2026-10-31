@@ -18,6 +18,7 @@ import type { HandlerDef } from '../types.js';
 import { getAdapter } from '../lib/adapters/index.js';
 import { repoOptionalSchema } from '../lib/schemas/repo.js';
 import {
+  canonicalEcId,
   parseEcStateComments,
   syncEntryConditions,
   type EntryConditions,
@@ -64,14 +65,15 @@ function parsePlanIssueRef(ref: unknown): { number: number; repo?: string } | nu
 
 /** EC ids that some issue names but the plan does not declare. */
 function undeclaredReferences(plan: PlanFile): Array<{ ec: string; issues: number[] }> {
-  const declared = plan.entry_conditions ?? {};
+  // Matched by canonical id, as the gate matches them: a story's `EC-01` is a declared `EC-1`.
+  const declared = new Set(Object.keys(plan.entry_conditions ?? {}).map(canonicalEcId));
   const found = new Map<string, number[]>();
   for (const phase of plan.phases ?? []) {
     for (const wave of phase.waves ?? []) {
       for (const issue of wave.issues ?? []) {
         if (!Array.isArray(issue.ec)) continue;
         for (const ec of issue.ec) {
-          if (typeof ec !== 'string' || ec in declared) continue;
+          if (typeof ec !== 'string' || declared.has(canonicalEcId(ec))) continue;
           const list = found.get(ec) ?? [];
           if (typeof issue.number === 'number') list.push(issue.number);
           found.set(ec, list);
