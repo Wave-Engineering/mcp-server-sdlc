@@ -34,6 +34,29 @@ describe('normalizePlanJson', () => {
     });
   });
 
+  test('carries a story\'s ec and the top-level entry_conditions through (#613)', () => {
+    const upshift = JSON.stringify({
+      plan_id: 2,
+      slug: 'org/repo',
+      entry_conditions: { 'EC-1': { status: 'unmet', gates: 'start' } },
+      phases: [{
+        waves: [{
+          name: 'P1W1',
+          stories: [
+            { id: '1.1', issue: 501, title: 'Gated', depends_on: [], ec: ['EC-1'] },
+            { id: '1.2', issue: 502, title: 'Free', depends_on: [] },
+          ],
+        }],
+      }],
+    });
+
+    const result = JSON.parse(normalizePlanJson(upshift));
+    expect(result.entry_conditions).toEqual({ 'EC-1': { status: 'unmet', gates: 'start' } });
+    expect(result.phases[0].waves[0].issues[0].ec).toEqual(['EC-1']);
+    // A story with no ec gains no key, so the pre-#613 shape is unchanged.
+    expect(result.phases[0].waves[0].issues[1]).not.toHaveProperty('ec');
+  });
+
   test('passes through already-correct wave-status shape', () => {
     const correct = JSON.stringify({
       project: 'org/repo',

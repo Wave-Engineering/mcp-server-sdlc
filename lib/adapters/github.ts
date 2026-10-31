@@ -24,6 +24,7 @@ import { branchCreateGithub } from './branch-create-github.js';
 import { fetchCiTrustSignalGithub } from './fetch-ci-trust-signal-github.js';
 import { fetchIssueGithub } from './fetch-issue-github.js';
 import { fetchIssueClosureGithub } from './fetch-issue-closure-github.js';
+import { issueCommentsGithub } from './issue-comments-github.js';
 import { fetchPrForBranchGithub } from './fetch-pr-for-branch-github.js';
 import { fetchPrStateGithub } from './fetch-pr-state-github.js';
 import { findExistingPrGithub } from './find-existing-pr-github.js';
@@ -83,6 +84,7 @@ export const githubAdapter: PlatformAdapter = {
   fetchPrState: fetchPrStateGithub,
   fetchPrForBranch: fetchPrForBranchGithub,
   fetchIssueClosure: fetchIssueClosureGithub,
+  issueComments: issueCommentsGithub,
   findMergedPrForBranchPrefix: findMergedPrForBranchPrefixGithub,
   ciListRuns: ciListRunsGithub,
   resolveBranchSha: resolveBranchShaGithub,
