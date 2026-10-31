@@ -22,7 +22,9 @@
  * head's pipeline, which then bind to each other. So the head is checked
  * against something outside the MR record first (`HeadFreshness`): the caller's
  * `expected_sha` when it passed one, else the source branch's tip. A head that
- * differs from it, or a tip that cannot be read, is unbound.
+ * differs from it, or a tip that cannot be read, is unbound. A merged MR skips
+ * the tip check (its record is final, and its branch is often deleted); it
+ * still honours `expected_sha`.
  */
 
 import {
