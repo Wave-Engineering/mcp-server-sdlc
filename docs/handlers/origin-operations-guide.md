@@ -482,6 +482,7 @@ Same fields as `pr_status`; this tool wraps `pr_status` logic in a poll loop.
 
 **Gotchas:**
 - GitHub's `gh pr comment` does not print the comment ID directly. Either parse the comment URL from stdout (regex `/issuecomment-(\d+)$/`) or query `gh pr view <n> --json comments` and pick the newest.
+- GitHub's `gh pr comment` cannot resolve an issue number (`Could not resolve to a PullRequest`), although issues and PRs share one number space. `target: 'issue'` runs `gh issue comment`; otherwise that one error retries once as `gh issue comment` (#617). Both print the same `#issuecomment-<id>` URL.
 - GitLab comments on MRs are called "notes" — use `glab mr note`, not `glab mr comment`.
 - For multi-line comments, same rule as bodies: temp file + `--body-file` (gh) / `--message "$(cat path)"` (glab).
 
